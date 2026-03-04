@@ -10,8 +10,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,16 +23,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.Info
-import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -43,7 +39,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +46,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -58,17 +54,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import com.example.blyy.ui.theme.*
+import com.example.blyy.ui.theme.AppColors
+import com.example.blyy.ui.theme.AppSpacing
+import com.example.blyy.ui.theme.AppTypography
 import com.example.blyy.viewmodel.AboutIntent
+import com.example.blyy.viewmodel.AboutState
 import com.example.blyy.viewmodel.AboutViewModel
 import com.example.blyy.viewmodel.UpdateChannel
 import com.example.blyy.viewmodel.UpdateStatus
@@ -117,19 +116,17 @@ fun AboutScreen(
 
             OpenSourceSection(
                 context = context,
-                isDark = isDark,
                 glassSurface = glassSurface
             )
 
             DisclaimerSection(
-                isDark = isDark,
+                context = context,
                 glassSurface = glassSurface
             )
 
             UpdateChannelSection(
                 selectedChannel = state.selectedChannel,
                 onChannelSelected = { viewModel.onIntent(AboutIntent.SelectChannel(it)) },
-                isDark = isDark,
                 glassSurface = glassSurface
             )
 
@@ -137,7 +134,6 @@ fun AboutScreen(
                 state = state,
                 onCheckUpdate = { viewModel.onIntent(AboutIntent.CheckUpdate) },
                 context = context,
-                isDark = isDark,
                 glassSurface = glassSurface
             )
 
@@ -199,10 +195,9 @@ private fun AppHeaderSection(currentVersion: String) {
 @Composable
 private fun OpenSourceSection(
     context: Context,
-    isDark: Boolean,
     glassSurface: Color
 ) {
-    SectionCard(title = "开源代码", isDark = isDark, glassSurface = glassSurface) {
+    SectionCard(title = "开源代码", glassSurface = glassSurface) {
         Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
             Text(
                 text = REPO_URL,
@@ -235,14 +230,14 @@ private fun OpenSourceSection(
 
                 Button(
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(REPO_URL))
+                        val intent = Intent(Intent.ACTION_VIEW, REPO_URL.toUri())
                         context.startActivity(intent)
                     },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(AppSpacing.Corner.Lg)
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.OpenInNew,
+                        imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
@@ -256,12 +251,10 @@ private fun OpenSourceSection(
 
 @Composable
 private fun DisclaimerSection(
-    isDark: Boolean,
+    context: Context,
     glassSurface: Color
 ) {
-    val context = LocalContext.current
-    
-    SectionCard(title = "版权声明", isDark = isDark, glassSurface = glassSurface) {
+    SectionCard(title = "版权声明", glassSurface = glassSurface) {
         Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
             Text(
                 text = "本应用中涉及的所有角色台词、立绘、语音等内容，其著作权及相关权利均归碧蓝航线游戏公司（Manjuu）所有。",
@@ -283,14 +276,14 @@ private fun DisclaimerSection(
             
             OutlinedButton(
                 onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://game.bilibili.com/blhx/"))
+                    val intent = Intent(Intent.ACTION_VIEW, "https://game.bilibili.com/blhx/".toUri())
                     context.startActivity(intent)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(AppSpacing.Corner.Lg)
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.OpenInNew,
+                    imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
@@ -305,10 +298,9 @@ private fun DisclaimerSection(
 private fun UpdateChannelSection(
     selectedChannel: UpdateChannel,
     onChannelSelected: (UpdateChannel) -> Unit,
-    isDark: Boolean,
     glassSurface: Color
 ) {
-    SectionCard(title = "更新渠道", isDark = isDark, glassSurface = glassSurface) {
+    SectionCard(title = "更新渠道", glassSurface = glassSurface) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
@@ -340,13 +332,12 @@ private fun UpdateChannelSection(
 
 @Composable
 private fun CheckUpdateSection(
-    state: com.example.blyy.viewmodel.AboutState,
+    state: AboutState,
     onCheckUpdate: () -> Unit,
     context: Context,
-    isDark: Boolean,
     glassSurface: Color
 ) {
-    SectionCard(title = "检查更新", isDark = isDark, glassSurface = glassSurface) {
+    SectionCard(title = "检查更新", glassSurface = glassSurface) {
         Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
             Button(
                 onClick = onCheckUpdate,
@@ -407,7 +398,7 @@ private fun CheckUpdateSection(
                             if (state.downloadUrl.isNotEmpty()) {
                                 Button(
                                     onClick = {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(state.downloadUrl))
+                                        val intent = Intent(Intent.ACTION_VIEW, state.downloadUrl.toUri())
                                         context.startActivity(intent)
                                     },
                                     modifier = Modifier.fillMaxWidth(),
@@ -468,7 +459,6 @@ private fun StatusCard(
 @Composable
 private fun SectionCard(
     title: String,
-    isDark: Boolean,
     glassSurface: Color,
     content: @Composable () -> Unit
 ) {
