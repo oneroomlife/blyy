@@ -72,7 +72,7 @@
 - MIT License
 - Eclipse Public License 1.0
 
-这些许可证与项目的 MIT 许可证兼容。
+这些许可证与项目的 GNU General Public License v3.0 许可证兼容。
 
 ## 许可证声明
 

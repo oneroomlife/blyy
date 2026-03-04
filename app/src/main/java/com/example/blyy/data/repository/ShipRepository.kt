@@ -20,6 +20,13 @@ class ShipRepository @Inject constructor(
     private val shipDao: ShipDao,
     private val networkHelper: NetworkHelper
 ) {
+    companion object {
+        private val WIKI_NAME_MAPPING = mapOf(
+            "DEAD" to "DEAD_MASTER",
+            "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
+        )
+    }
+
     val allShips = shipDao.getAllShips()
     val favoriteShips = shipDao.getFavoriteShips()
 
@@ -77,20 +84,7 @@ class ShipRepository @Inject constructor(
         return res
     }
 
-    private fun getOriginalImageUrl(url: String): String {
-        if (url.isEmpty()) return ""
-        var res = formatUrl(url)
-        if (res.contains("/thumb/")) {
-            val thumbIndex = res.indexOf("/thumb/")
-            val lastSlashIndex = res.lastIndexOf("/")
-            if (lastSlashIndex > thumbIndex + 7) {
-                res = res.substring(0, thumbIndex) + "/" + res.substring(thumbIndex + 7, lastSlashIndex)
-            }
-        }
-        return res
-    }
-
-    suspend fun fetchVoices(shipName: String): Triple<List<VoiceLine>, String, Map<String, String>> = withContext(Dispatchers.IO) {
+    private fun normalizeShipName(shipName: String): String {
         var processedName = shipName
         if (processedName.contains(".改")) {
             processedName = processedName.replace(".改", "")
@@ -99,15 +93,19 @@ class ShipRepository @Inject constructor(
         } else if (processedName.contains("Kai")) {
             processedName = processedName.replace("Kai", "")
         }
-        
-        val wikiNameMapping = mapOf(
-            "DEAD" to "DEAD_MASTER",
-            "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
-        )
-        
-        val wikiName = wikiNameMapping[processedName] ?: processedName
+        return WIKI_NAME_MAPPING[processedName] ?: processedName
+    }
+
+    private fun buildWikiUrl(shipName: String): String {
+        val wikiName = normalizeShipName(shipName)
         val encodedName = Uri.encode(wikiName)
-        val url = "https://wiki.biligame.com/blhx/$encodedName"
+        return "https://wiki.biligame.com/blhx/$encodedName"
+    }
+
+
+
+    suspend fun fetchVoices(shipName: String): Triple<List<VoiceLine>, String, Map<String, String>> = withContext(Dispatchers.IO) {
+        val url = buildWikiUrl(shipName)
         
         Log.d(TAG, "Fetching voices from: $url")
         
@@ -271,23 +269,7 @@ class ShipRepository @Inject constructor(
     suspend fun fetchShipGallery(shipName: String): ShipGallery = withContext(Dispatchers.IO) {
         Log.d(TAG, "fetchShipGallery START for: $shipName")
         
-        var processedName = shipName
-        if (processedName.contains(".改")) {
-            processedName = processedName.replace(".改", "")
-        } else if (processedName.contains("改")) {
-            processedName = processedName.replace("改", "")
-        } else if (processedName.contains("Kai")) {
-            processedName = processedName.replace("Kai", "")
-        }
-        
-        val wikiNameMapping = mapOf(
-            "DEAD" to "DEAD_MASTER",
-            "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
-        )
-        
-        val wikiName = wikiNameMapping[processedName] ?: processedName
-        val encodedName = Uri.encode(wikiName)
-        val url = "https://wiki.biligame.com/blhx/$encodedName"
+        val url = buildWikiUrl(shipName)
         
         Log.d(TAG, "Fetching gallery from: $url")
         
@@ -305,7 +287,7 @@ class ShipRepository @Inject constructor(
                         val skinName = tabLis.getOrNull(index)?.text()?.trim() ?: "通常"
                         val img = content.select("img").firstOrNull()
                         if (img != null) {
-                            val imageUrl = getOriginalImageUrl(img.attr("src").ifEmpty { img.attr("data-src") })
+                            val imageUrl = formatUrl(img.attr("src").ifEmpty { img.attr("data-src") })
                             if (imageUrl.isNotEmpty() && !imageUrl.contains("头像") && !imageUrl.contains("icon")) {
                                 illustrations.add(Pair(skinName, imageUrl))
                             }
@@ -320,7 +302,7 @@ class ShipRepository @Inject constructor(
                 val chibiCandidates = mutableListOf<Pair<String, String>>()
                 doc.select(".data-container img, .qchar-container img, .qchar-figure img").forEach { img ->
                     val alt = img.attr("alt").ifEmpty { img.attr("title") }.trim()
-                    val src = getOriginalImageUrl(img.attr("src").ifEmpty { img.attr("data-src") })
+                    val src = formatUrl(img.attr("src").ifEmpty { img.attr("data-src") })
                     if (src.endsWith(".png")) {
                         chibiCandidates.add(Pair(alt, src))
                     }
@@ -414,23 +396,7 @@ class ShipRepository @Inject constructor(
     }
 
     suspend fun fetchCharacterInfo(shipName: String): ShipCharacterInfo = withContext(Dispatchers.IO) {
-        var processedName = shipName
-        if (processedName.contains(".改")) {
-            processedName = processedName.replace(".改", "")
-        } else if (processedName.contains("改")) {
-            processedName = processedName.replace("改", "")
-        } else if (processedName.contains("Kai")) {
-            processedName = processedName.replace("Kai", "")
-        }
-        
-        val wikiNameMapping = mapOf(
-            "DEAD" to "DEAD_MASTER",
-            "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
-        )
-        
-        val wikiName = wikiNameMapping[processedName] ?: processedName
-        val encodedName = Uri.encode(wikiName)
-        val url = "https://wiki.biligame.com/blhx/$encodedName"
+        val url = buildWikiUrl(shipName)
         
         Log.d(TAG, "Fetching character info from: $url")
         
