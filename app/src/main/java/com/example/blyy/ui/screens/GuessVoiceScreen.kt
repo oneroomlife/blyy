@@ -14,6 +14,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -90,6 +91,7 @@ import com.example.blyy.viewmodel.GuessResult
 import com.example.blyy.viewmodel.GuessShipViewModel
 import com.example.blyy.viewmodel.PlayerViewModel
 import com.example.blyy.viewmodel.GameScore
+import com.example.blyy.viewmodel.VoiceDifficulty
 
 @UnstableApi
 @Composable
@@ -110,7 +112,7 @@ fun GuessByVoiceScreen(
         if (!questionVoiceUrl.isNullOrEmpty()) {
             playerViewModel.playSingleVoice(questionVoiceUrl)
             val dialogue = state.currentVoice?.dialogue
-            if (!dialogue.isNullOrBlank()) {
+            if (!dialogue.isNullOrBlank() && state.voiceDifficulty == VoiceDifficulty.EASY) {
                 Toast.makeText(context, dialogue, Toast.LENGTH_LONG).show()
             }
         }
@@ -146,14 +148,15 @@ fun GuessByVoiceScreen(
         onReplay = {
             viewModel.playRandomVoiceForCurrentShip { url, dialogue ->
                 playerViewModel.playSingleVoice(url)
-                if (dialogue.isNotBlank()) {
+                if (dialogue.isNotBlank() && state.voiceDifficulty == VoiceDifficulty.EASY) {
                     Toast.makeText(context, dialogue, Toast.LENGTH_LONG).show()
                 }
             }
         },
         onRequestHint = viewModel::requestHint,
         onShowAnswer = viewModel::showAnswer,
-        onShowSettlement = viewModel::showSettlement
+        onShowSettlement = viewModel::showSettlement,
+        onDifficultyChange = viewModel::setVoiceDifficulty
     )
 }
 
@@ -168,7 +171,8 @@ private fun ModernGuessVoiceContent(
     onReplay: () -> Unit,
     onRequestHint: () -> Unit,
     onShowAnswer: () -> Unit,
-    onShowSettlement: () -> Unit
+    onShowSettlement: () -> Unit,
+    onDifficultyChange: (VoiceDifficulty) -> Unit
 ) {
     val scrollState = rememberScrollState()
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
@@ -261,6 +265,11 @@ private fun ModernGuessVoiceContent(
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.Md),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                VoiceDifficultySelector(
+                    currentDifficulty = state.voiceDifficulty,
+                    onDifficultyChange = onDifficultyChange
+                )
+
                 VoicePlayerCard(
                     isPlaying = state.isLoadingHint,
                     onReplay = onReplay,
@@ -356,6 +365,121 @@ private fun ModernGuessVoiceContent(
 
                 Spacer(modifier = Modifier.height(AppSpacing.Lg))
             }
+        }
+    }
+}
+
+@Composable
+private fun VoiceDifficultySelector(
+    currentDifficulty: VoiceDifficulty,
+    onDifficultyChange: (VoiceDifficulty) -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Headphones,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "难度选择",
+                    style = AppTypography.LabelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                VoiceDifficultyChip(
+                    text = "简单模式",
+                    description = "显示台词提示",
+                    isSelected = currentDifficulty == VoiceDifficulty.EASY,
+                    onClick = { onDifficultyChange(VoiceDifficulty.EASY) },
+                    modifier = Modifier.weight(1f)
+                )
+                VoiceDifficultyChip(
+                    text = "困难模式",
+                    description = "不显示台词",
+                    isSelected = currentDifficulty == VoiceDifficulty.HARD,
+                    onClick = { onDifficultyChange(VoiceDifficulty.HARD) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VoiceDifficultyChip(
+    text: String,
+    description: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scale by animateFloatAsState(
+        targetValue = if (isSelected) 1.02f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "chipScale"
+    )
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier.scale(scale),
+        shape = RoundedCornerShape(12.dp),
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)
+        },
+        border = if (isSelected) {
+            BorderStroke(
+                width = 2.dp,
+                color = MaterialTheme.colorScheme.secondary
+            )
+        } else null
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = text,
+                style = AppTypography.LabelLarge,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                }
+            )
+            Text(
+                text = description,
+                style = AppTypography.LabelSmall,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
         }
     }
 }

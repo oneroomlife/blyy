@@ -36,6 +36,11 @@ enum class ImageDifficulty {
     HARD
 }
 
+enum class VoiceDifficulty {
+    EASY,
+    HARD
+}
+
 data class CropRegion(
     val startX: Float = 0f,
     val startY: Float = 0f,
@@ -82,6 +87,7 @@ data class GuessGameUiState(
     val isActive: Boolean = false,
     val mode: GuessMode = GuessMode.IMAGE,
     val difficulty: ImageDifficulty = ImageDifficulty.EASY,
+    val voiceDifficulty: VoiceDifficulty = VoiceDifficulty.EASY,
     val currentShip: Ship? = null,
     val currentImageUrl: String? = null,
     val cropRegion: CropRegion? = null,
@@ -127,6 +133,10 @@ class GuessShipViewModel @Inject constructor(
 
     fun setDifficulty(difficulty: ImageDifficulty) {
         _uiState.update { it.copy(difficulty = difficulty) }
+    }
+
+    fun setVoiceDifficulty(difficulty: VoiceDifficulty) {
+        _uiState.update { it.copy(voiceDifficulty = difficulty) }
     }
 
     fun startImageGame() {
