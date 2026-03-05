@@ -1,5 +1,6 @@
 package com.example.blyy.ui.screens
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -77,6 +78,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.example.blyy.ui.theme.AppColors
@@ -97,6 +99,7 @@ fun GuessByVoiceScreen(
     playerViewModel: PlayerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     LaunchedEffect(Unit) {
         viewModel.startVoiceGame()
@@ -106,6 +109,10 @@ fun GuessByVoiceScreen(
     LaunchedEffect(questionVoiceUrl) {
         if (!questionVoiceUrl.isNullOrEmpty()) {
             playerViewModel.playSingleVoice(questionVoiceUrl)
+            val dialogue = state.currentVoice?.dialogue
+            if (!dialogue.isNullOrBlank()) {
+                Toast.makeText(context, dialogue, Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -137,8 +144,11 @@ fun GuessByVoiceScreen(
             }
         },
         onReplay = {
-            viewModel.playRandomVoiceForCurrentShip { url ->
+            viewModel.playRandomVoiceForCurrentShip { url, dialogue ->
                 playerViewModel.playSingleVoice(url)
+                if (dialogue.isNotBlank()) {
+                    Toast.makeText(context, dialogue, Toast.LENGTH_LONG).show()
+                }
             }
         },
         onRequestHint = viewModel::requestHint,

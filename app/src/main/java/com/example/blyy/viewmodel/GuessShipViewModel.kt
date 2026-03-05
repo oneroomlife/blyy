@@ -651,7 +651,7 @@ class GuessShipViewModel @Inject constructor(
         }
     }
 
-    fun playRandomVoiceForCurrentShip(onVoiceSelected: (String) -> Unit) {
+    fun playRandomVoiceForCurrentShip(onVoiceSelected: (String, String) -> Unit) {
         val ship = _uiState.value.currentShip ?: return
         val currentVoiceKey = _uiState.value.currentVoice?.let { "${ship.name}_${it.scene}" }
         
@@ -673,7 +673,7 @@ class GuessShipViewModel @Inject constructor(
                 }
                 
                 if (selectedVoice.audioUrl.isNotBlank()) {
-                    onVoiceSelected(selectedVoice.audioUrl)
+                    onVoiceSelected(selectedVoice.audioUrl, selectedVoice.dialogue)
                 }
             } catch (_: Exception) {
             }
