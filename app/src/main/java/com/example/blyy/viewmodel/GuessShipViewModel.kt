@@ -292,6 +292,8 @@ class GuessShipViewModel @Inject constructor(
                     null
                 }
                 
+                val questionScore = if (_uiState.value.difficulty == ImageDifficulty.HARD) 50 else 10
+                
                 _uiState.update {
                     it.copy(
                         currentShip = ship,
@@ -306,8 +308,8 @@ class GuessShipViewModel @Inject constructor(
                         usedHintLabels = emptySet(),
                         cropRegion = cropRegion,
                         showAnswer = false,
-                        currentQuestionScore = 10,
-                        noMoreHints = false
+                        currentQuestionScore = questionScore,
+                        noMoreHints = _uiState.value.difficulty == ImageDifficulty.HARD
                     )
                 }
             } catch (e: Exception) {
@@ -429,6 +431,8 @@ class GuessShipViewModel @Inject constructor(
                 }
 
                 val voice = voices.random()
+                val questionScore = if (_uiState.value.voiceDifficulty == VoiceDifficulty.HARD) 50 else 10
+                
                 _uiState.update {
                     it.copy(
                         currentShip = ship,
@@ -443,8 +447,8 @@ class GuessShipViewModel @Inject constructor(
                         usedHintLabels = emptySet(),
                         cropRegion = null,
                         showAnswer = false,
-                        currentQuestionScore = 10,
-                        noMoreHints = false
+                        currentQuestionScore = questionScore,
+                        noMoreHints = _uiState.value.voiceDifficulty == VoiceDifficulty.HARD
                     )
                 }
             } catch (e: Exception) {
@@ -464,6 +468,13 @@ class GuessShipViewModel @Inject constructor(
         val currentScore = _uiState.value.currentQuestionScore
         val currentHints = _uiState.value.hints
         val usedLabels = _uiState.value.usedHintLabels
+        
+        val isHardMode = when (_uiState.value.mode) {
+            GuessMode.IMAGE -> _uiState.value.difficulty == ImageDifficulty.HARD
+            GuessMode.VOICE -> _uiState.value.voiceDifficulty == VoiceDifficulty.HARD
+        }
+        
+        if (isHardMode) return
         
         viewModelScope.launch {
             _uiState.update { it.copy(isLoadingHint = true) }

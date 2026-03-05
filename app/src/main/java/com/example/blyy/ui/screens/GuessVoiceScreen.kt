@@ -282,7 +282,7 @@ private fun ModernGuessVoiceContent(
                     HintsSection(hints = state.hints.map { it.label to it.value })
                 }
 
-                if (state.lastResult != GuessResult.CORRECT && !state.showAnswer) {
+                if (state.lastResult != GuessResult.CORRECT && !state.showAnswer && state.voiceDifficulty == VoiceDifficulty.EASY) {
                     HintButton(
                         isLoading = state.isLoadingHint,
                         hintCount = state.hints.size,
