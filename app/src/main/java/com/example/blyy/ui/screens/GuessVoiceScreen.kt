@@ -385,36 +385,19 @@ private fun VoiceDifficultySelector(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Headphones,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "难度选择",
-                    style = AppTypography.LabelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            
-            Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 VoiceDifficultyChip(
                     text = "简单模式",
-                    description = "显示台词提示",
+                    description = "显示台词和提示",
                     isSelected = currentDifficulty == VoiceDifficulty.EASY,
                     onClick = { onDifficultyChange(VoiceDifficulty.EASY) },
                     modifier = Modifier.weight(1f)
                 )
                 VoiceDifficultyChip(
                     text = "困难模式",
-                    description = "不显示台词",
+                    description = "不显示台词和提示",
                     isSelected = currentDifficulty == VoiceDifficulty.HARD,
                     onClick = { onDifficultyChange(VoiceDifficulty.HARD) },
                     modifier = Modifier.weight(1f)
