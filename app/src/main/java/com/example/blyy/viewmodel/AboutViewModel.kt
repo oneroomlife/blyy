@@ -196,12 +196,8 @@ class AboutViewModel @Inject constructor(
     private fun parseReleaseObject(release: JSONObject): Triple<String, String, String>? {
         return try {
             val tagName = release.getString("tag_name").removePrefix("v")
-            val releaseName = release.optString("name", tagName).trim()
             val body = release.optString("body", "暂无更新日志").trim()
             val htmlUrl = release.optString("html_url", GITHUB_RELEASE_PAGE)
-            
-            val versionFromName = extractVersionFromName(releaseName)
-            val displayVersion = if (versionFromName.isNotEmpty()) versionFromName else tagName
             
             val assets = release.getJSONArray("assets")
             var downloadUrl = ""
@@ -221,17 +217,11 @@ class AboutViewModel @Inject constructor(
                 Log.d(TAG, "No APK found, using release page: $downloadUrl")
             }
             
-            Triple(displayVersion, downloadUrl, body)
+            Triple(tagName, downloadUrl, body)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse release object", e)
             null
         }
-    }
-    
-    private fun extractVersionFromName(name: String): String {
-        val versionPattern = Regex("""(\d+\.\d+\.\d+)""")
-        val match = versionPattern.find(name)
-        return match?.groupValues?.get(0) ?: ""
     }
 
     private fun isNewerVersion(latestVersion: String): Boolean {
