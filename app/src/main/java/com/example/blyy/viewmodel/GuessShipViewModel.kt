@@ -92,6 +92,7 @@ data class GuessGameUiState(
     val currentImageUrl: String? = null,
     val cropRegion: CropRegion? = null,
     val currentVoice: VoiceLine? = null,
+    val currentDialogueId: Long = 0,
     val rewardImageUrl: String? = null,
     val inputText: String = "",
     val lastResult: GuessResult? = null,
@@ -432,11 +433,13 @@ class GuessShipViewModel @Inject constructor(
 
                 val voice = voices.random()
                 val questionScore = if (_uiState.value.voiceDifficulty == VoiceDifficulty.HARD) 50 else 10
+                val dialogueId = System.currentTimeMillis()
                 
                 _uiState.update {
                     it.copy(
                         currentShip = ship,
                         currentVoice = voice,
+                        currentDialogueId = dialogueId,
                         currentImageUrl = null,
                         rewardImageUrl = null,
                         inputText = "",
@@ -694,9 +697,13 @@ class GuessShipViewModel @Inject constructor(
                 
                 val candidates = if (availableVoices.isNotEmpty()) availableVoices else voices
                 val selectedVoice = candidates.random()
+                val newDialogueId = System.currentTimeMillis()
                 
                 _uiState.update {
-                    it.copy(currentVoice = selectedVoice)
+                    it.copy(
+                        currentVoice = selectedVoice,
+                        currentDialogueId = newDialogueId
+                    )
                 }
                 
                 if (selectedVoice.audioUrl.isNotBlank()) {
@@ -756,13 +763,7 @@ private fun getBaseName(name: String): String {
         "Ⅱ" to "",
         "ⅱ" to "",
         "（改造）" to "",
-        "改造" to "",
-        "（婚纱）" to "",
-        "婚紗" to "",
-        "（誓约）" to "",
-        "誓約" to "",
-        "（皮肤）" to "",
-        "皮膚" to ""
+        ".改" to "",
     )
     
     var result = normalized
@@ -774,95 +775,6 @@ private fun getBaseName(name: String): String {
 }
 
 private val NAME_ALIASES: Map<String, List<String>> = mapOf(
-    "拉菲" to listOf("拉菲改", "拉菲ii", "拉菲ii改", "拉菲μ兵装", "laffey"),
-    "企业" to listOf("企业改", "enterprise"),
-    "赤城" to listOf("赤城改", "akagi"),
-    "加贺" to listOf("加贺改", "kaga"),
-    "光辉" to listOf("光辉改", "illustrious"),
-    "威尔士亲王" to listOf("威尔士亲王改", "prince of wales", "pow"),
-    "俾斯麦" to listOf("俾斯麦改", "bismarck"),
-    "提尔比茨" to listOf("提尔比茨改", "tirpitz", "北方的孤独女王"),
-    "欧根亲王" to listOf("欧根亲王改", "prinz eugen", "欧根"),
-    "胡德" to listOf("胡德改", "hood"),
-    "伊丽莎白女王" to listOf("伊丽莎白女王改", "queen elizabeth", "女王"),
-    "厌战" to listOf("厌战改", "warspite"),
-    "声望" to listOf("声望改", "renown"),
-    "反击" to listOf("反击改", "repulse"),
-    "皇家方舟" to listOf("皇家方舟改", "ark royal"),
-    "约克城" to listOf("约克城改", "yorktown"),
-    "大黄蜂" to listOf("大黄蜂改", "hornet"),
-    "列克星敦" to listOf("列克星敦改", "lexington"),
-    "萨拉托加" to listOf("萨拉托加改", "saratoga", "小加加"),
-    "埃塞克斯" to listOf("埃塞克斯改", "essex"),
-    "企业" to listOf("企业改", "enterprise", "幸运e"),
-    "独角兽" to listOf("独角兽改", "unicorn"),
-    "光辉" to listOf("光辉改", "illustrious"),
-    "可畏" to listOf("可畏改", "formidable"),
-    "胜利" to listOf("胜利改", "victorious"),
-    "不挠" to listOf("不挠改", "indomitable"),
-    "英仙座" to listOf("英仙座改", "perseus"),
-    "天鹰" to listOf("天鹰改", "aquila"),
-    "齐柏林伯爵" to listOf("齐柏林伯爵改", "graf zeppelin"),
-    "翔鹤" to listOf("翔鹤改", "shokaku"),
-    "瑞鹤" to listOf("瑞鹤改", "zuikaku"),
-    "大凤" to listOf("大凤改", "taihou"),
-    "信浓" to listOf("信浓改", "shinano"),
-    "长门" to listOf("长门改", "nagato"),
-    "陆奥" to listOf("陆奥改", "mutsu"),
-    "大和" to listOf("大和改", "yamato"),
-    "武藏" to listOf("武藏改", "musashi"),
-    "衣阿华" to listOf("衣阿华改", "iowa"),
-    "新泽西" to listOf("新泽西改", "new jersey", "nj"),
-    "密苏里" to listOf("密苏里改", "missouri"),
-    "威斯康星" to listOf("威斯康星改", "wisconsin"),
-    "佐治亚" to listOf("佐治亚改", "georgia"),
-    "阿拉巴马" to listOf("阿拉巴马改", "alabama"),
-    "马萨诸塞" to listOf("马萨诸塞改", "massachusetts", "麻省"),
-    "北卡罗来纳" to listOf("北卡罗来纳改", "north carolina"),
-    "南达科他" to listOf("南达科他改", "south dakota"),
-    "华盛顿" to listOf("华盛顿改", "washington"),
-    "圣地亚哥" to listOf("圣地亚哥改", "san diego", "金坷垃"),
-    "海伦娜" to listOf("海伦娜改", "helena"),
-    "克利夫兰" to listOf("克利夫兰改", "cleveland"),
-    "蒙彼利埃" to listOf("蒙彼利埃改", "montpelier"),
-    "丹佛" to listOf("丹佛改", "denver"),
-    "哥伦比亚" to listOf("哥伦比亚改", "columbia"),
-    "蒙特雷" to listOf("蒙特雷改", "monterey"),
-    "伯明翰" to listOf("伯明翰改", "birmingham"),
-    "比洛克西" to listOf("比洛克西改", "biloxi"),
-    "小海伦娜" to listOf("小海伦娜改", "little helena"),
-    "小克利夫兰" to listOf("小克利夫兰改", "little cleveland"),
-    "小企业" to listOf("小企业改", "little enterprise"),
-    "小赤城" to listOf("小赤城改", "little akagi"),
-    "小加贺" to listOf("小加贺改", "little kaga"),
-    "小声望" to listOf("小声望改", "little renown"),
-    "小厌战" to listOf("小厌战改", "little warspite"),
-    "小皇家方舟" to listOf("小皇家方舟改", "little ark royal"),
-    "小齐柏林" to listOf("小齐柏林改", "little graf zeppelin"),
-    "小提尔比茨" to listOf("小提尔比茨改", "little tirpitz"),
-    "小沙恩霍斯特" to listOf("小沙恩霍斯特改", "little scharnhorst"),
-    "小格奈森瑙" to listOf("小格奈森瑙改", "little gneisenau"),
-    "小德意志" to listOf("小德意志改", "little deutschland"),
-    "小欧根" to listOf("小欧根改", "little prinz eugen"),
-    "小光辉" to listOf("小光辉改", "little illustrious"),
-    "小可畏" to listOf("小可畏改", "little formidable"),
-    "小胜利" to listOf("小胜利改", "little victorious"),
-    "小不挠" to listOf("小不挠改", "little indomitable"),
-    "小独角兽" to listOf("小独角兽改", "little unicorn"),
-    "小伊丽莎白" to listOf("小伊丽莎白改", "little queen elizabeth"),
-    "小威尔士" to listOf("小威尔士改", "little prince of wales"),
-    "小佐治亚" to listOf("小佐治亚改", "little georgia"),
-    "小北卡" to listOf("小北卡改", "little north carolina"),
-    "小华盛顿" to listOf("小华盛顿改", "little washington"),
-    "小南达科他" to listOf("小南达科他改", "little south dakota"),
-    "小马萨诸塞" to listOf("小马萨诸塞改", "little massachusetts"),
-    "小圣地亚哥" to listOf("小圣地亚哥改", "little san diego"),
-    "小海伦娜" to listOf("小海伦娜改", "little helena"),
-    "小克利夫兰" to listOf("小克利夫兰改", "little cleveland"),
-    "小蒙彼利埃" to listOf("小蒙彼利埃改", "little montpelier"),
-    "小丹佛" to listOf("小丹佛改", "little denver"),
-    "小哥伦比亚" to listOf("小哥伦比亚改", "little columbia"),
-    "小蒙特雷" to listOf("小蒙特雷改", "little monterey"),
-    "小伯明翰" to listOf("小伯明翰改", "little birmingham"),
-    "小比洛克西" to listOf("小比洛克西改", "little biloxi")
+    "萨拉托加" to listOf("钢板", "saratoga", "小加加"),
+    "埃塞克斯" to listOf("埃塞克斯改", "饺子")
 )

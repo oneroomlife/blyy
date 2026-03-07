@@ -62,10 +62,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -102,18 +105,37 @@ fun GuessByVoiceScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    
+    var currentToast: Toast? by remember { mutableStateOf(null) }
+    var lastDialogueId by remember { mutableStateOf(0L) }
 
     LaunchedEffect(Unit) {
         viewModel.startVoiceGame()
     }
 
+    DisposableEffect(Unit) {
+        onDispose {
+            currentToast?.cancel()
+        }
+    }
+
     val questionVoiceUrl = state.currentVoice?.audioUrl
-    LaunchedEffect(questionVoiceUrl) {
-        if (!questionVoiceUrl.isNullOrEmpty()) {
+    val currentDialogueId = state.currentDialogueId
+    
+    LaunchedEffect(questionVoiceUrl, currentDialogueId) {
+        if (!questionVoiceUrl.isNullOrEmpty() && currentDialogueId != lastDialogueId) {
+            currentToast?.cancel()
+            
             playerViewModel.playSingleVoice(questionVoiceUrl)
-            val dialogue = state.currentVoice?.dialogue
-            if (!dialogue.isNullOrBlank() && state.voiceDifficulty == VoiceDifficulty.EASY) {
-                Toast.makeText(context, dialogue, Toast.LENGTH_LONG).show()
+            
+            if (state.voiceDifficulty == VoiceDifficulty.EASY) {
+                val dialogue = state.currentVoice?.dialogue
+                if (!dialogue.isNullOrBlank()) {
+                    val toast = Toast.makeText(context, dialogue, Toast.LENGTH_LONG)
+                    currentToast = toast
+                    toast.show()
+                    lastDialogueId = currentDialogueId
+                }
             }
         }
     }
@@ -138,6 +160,9 @@ fun GuessByVoiceScreen(
         onInputChange = viewModel::onInputChanged,
         onSubmit = { viewModel.checkAnswer() },
         onNext = {
+            currentToast?.cancel()
+            currentToast = null
+            
             if (state.lastResult == GuessResult.SKIPPED) {
                 viewModel.skipToNextQuestion()
             } else {
@@ -147,9 +172,14 @@ fun GuessByVoiceScreen(
         },
         onReplay = {
             viewModel.playRandomVoiceForCurrentShip { url, dialogue ->
+                currentToast?.cancel()
+                
                 playerViewModel.playSingleVoice(url)
-                if (dialogue.isNotBlank() && state.voiceDifficulty == VoiceDifficulty.EASY) {
-                    Toast.makeText(context, dialogue, Toast.LENGTH_LONG).show()
+                
+                if (state.voiceDifficulty == VoiceDifficulty.EASY) {
+                    val toast = Toast.makeText(context, dialogue, Toast.LENGTH_LONG)
+                    currentToast = toast
+                    toast.show()
                 }
             }
         },
