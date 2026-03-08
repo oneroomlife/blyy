@@ -775,6 +775,5 @@ private fun getBaseName(name: String): String {
 }
 
 private val NAME_ALIASES: Map<String, List<String>> = mapOf(
-    "萨拉托加" to listOf("钢板", "saratoga", "小加加"),
-    "埃塞克斯" to listOf("埃塞克斯改", "饺子")
+    "萨拉托加" to listOf("钢板", "saratoga", "小加加")
 )

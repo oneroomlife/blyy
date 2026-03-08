@@ -2,6 +2,8 @@ package com.example.blyy.data.local
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -26,6 +28,16 @@ class PlayerSettingsDataStore @Inject constructor(
         private val FAVORITES_KEY = stringPreferencesKey("favorites")
         private val PLAY_LATER_KEY = stringPreferencesKey("play_later_v2")
         private const val FIGURE_PREFIX = "fig_"
+
+        // 今日秘书舰
+        private val SECRETARY_SHIP_NAME_KEY = stringPreferencesKey("secretary_ship_name")
+        private val SECRETARY_FIGURE_URL_KEY = stringPreferencesKey("secretary_figure_url")
+        private val SECRETARY_AVATAR_URL_KEY = stringPreferencesKey("secretary_avatar_url")
+        private val SECRETARY_AUTO_PLAY_ENABLED_KEY = booleanPreferencesKey("secretary_auto_play_enabled")
+        private val SECRETARY_AUTO_PLAY_INTERVAL_KEY = intPreferencesKey("secretary_auto_play_interval")
+        
+        // 悬浮窗状态
+        private val SECRETARY_OVERLAY_ENABLED_KEY = booleanPreferencesKey("secretary_overlay_enabled")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -55,6 +67,46 @@ class PlayerSettingsDataStore @Inject constructor(
 
     fun getSavedFigure(shipName: String): Flow<String?> = context.dataStore.data
         .map { it[stringPreferencesKey(FIGURE_PREFIX + shipName)] }
+
+    // 今日秘书舰
+    val secretaryShipName: Flow<String> = context.dataStore.data.map { it[SECRETARY_SHIP_NAME_KEY] ?: "" }
+    val secretaryFigureUrl: Flow<String> = context.dataStore.data.map { it[SECRETARY_FIGURE_URL_KEY] ?: "" }
+    val secretaryAvatarUrl: Flow<String> = context.dataStore.data.map { it[SECRETARY_AVATAR_URL_KEY] ?: "" }
+    val secretaryAutoPlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
+    val secretaryAutoPlayIntervalMinutes: Flow<Int> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
+    
+    // 悬浮窗状态
+    val secretaryOverlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
+
+    suspend fun saveSecretaryShip(shipName: String, figureUrl: String, avatarUrl: String) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_SHIP_NAME_KEY] = shipName
+            prefs[SECRETARY_FIGURE_URL_KEY] = figureUrl
+            prefs[SECRETARY_AVATAR_URL_KEY] = avatarUrl
+        }
+    }
+
+    suspend fun clearSecretaryShip() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(SECRETARY_SHIP_NAME_KEY)
+            prefs.remove(SECRETARY_FIGURE_URL_KEY)
+            prefs.remove(SECRETARY_AVATAR_URL_KEY)
+        }
+    }
+
+    suspend fun setSecretaryAutoPlay(enabled: Boolean, intervalMinutes: Int = 5) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_AUTO_PLAY_ENABLED_KEY] = enabled
+            prefs[SECRETARY_AUTO_PLAY_INTERVAL_KEY] = intervalMinutes.coerceIn(1, 60)
+        }
+    }
+    
+    // 悬浮窗状态
+    suspend fun setSecretaryOverlayEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_OVERLAY_ENABLED_KEY] = enabled
+        }
+    }
 
     suspend fun saveFigure(shipName: String, figureUrl: String) {
         context.dataStore.edit { it[stringPreferencesKey(FIGURE_PREFIX + shipName)] = figureUrl }

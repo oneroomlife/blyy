@@ -45,6 +45,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -81,6 +82,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.collectAsState
 import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -100,13 +102,27 @@ import com.example.blyy.ui.screens.HomeScreen
 import com.example.blyy.ui.screens.ShipGalleryScreen
 import com.example.blyy.ui.screens.VoiceScreen
 import com.example.blyy.ui.screens.AboutScreen
+import com.example.blyy.ui.screens.SecretaryShipModeScreen
+import com.example.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
+import com.example.blyy.ui.screens.SecretaryShipPickFromHomeScreen
+import com.example.blyy.ui.screens.SecretaryShipRandomScreen
+import com.example.blyy.ui.components.SecretaryChibiOverlay
+import com.example.blyy.viewmodel.SecretaryShipIntent
+import com.example.blyy.viewmodel.SecretaryShipViewModel
 import com.example.blyy.viewmodel.GalleryViewModel
 import com.example.blyy.viewmodel.GuessShipViewModel
 import com.example.blyy.viewmodel.HomeViewModel
 import com.example.blyy.viewmodel.ShipGalleryViewModel
 import com.example.blyy.viewmodel.VoiceIntent
 import com.example.blyy.viewmodel.VoiceViewModel
+import com.example.blyy.data.local.PlayerSettingsDataStore
+import com.example.blyy.utils.OverlayPermissionHelper
+import com.example.blyy.SecretaryOverlayService
 import dagger.hilt.android.AndroidEntryPoint
+import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
@@ -118,9 +134,22 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @Inject
+    lateinit var playerSettings: PlayerSettingsDataStore
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
+
+    companion object {
+        // 用于跨组件通信的悬浮窗状态
+        private val _overlayState = MutableStateFlow(SecretaryOverlayService.isServiceRunning())
+        val overlayState = _overlayState.asStateFlow()
+        
+        fun updateOverlayState(isRunning: Boolean) {
+            _overlayState.value = isRunning
+        }
+    }
 
     @OptIn(ExperimentalSharedTransitionApi::class)
     @UnstableApi
@@ -153,6 +182,83 @@ class MainActivity : ComponentActivity() {
         controller.hide(WindowInsetsCompat.Type.navigationBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
+
+    /**
+     * 请求悬浮窗权限并显示提示
+     */
+    private fun requestOverlayPermission() {
+        if (!OverlayPermissionHelper.hasOverlayPermission(this)) {
+            Toast.makeText(
+                this,
+                "需要悬浮窗权限才能在其他应用上层显示秘书舰",
+                Toast.LENGTH_LONG
+            ).show()
+            OverlayPermissionHelper.requestOverlayPermission(this)
+        }
+    }
+
+    /**
+     * 启动系统悬浮窗服务
+     */
+    fun startOverlayService() {
+        android.util.Log.d("SecretaryOverlay", "startOverlayService: 开始启动悬浮窗服务")
+        
+        if (OverlayPermissionHelper.hasOverlayPermission(this)) {
+            android.util.Log.d("SecretaryOverlay", "startOverlayService: 权限已授予，启动服务")
+            
+            // 保存状态
+            kotlinx.coroutines.GlobalScope.launch {
+                playerSettings.setSecretaryOverlayEnabled(true)
+            }
+            
+            val intent = Intent(this, SecretaryOverlayService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            
+            // 显示成功提示
+            Toast.makeText(this, "悬浮窗已开启", Toast.LENGTH_SHORT).show()
+        } else {
+            android.util.Log.d("SecretaryOverlay", "startOverlayService: 权限未授予，请求权限")
+            Toast.makeText(this, "需要悬浮窗权限才能显示", Toast.LENGTH_SHORT).show()
+            requestOverlayPermission()
+        }
+    }
+
+    /**
+     * 停止系统悬浮窗服务
+     */
+    fun stopOverlayService() {
+        // 保存状态
+        kotlinx.coroutines.GlobalScope.launch {
+            playerSettings.setSecretaryOverlayEnabled(false)
+        }
+        
+        val intent = Intent(this, SecretaryOverlayService::class.java)
+        stopService(intent)
+        
+        Toast.makeText(this, "悬浮窗已关闭", Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * 切换悬浮窗显示状态
+     */
+    fun toggleOverlayService() {
+        if (OverlayPermissionHelper.hasOverlayPermission(this)) {
+            val isCurrentlyRunning = SecretaryOverlayService.isServiceRunning()
+            
+            if (isCurrentlyRunning) {
+                stopOverlayService()
+            } else {
+                startOverlayService()
+            }
+        } else {
+            Toast.makeText(this, "需要悬浮窗权限才能显示", Toast.LENGTH_SHORT).show()
+            requestOverlayPermission()
+        }
+    }
 }
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -171,7 +277,8 @@ fun AppContent() {
             currentDestination?.route?.startsWith("gallery/") != true &&
             currentDestination?.route?.startsWith("guess_image") != true &&
             currentDestination?.route?.startsWith("guess_voice") != true &&
-            currentDestination?.route != Screen.About.route
+            currentDestination?.route != Screen.About.route &&
+            currentDestination?.route?.startsWith("secretary") != true
 
     val drawerState = remember { androidx.compose.material3.DrawerState(initialValue = androidx.compose.material3.DrawerValue.Closed) }
     
@@ -206,6 +313,9 @@ fun AppContent() {
                 )
             }
         ) {
+            val secretaryViewModel: SecretaryShipViewModel = hiltViewModel()
+            val secretaryState by secretaryViewModel.state.collectAsStateWithLifecycle()
+
             Box(modifier = Modifier.fillMaxSize()) {
                 NavHost(
                     navController = navController,
@@ -323,6 +433,79 @@ fun AppContent() {
                             onBack = { navController.popBackStack() }
                         )
                     }
+                    composable("secretary_mode") {
+                        // 使用 collectAsState 实现响应式状态更新
+                        val overlayEnabled by MainActivity.overlayState.collectAsState()
+                        
+                        SecretaryShipModeScreen(
+                            secretaryState = secretaryState,
+                            onBack = { navController.popBackStack() },
+                            onRandomFlip = { navController.navigate("secretary_random") },
+                            onSelectFromHome = { navController.navigate("secretary_pick_home") },
+                            onSelectFromGallery = { navController.navigate("secretary_pick_gallery") },
+                            onSetAutoPlay = { enabled, interval ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetAutoPlay(enabled, interval))
+                            },
+                            onClearSecretary = {
+                                secretaryViewModel.onIntent(SecretaryShipIntent.ClearSecretary)
+                            },
+                            onToggleOverlay = { enabled ->
+                                val activity = context as? MainActivity
+                                if (enabled) {
+                                    activity?.startOverlayService()
+                                } else {
+                                    activity?.stopOverlayService()
+                                }
+                            },
+                            isOverlayEnabled = overlayEnabled
+                        )
+                    }
+                    composable("secretary_random") {
+                        SecretaryShipRandomScreen(
+                            viewModel = secretaryViewModel,
+                            onBack = { navController.popBackStack() },
+                            onComplete = { navController.navigate("home") { popUpTo("secretary_mode") { inclusive = true } } }
+                        )
+                    }
+                    composable("secretary_pick_home") {
+                        val homeVm: HomeViewModel = hiltViewModel()
+                        val homeState by homeVm.state.collectAsStateWithLifecycle()
+                        SecretaryShipPickFromHomeScreen(
+                            ships = homeState.favoriteShips,
+                            onBack = { navController.popBackStack() },
+                            onShipSelected = { ship ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SelectShip(ship))
+                                navController.navigate("home") { popUpTo("secretary_mode") { inclusive = true } }
+                            }
+                        )
+                    }
+                    composable("secretary_pick_gallery") {
+                        val galleryVm: GalleryViewModel = hiltViewModel()
+                        val filteredShips by galleryVm.filteredShips.collectAsStateWithLifecycle()
+                        SecretaryShipPickFromGalleryScreen(
+                            ships = filteredShips,
+                            onBack = { navController.popBackStack() },
+                            onShipSelected = { ship ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SelectShip(ship))
+                                navController.navigate("home") { popUpTo("secretary_mode") { inclusive = true } }
+                            }
+                        )
+                    }
+                }
+
+                // 只有当悬浮窗未开启时才在应用内显示立绘
+                val overlayEnabledForChibi by MainActivity.overlayState.collectAsState()
+                if (secretaryState.figureUrl.isNotEmpty() && !overlayEnabledForChibi) {
+                    SecretaryChibiOverlay(
+                        figureUrl = secretaryState.figureUrl,
+                        shipName = secretaryState.shipName,
+                        dialogue = null,
+                        modifier = Modifier.fillMaxSize(),
+                        onTap = {
+                            secretaryViewModel.ensureVoicesLoaded(secretaryState.shipName)
+                            secretaryViewModel.onIntent(SecretaryShipIntent.PlayRandomVoice)
+                        }
+                    )
                 }
 
                 Box(
@@ -539,6 +722,13 @@ private fun ModernDrawerSheet(
     val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
 
     val menuItems = listOf(
+        DrawerMenuItem(
+            route = "secretary_mode",
+            label = "今日秘书舰",
+            icon = Icons.Rounded.Person,
+            description = "设置常驻秘书舰，点击播放语音",
+            color = MaterialTheme.colorScheme.primary
+        ),
         DrawerMenuItem(
             route = "guess_image",
             label = "看图识舰娘",
