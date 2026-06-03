@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.ZoomableImage
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.viewmodel.ShipGalleryState
@@ -120,11 +121,7 @@ fun ShipGalleryScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainer)
-        )
+        AdaptiveScreenBackground(modifier = Modifier.fillMaxSize()) {}
         
         if (state.isLoading) {
             Box(

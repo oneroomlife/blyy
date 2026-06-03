@@ -2,6 +2,7 @@ package com.azurlane.blyy
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +13,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -39,10 +44,12 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Adb
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
@@ -58,6 +65,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -70,6 +78,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
@@ -91,6 +100,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
+import com.azurlane.blyy.ui.components.adaptiveGlassBorder
+import com.azurlane.blyy.ui.components.adaptiveGlassSurface
+import com.azurlane.blyy.ui.screens.SettingsScreen
+import com.azurlane.blyy.ui.theme.LocalUiStyle
+import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.service.PlaybackService
 import com.azurlane.blyy.ui.screens.GalleryScreen
@@ -100,6 +114,7 @@ import com.azurlane.blyy.ui.screens.HomeScreen
 import com.azurlane.blyy.ui.screens.ShipGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
 import com.azurlane.blyy.ui.screens.AboutScreen
+import com.azurlane.blyy.ui.screens.Live2DScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
@@ -166,9 +181,27 @@ class MainActivity : ComponentActivity() {
         startService(intent)
 
         setContent {
-            BlyyTheme {
+            val uiStyle by playerSettings.uiStyle.collectAsStateWithLifecycle(
+                initialValue = UiStyle.COMMAND_CENTER
+            )
+            val uiStyleReady by produceState(false) {
+                playerSettings.uiStyle.collect {
+                    value = true
+                }
+            }
+            val forceDarkTheme by playerSettings.forceDarkTheme.collectAsStateWithLifecycle(
+                initialValue = true
+            )
+            val systemDark = isSystemInDarkTheme()
+            BlyyTheme(
+                darkTheme = if (forceDarkTheme) true else systemDark,
+                uiStyle = uiStyle
+            ) {
                 KeepSystemBarsHidden()
-                AppContent()
+                // 等待UI样式加载完成后再渲染，避免旧UI模式下新UI短暂闪现
+                if (uiStyleReady) {
+                    AppContent()
+                }
             }
         }
     }
@@ -276,9 +309,26 @@ fun AppContent() {
             currentDestination?.route?.startsWith("guess_image") != true &&
             currentDestination?.route?.startsWith("guess_voice") != true &&
             currentDestination?.route != Screen.About.route &&
-            currentDestination?.route?.startsWith("secretary") != true
+            currentDestination?.route?.startsWith("secretary") != true &&
+            currentDestination?.route != "settings" &&
+            currentDestination?.route != "live2d"
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
+
+    // 导航目标变化时自动关闭菜单，防止切换到其他界面时侧拉菜单错误显示
+    LaunchedEffect(currentDestination?.route) {
+        if (drawerState.isOpen) {
+            drawerState.close()
+        }
+    }
+
+    // 屏幕方向变化时自动关闭菜单，防止横屏模式下侧拉菜单错误保持显示
+    val configuration = LocalConfiguration.current
+    LaunchedEffect(configuration.orientation) {
+        if (drawerState.isOpen && configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE) {
+            drawerState.close()
+        }
+    }
     
     var isBottomBarVisible by remember { mutableStateOf(true) }
 
@@ -301,8 +351,11 @@ fun AppContent() {
                     currentRoute = currentDestination?.route,
                     onNavigate = { route ->
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        scope.launch { drawerState.close() }
-                        navController.navigate(route) { launchSingleTop = true }
+                        // 先关闭抽屉，等待关闭动画完成后再导航，避免菜单与页面切换动画冲突
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate(route) { launchSingleTop = true }
+                        }
                     },
                     onClose = { 
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -318,7 +371,63 @@ fun AppContent() {
                 NavHost(
                     navController = navController,
                     startDestination = Screen.Home.route,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize(),
+                    enterTransition = {
+                        slideInHorizontally(
+                            initialOffsetX = { it / 4 },
+                            animationSpec = tween(
+                                durationMillis = AppAnimation.Duration.PageTransition,
+                                easing = AppAnimation.Easings.EmphasizedDecelerate
+                            )
+                        ) + fadeIn(
+                            tween(
+                                durationMillis = AppAnimation.Duration.Normal,
+                                easing = AppAnimation.Easings.EmphasizedDecelerate
+                            )
+                        )
+                    },
+                    exitTransition = {
+                        slideOutHorizontally(
+                            targetOffsetX = { -it / 4 },
+                            animationSpec = tween(
+                                durationMillis = AppAnimation.Duration.Normal,
+                                easing = AppAnimation.Easings.EmphasizedAccelerate
+                            )
+                        ) + fadeOut(
+                            tween(
+                                durationMillis = AppAnimation.Duration.Fast,
+                                easing = AppAnimation.Easings.EmphasizedAccelerate
+                            )
+                        )
+                    },
+                    popEnterTransition = {
+                        slideInHorizontally(
+                            initialOffsetX = { -it / 4 },
+                            animationSpec = tween(
+                                durationMillis = AppAnimation.Duration.PageTransition,
+                                easing = AppAnimation.Easings.EmphasizedDecelerate
+                            )
+                        ) + fadeIn(
+                            tween(
+                                durationMillis = AppAnimation.Duration.Normal,
+                                easing = AppAnimation.Easings.EmphasizedDecelerate
+                            )
+                        )
+                    },
+                    popExitTransition = {
+                        slideOutHorizontally(
+                            targetOffsetX = { it / 4 },
+                            animationSpec = tween(
+                                durationMillis = AppAnimation.Duration.Normal,
+                                easing = AppAnimation.Easings.EmphasizedAccelerate
+                            )
+                        ) + fadeOut(
+                            tween(
+                                durationMillis = AppAnimation.Duration.Fast,
+                                easing = AppAnimation.Easings.EmphasizedAccelerate
+                            )
+                        )
+                    }
                 ) {
                     composable(Screen.Home.route) {
                         val viewModel: HomeViewModel = hiltViewModel()
@@ -428,6 +537,16 @@ fun AppContent() {
                     }
                     composable(Screen.About.route) {
                         AboutScreen(
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("settings") {
+                        SettingsScreen(
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("live2d") {
+                        Live2DScreen(
                             onBack = { navController.popBackStack() }
                         )
                     }
@@ -564,10 +683,10 @@ private fun ModernNavigationBar(
     currentDestination: NavDestination?,
     onNavigate: (String) -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
-    
-    val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
-    val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val glassSurface = adaptiveGlassSurface()
+    val glassBorder = adaptiveGlassBorder()
+    val navShape = if (isCommandCenter) BlyyShapes.NavBar else RoundedCornerShape(AppSpacing.Corner.Xl)
     
     Surface(
         modifier = Modifier
@@ -593,19 +712,40 @@ private fun ModernNavigationBar(
                     .fillMaxWidth()
                     .padding(horizontal = AppSpacing.Lg)
                     .height(72.dp)
-                    .clip(RoundedCornerShape(AppSpacing.Corner.Xl))
+                    .clip(navShape)
                     .background(
-                        glassSurface.copy(alpha = 0.9f)
+                        brush = if (isCommandCenter) {
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    glassSurface.copy(alpha = 0.95f),
+                                    glassSurface.copy(alpha = 0.85f)
+                                )
+                            )
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    glassSurface.copy(alpha = 0.9f),
+                                    glassSurface.copy(alpha = 0.9f)
+                                )
+                            )
+                        }
                     )
                     .border(
                         width = AppSpacing.Border.Thin,
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                glassBorder,
-                                glassBorder.copy(alpha = 0.3f)
+                        brush = if (isCommandCenter) {
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    AppColors.Accent.Cyan.copy(alpha = 0.6f),
+                                    AppColors.Accent.Gold.copy(alpha = 0.3f),
+                                    glassBorder.copy(alpha = 0.2f)
+                                )
                             )
-                        ),
-                        shape = RoundedCornerShape(AppSpacing.Corner.Xl)
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(glassBorder, glassBorder.copy(alpha = 0.3f))
+                            )
+                        },
+                        shape = navShape
                     ),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
@@ -663,10 +803,16 @@ private fun RowScope.ModernNavigationItem(
                                 .background(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                            AppColors.Accent.Cyan.copy(alpha = 0.25f),
+                                            AppColors.Accent.Gold.copy(alpha = 0.08f),
                                             Color.Transparent
                                         )
                                     ),
+                                    shape = CircleShape
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = AppColors.Accent.Cyan.copy(alpha = 0.4f),
                                     shape = CircleShape
                                 )
                         } else Modifier
@@ -728,6 +874,13 @@ private fun ModernDrawerSheet(
             color = MaterialTheme.colorScheme.primary
         ),
         DrawerMenuItem(
+            route = "live2d",
+            label = "查看Live2D",
+            icon = Icons.Rounded.Adb,
+            description = "浏览Live2D模型库",
+            color = MaterialTheme.colorScheme.tertiary
+        ),
+        DrawerMenuItem(
             route = "guess_image",
             label = "看图识舰娘",
             icon = Icons.Rounded.Image,
@@ -742,16 +895,22 @@ private fun ModernDrawerSheet(
             color = MaterialTheme.colorScheme.secondary
         ),
         DrawerMenuItem(
+            route = "settings",
+            label = "设置",
+            icon = Icons.Rounded.Settings,
+            description = "界面风格与显示偏好",
+            color = MaterialTheme.colorScheme.tertiary
+        ),
+        DrawerMenuItem(
             route = Screen.About.route,
             label = "关于",
             icon = Icons.Rounded.Star,
             description = "了解更多信息",
-            color = MaterialTheme.colorScheme.tertiary
+            color = MaterialTheme.colorScheme.primary
         )
     )
 
     ModalDrawerSheet(
-        drawerState = remember { DrawerState(DrawerValue.Closed) },
         modifier = Modifier
             .fillMaxWidth(0.85f)
             .background(
@@ -828,11 +987,6 @@ private fun ModernDrawerSheet(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
-                            Text(
-                                text = "选择游戏模式",
-                                style = AppTypography.BodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
                         }
                     }
                     
@@ -871,7 +1025,7 @@ private fun ModernDrawerSheet(
 
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+                    shape = BlyyShapes.PanelSmall,
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                 ) {
                     Row(
@@ -917,9 +1071,9 @@ private fun ModernDrawerItem(
         modifier = Modifier
             .fillMaxWidth()
             .scale(scale),
-        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+        shape = BlyyShapes.PanelMedium,
         color = if (isSelected) {
-            item.color.copy(alpha = 0.12f)
+            item.color.copy(alpha = 0.15f)
         } else {
             Color.Transparent
         },

@@ -67,6 +67,10 @@ import coil.compose.AsyncImage
 import com.azurlane.blyy.data.local.PlayLaterItem
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
+import com.azurlane.blyy.ui.components.BlyyPanel
+import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.theme.LocalUiStyle
+import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.viewmodel.PlayerUiState
 import com.azurlane.blyy.viewmodel.PlayerViewModel
@@ -575,32 +579,47 @@ private fun ShipHeader(
 
 @Composable
 private fun SkinHeader(skinName: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
+    val headerContent: @Composable () -> Unit = {
+        Row(
             modifier = Modifier
-                .width(AppSpacing.Xs)
-                .height(AppSpacing.Lg)
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primary,
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                        )
-                    ),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Xs)
-                )
-        )
-        Spacer(modifier = Modifier.width(AppSpacing.Md))
-        Text(
-            text = skinName,
-            style = AppTypography.TitleMedium,
-            color = MaterialTheme.colorScheme.primary
-        )
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(AppSpacing.Xs)
+                    .height(AppSpacing.Lg)
+                    .background(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.primary,
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                            )
+                        ),
+                        shape = RoundedCornerShape(AppSpacing.Corner.Xs)
+                    )
+            )
+            Spacer(modifier = Modifier.width(AppSpacing.Md))
+            Text(
+                text = skinName,
+                style = AppTypography.TitleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+
+    if (LocalUiStyle.current.isCommandCenter()) {
+        BlyyPanel(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Xs),
+            chamfer = 8.dp
+        ) {
+            headerContent()
+        }
+    } else {
+        headerContent()
     }
 }
 
@@ -626,71 +645,90 @@ private fun VoiceItemRow(
     else
         Color.Transparent
 
+    val rowContent: @Composable () -> Unit = {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Lg),
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Rounded.GraphicEq else Icons.Rounded.Audiotrack,
+                contentDescription = null,
+                tint = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .size(AppSpacing.Icon.Xxl)
+                    .padding(top = AppSpacing.Xxs)
+            )
+            Spacer(modifier = Modifier.width(AppSpacing.Lg))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = voice.scene,
+                        style = AppTypography.LabelLarge,
+                        color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+                    )
+                    if (isFavorite) {
+                        Spacer(modifier = Modifier.width(AppSpacing.Xs))
+                        Icon(
+                            imageVector = Icons.Rounded.PushPin,
+                            contentDescription = "已收藏并置顶",
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(AppSpacing.Xs))
+                Text(
+                    text = voice.dialogue,
+                    style = AppTypography.BodyMedium,
+                    color = if (isCurrent)
+                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.95f)
+                    else
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                    maxLines = if (isCurrent) Int.MAX_VALUE else 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Xs)
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
-                .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        showMenu = true
-                    }
-                ),
-            color = containerColor,
-            tonalElevation = if (isCurrent) AppSpacing.Elevation.Sm else AppSpacing.Elevation.None
-        ) {
-            Row(
+        if (LocalUiStyle.current.isCommandCenter()) {
+            BlyyPanel(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Lg),
-                verticalAlignment = Alignment.Top
-            ) {
-                Icon(
-                    imageVector = if (isPlaying) Icons.Rounded.GraphicEq else Icons.Rounded.Audiotrack,
-                    contentDescription = null,
-                    tint = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    modifier = Modifier
-                        .size(AppSpacing.Icon.Xxl)
-                        .padding(top = AppSpacing.Xxs)
-                )
-                Spacer(modifier = Modifier.width(AppSpacing.Lg))
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = voice.scene,
-                            style = AppTypography.LabelLarge,
-                            color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
-                        )
-                        if (isFavorite) {
-                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                            Icon(
-                                imageVector = Icons.Rounded.PushPin,
-                                contentDescription = "已收藏并置顶",
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(14.dp)
-                            )
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showMenu = true
                         }
-                    }
-                    Spacer(modifier = Modifier.height(AppSpacing.Xs))
-                    Text(
-                        text = voice.dialogue,
-                        style = AppTypography.BodyMedium,
-                        color = if (isCurrent) 
-                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.95f) 
-                        else 
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
-                        maxLines = if (isCurrent) Int.MAX_VALUE else 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                    ),
+                accentColor = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                chamfer = 8.dp,
+                content = rowContent
+            )
+        } else {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showMenu = true
+                        }
+                    ),
+                color = containerColor,
+                tonalElevation = if (isCurrent) AppSpacing.Elevation.Sm else AppSpacing.Elevation.None
+            ) {
+                rowContent()
             }
         }
         
@@ -1086,17 +1124,8 @@ private fun ExpandedPlayerBar(
         animationSpec = tween(300, easing = FastOutSlowInEasing),
         label = "ExpandedBarAlpha"
     )
-    
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Sm)
-            .alpha(animatedAlpha),
-        shape = RoundedCornerShape(AppSpacing.Corner.Xxl),
-        color = glassSurface.copy(alpha = 0.95f),
-        shadowElevation = AppSpacing.Elevation.Xxl,
-        tonalElevation = AppSpacing.Elevation.Lg
-    ) {
+
+    val playerContent: @Composable () -> Unit = {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1115,23 +1144,17 @@ private fun ExpandedPlayerBar(
             ) {
                 if (hasContent) {
                     ModernPlayerSlider(playerState, onSeek = onSeek)
-                    
                     Spacer(modifier = Modifier.height(AppSpacing.Md))
                 }
-                
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     PlayModeButton(playMode = playerState.playMode, onClick = onModeClick)
-
                     ModernControlButton(icon = Icons.Rounded.SkipPrevious, size = ControlButtonSize.Medium, onClick = onPreviousClick)
-
                     ModernPlayButton(isPlaying = playerState.isPlaying, onClick = onPlayPauseClick)
-
                     ModernControlButton(icon = Icons.Rounded.SkipNext, size = ControlButtonSize.Medium, onClick = onNextClick)
-
                     ModernControlButton(
                         icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
                         isActive = playerState.playLaterList.isNotEmpty(),
@@ -1140,6 +1163,30 @@ private fun ExpandedPlayerBar(
                     )
                 }
             }
+        }
+    }
+
+    if (LocalUiStyle.current.isCommandCenter()) {
+        BlyyPanel(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Sm)
+                .alpha(animatedAlpha),
+            chamfer = 14.dp,
+            content = playerContent
+        )
+    } else {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Sm)
+                .alpha(animatedAlpha),
+            shape = RoundedCornerShape(AppSpacing.Corner.Xxl),
+            color = glassSurface.copy(alpha = 0.95f),
+            shadowElevation = AppSpacing.Elevation.Xxl,
+            tonalElevation = AppSpacing.Elevation.Lg
+        ) {
+            playerContent()
         }
     }
 }
@@ -1505,31 +1552,10 @@ private fun ModernPlayerSlider(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun VoiceTopBar(title: String, onBack: () -> Unit, scrollBehavior: TopAppBarScrollBehavior) {
-    val isDark = isSystemInDarkTheme()
-    val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
-    
-    CenterAlignedTopAppBar(
-        title = { Text(text = title, style = AppTypography.TitleLarge) },
-        navigationIcon = {
-            IconButton(onClick = onBack) {
-                Surface(
-                    shape = CircleShape,
-                    color = glassSurface,
-                    tonalElevation = AppSpacing.Elevation.Sm
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.ArrowBack, 
-                        contentDescription = "Back",
-                        modifier = Modifier.padding(AppSpacing.Sm)
-                    )
-                }
-            }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = Color.Transparent,
-            scrolledContainerColor = glassSurface
-        ),
-        scrollBehavior = scrollBehavior
+    BlyyTopBar(
+        title = title,
+        subtitle = "语音档案",
+        onBackClick = onBack
     )
 }
 

@@ -84,6 +84,15 @@ object AppSpacing {
         val Xl = 20.dp
         val Xxl = 24.dp
         val Full = 9999.dp
+        val Chamfer = 10.dp
+        val Panel = 12.dp
+    }
+
+    // ==================== HUD 装饰 ====================
+    object Hud {
+        val CornerDecorSize = 24.dp
+        val AccentLineHeight = 2.dp
+        val GridStep = 32.dp
     }
     
     // ==================== 阴影 ====================

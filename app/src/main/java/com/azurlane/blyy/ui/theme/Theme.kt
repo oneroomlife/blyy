@@ -8,9 +8,10 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme = darkColorScheme(
+private val CommandCenterDarkScheme = darkColorScheme(
     primary = AppColors.PrimaryDark,
     onPrimary = AppColors.OnPrimaryDark,
     primaryContainer = AppColors.PrimaryContainerDark,
@@ -34,7 +35,7 @@ private val DarkColorScheme = darkColorScheme(
     surfaceContainerHighest = AppColors.SurfaceContainerHighestDark
 )
 
-private val LightColorScheme = lightColorScheme(
+private val CommandCenterLightScheme = lightColorScheme(
     primary = AppColors.PrimaryLight,
     onPrimary = AppColors.OnPrimaryLight,
     primaryContainer = AppColors.PrimaryContainerLight,
@@ -58,9 +59,58 @@ private val LightColorScheme = lightColorScheme(
     surfaceContainerHighest = AppColors.SurfaceContainerHighestLight
 )
 
+private val ClassicDarkScheme = darkColorScheme(
+    primary = ClassicColors.PrimaryDark,
+    onPrimary = ClassicColors.OnPrimaryDark,
+    primaryContainer = ClassicColors.PrimaryContainerDark,
+    onPrimaryContainer = ClassicColors.OnPrimaryContainerDark,
+    secondary = ClassicColors.SecondaryDark,
+    onSecondary = ClassicColors.OnSecondaryDark,
+    secondaryContainer = ClassicColors.SecondaryContainerDark,
+    onSecondaryContainer = ClassicColors.OnSecondaryContainerDark,
+    tertiary = ClassicColors.TertiaryDark,
+    onTertiary = ClassicColors.OnTertiaryDark,
+    tertiaryContainer = ClassicColors.TertiaryContainerDark,
+    onTertiaryContainer = ClassicColors.OnTertiaryContainerDark,
+    background = ClassicColors.BackgroundDark,
+    onBackground = ClassicColors.OnBackgroundDark,
+    surface = ClassicColors.SurfaceDark,
+    onSurface = ClassicColors.OnSurfaceDark,
+    surfaceVariant = ClassicColors.SurfaceVariantDark,
+    onSurfaceVariant = ClassicColors.OnSurfaceVariantDark,
+    surfaceContainer = ClassicColors.SurfaceContainerDark,
+    surfaceContainerHigh = ClassicColors.SurfaceContainerHighDark,
+    surfaceContainerHighest = ClassicColors.SurfaceContainerHighestDark
+)
+
+private val ClassicLightScheme = lightColorScheme(
+    primary = ClassicColors.PrimaryLight,
+    onPrimary = ClassicColors.OnPrimaryLight,
+    primaryContainer = ClassicColors.PrimaryContainerLight,
+    onPrimaryContainer = ClassicColors.OnPrimaryContainerLight,
+    secondary = ClassicColors.SecondaryLight,
+    onSecondary = ClassicColors.OnSecondaryLight,
+    secondaryContainer = ClassicColors.SecondaryContainerLight,
+    onSecondaryContainer = ClassicColors.OnSecondaryContainerLight,
+    tertiary = ClassicColors.TertiaryLight,
+    onTertiary = ClassicColors.OnTertiaryLight,
+    tertiaryContainer = ClassicColors.TertiaryContainerLight,
+    onTertiaryContainer = ClassicColors.OnTertiaryContainerLight,
+    background = ClassicColors.BackgroundLight,
+    onBackground = ClassicColors.OnBackgroundLight,
+    surface = ClassicColors.SurfaceLight,
+    onSurface = ClassicColors.OnSurfaceLight,
+    surfaceVariant = ClassicColors.SurfaceVariantLight,
+    onSurfaceVariant = ClassicColors.OnSurfaceVariantLight,
+    surfaceContainer = ClassicColors.SurfaceContainerLight,
+    surfaceContainerHigh = ClassicColors.SurfaceContainerHighLight,
+    surfaceContainerHighest = ClassicColors.SurfaceContainerHighestLight
+)
+
 @Composable
 fun BlyyTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    uiStyle: UiStyle = UiStyle.COMMAND_CENTER,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
@@ -69,13 +119,19 @@ fun BlyyTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
+        uiStyle == UiStyle.CLASSIC && darkTheme -> ClassicDarkScheme
+        uiStyle == UiStyle.CLASSIC -> ClassicLightScheme
+        darkTheme -> CommandCenterDarkScheme
+        else -> CommandCenterLightScheme
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    val typography = if (uiStyle.isCommandCenter()) CommandCenterTypography else ClassicTypography
+
+    CompositionLocalProvider(LocalUiStyle provides uiStyle) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = typography,
+            content = content
+        )
+    }
 }

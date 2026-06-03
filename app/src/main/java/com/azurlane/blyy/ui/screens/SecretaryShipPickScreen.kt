@@ -48,6 +48,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
@@ -115,25 +117,15 @@ private fun SecretaryShipPickScreen(
     
     val hasActiveFilters = selectedFaction != "全部" || selectedType != "全部" || selectedRarity != "全部"
     
-    Column(modifier = Modifier.fillMaxSize()) {
-        CenterAlignedTopAppBar(
-            title = {
-                Text(
-                    title,
-                    style = AppTypography.TitleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-            windowInsets = androidx.compose.foundation.layout.WindowInsets(0.dp)
-        )
-        
-        SearchAndFilterBar(
+    AdaptiveScreenBackground {
+        Column(modifier = Modifier.fillMaxSize()) {
+            BlyyTopBar(
+                title = title,
+                subtitle = if (ships.isNotEmpty()) "共 ${ships.size} 位可选" else null,
+                onBackClick = onBack
+            )
+
+            SearchAndFilterBar(
             searchQuery = searchQuery,
             onSearchQueryChange = { searchQuery = it },
             onFilterClick = { showFilterSheet = true },
@@ -200,6 +192,7 @@ private fun SecretaryShipPickScreen(
                     )
                 }
             }
+        }
         }
     }
     

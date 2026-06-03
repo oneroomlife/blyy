@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.ui.theme.*
+import com.azurlane.blyy.ui.components.adaptiveCardShape
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -86,6 +87,8 @@ fun ShipCard(
         label = "BorderAlpha"
     )
 
+    val cardShape = adaptiveCardShape()
+
     Box(
         modifier = modifier
             .padding(AppSpacing.Padding.CardOuter)
@@ -93,20 +96,21 @@ fun ShipCard(
             .scale(scale)
             .shadow(
                 elevation = elevation,
-                shape = RoundedCornerShape(20.dp),
-                ambientColor = rarityColor.copy(alpha = 0.25f),
-                spotColor = rarityColor.copy(alpha = 0.15f)
+                shape = cardShape,
+                ambientColor = rarityColor.copy(alpha = 0.3f),
+                spotColor = rarityColor.copy(alpha = 0.2f)
             )
-            .clip(RoundedCornerShape(20.dp))
+            .clip(cardShape)
             .border(
                 width = if (isHighRarity) 1.5.dp else 1.dp,
                 brush = Brush.linearGradient(
                     colors = listOf(
                         rarityColor.copy(alpha = borderAlpha),
+                        AppColors.Accent.Gold.copy(alpha = borderAlpha * 0.4f),
                         rarityColor.copy(alpha = borderAlpha * 0.5f)
                     )
                 ),
-                shape = RoundedCornerShape(20.dp)
+                shape = cardShape
             )
             .combinedClickable(
                 interactionSource = interactionSource,

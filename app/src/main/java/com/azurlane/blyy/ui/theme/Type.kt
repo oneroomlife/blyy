@@ -6,6 +6,20 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
+private fun baseStyle(
+    size: androidx.compose.ui.unit.TextUnit,
+    lineHeight: androidx.compose.ui.unit.TextUnit,
+    weight: FontWeight = FontWeight.Normal,
+    letterSpacing: androidx.compose.ui.unit.TextUnit = 0.sp,
+    family: FontFamily = FontFamily.Default
+) = TextStyle(
+    fontFamily = family,
+    fontWeight = weight,
+    fontSize = size,
+    lineHeight = lineHeight,
+    letterSpacing = letterSpacing
+)
+
 object AppTypography {
     
     // ==================== 显示字体 ====================
@@ -189,8 +203,8 @@ object AppTypography {
     )
 }
 
-// Material3 Typography 配置
-val Typography = Typography(
+// Material3 Typography — 经典风格
+val ClassicTypography = Typography(
     displayLarge = AppTypography.DisplayLarge,
     displayMedium = AppTypography.DisplayMedium,
     displaySmall = AppTypography.DisplaySmall,
@@ -207,3 +221,62 @@ val Typography = Typography(
     labelMedium = AppTypography.LabelMedium,
     labelSmall = AppTypography.LabelSmall
 )
+
+// 指挥中心风格 — HUD 字距与字体族
+val CommandCenterTypography = Typography(
+    displayLarge = AppTypography.DisplayLarge.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 1.sp
+    ),
+    displayMedium = AppTypography.DisplayMedium.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 0.5.sp
+    ),
+    displaySmall = AppTypography.DisplaySmall.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 0.5.sp
+    ),
+    headlineLarge = AppTypography.HeadlineLarge.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 0.5.sp
+    ),
+    headlineMedium = AppTypography.HeadlineMedium.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 0.3.sp
+    ),
+    headlineSmall = AppTypography.HeadlineSmall.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 0.3.sp
+    ),
+    titleLarge = AppTypography.TitleLarge.copy(
+        fontFamily = BlyyFontFamily.Display,
+        fontWeight = BlyyFontFamily.DisplayWeight,
+        letterSpacing = 0.8.sp
+    ),
+    titleMedium = AppTypography.TitleMedium.copy(
+        fontFamily = BlyyFontFamily.Display,
+        letterSpacing = 0.5.sp
+    ),
+    titleSmall = AppTypography.TitleSmall.copy(
+        fontFamily = BlyyFontFamily.Mono,
+        letterSpacing = 0.3.sp
+    ),
+    bodyLarge = AppTypography.BodyLarge,
+    bodyMedium = AppTypography.BodyMedium,
+    bodySmall = AppTypography.BodySmall,
+    labelLarge = AppTypography.LabelLarge.copy(
+        fontFamily = BlyyFontFamily.Mono,
+        letterSpacing = 0.4.sp
+    ),
+    labelMedium = AppTypography.LabelMedium.copy(
+        fontFamily = BlyyFontFamily.Mono,
+        letterSpacing = 0.5.sp
+    ),
+    labelSmall = AppTypography.LabelSmall.copy(
+        fontFamily = BlyyFontFamily.Mono,
+        letterSpacing = 0.6.sp
+    )
+)
+
+/** @deprecated 使用 ClassicTypography 或 CommandCenterTypography */
+val Typography = ClassicTypography

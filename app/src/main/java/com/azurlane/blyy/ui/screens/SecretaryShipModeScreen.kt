@@ -57,9 +57,10 @@ import androidx.compose.material3.Slider
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.BlyyShapes
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.viewmodel.SecretaryShipState
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SecretaryShipModeScreen(
     secretaryState: SecretaryShipState,
@@ -76,31 +77,21 @@ fun SecretaryShipModeScreen(
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     var heartExpanded by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        CenterAlignedTopAppBar(
-            title = {
-                Text(
-                    "今日秘书舰",
-                    style = AppTypography.TitleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-            windowInsets = WindowInsets(0.dp)
-        )
+    AdaptiveScreenBackground {
+        Column(modifier = Modifier.fillMaxSize()) {
+            BlyyTopBar(
+                title = "今日秘书舰",
+                subtitle = if (secretaryState.shipName.isNotEmpty()) "当前：${secretaryState.shipName}" else "选择你的专属秘书",
+                onBackClick = onBack
+            )
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = AppSpacing.Lg),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Md),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = AppSpacing.Lg),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.Md),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
             Spacer(modifier = Modifier.height(AppSpacing.Xl))
 
             Text(
@@ -238,6 +229,7 @@ fun SecretaryShipModeScreen(
                     }
                 }
             }
+        }
         }
     }
 }

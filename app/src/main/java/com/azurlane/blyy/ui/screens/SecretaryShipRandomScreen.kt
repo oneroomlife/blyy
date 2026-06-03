@@ -60,6 +60,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import coil.compose.AsyncImage
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.ui.theme.AppColors
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
@@ -82,30 +84,20 @@ fun SecretaryShipRandomScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        CenterAlignedTopAppBar(
-            title = {
-                Text(
-                    "随机翻牌",
-                    style = AppTypography.TitleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "返回")
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-            windowInsets = androidx.compose.foundation.layout.WindowInsets(0.dp)
-        )
+    AdaptiveScreenBackground {
+        Column(modifier = Modifier.fillMaxSize()) {
+            BlyyTopBar(
+                title = "随机翻牌",
+                subtitle = "基于稀有度权重随机抽取",
+                onBackClick = onBack
+            )
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(AppSpacing.Lg),
-            contentAlignment = Alignment.Center
-        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(AppSpacing.Lg),
+                contentAlignment = Alignment.Center
+            ) {
             when {
                 state.isFlipping && !revealed -> {
                     FlipCardAnimation(
@@ -164,8 +156,8 @@ fun SecretaryShipRandomScreen(
                 }
             }
         }
+        }
     }
-
 }
 
 @Composable

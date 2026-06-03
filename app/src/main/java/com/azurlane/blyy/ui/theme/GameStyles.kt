@@ -40,13 +40,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.azurlane.blyy.ui.theme.AppAnimation.Specs
+import com.azurlane.blyy.ui.theme.BlyyShapes
 import com.azurlane.blyy.ui.theme.AppAnimation.Springs
 
 object GameStyles {
 
     object Card {
-        val CornerSize = 20.dp
+        val CornerSize = 12.dp
         val Elevation = 8.dp
         val InnerPadding = 20.dp
         val OuterPadding = 16.dp
@@ -54,7 +54,7 @@ object GameStyles {
 
     object Button {
         val Height = 52.dp
-        val CornerSize = 16.dp
+        val CornerSize = 8.dp
         val IconSize = 20.dp
     }
 
@@ -309,7 +309,7 @@ fun GameButton(
                 .height(GameStyles.Button.Height)
                 .scale(buttonScale),
             enabled = enabled,
-            shape = RoundedCornerShape(GameStyles.Button.CornerSize),
+            shape = BlyyShapes.Button,
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
                 disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -332,7 +332,7 @@ fun GameButton(
                 .height(GameStyles.Button.Height)
                 .scale(buttonScale),
             enabled = enabled,
-            shape = RoundedCornerShape(GameStyles.Button.CornerSize),
+            shape = BlyyShapes.Button,
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = MaterialTheme.colorScheme.primary,
                 disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
@@ -383,17 +383,18 @@ fun GameGlassCard(
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(GameStyles.Card.CornerSize))
+            .clip(BlyyShapes.PanelLarge)
             .background(glassSurface.copy(alpha = 0.9f))
             .border(
                 width = AppSpacing.Border.Thin,
                 brush = Brush.linearGradient(
                     colors = listOf(
                         glassBorder,
+                        AppColors.Accent.Gold.copy(alpha = 0.2f),
                         glassBorder.copy(alpha = 0.3f)
                     )
                 ),
-                shape = RoundedCornerShape(GameStyles.Card.CornerSize)
+                shape = BlyyShapes.PanelLarge
             )
     ) {
         content()

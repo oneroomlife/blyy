@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CutCornerShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -35,6 +36,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.components.ShipCardShimmer
 import com.azurlane.blyy.ui.theme.*
@@ -125,11 +128,8 @@ fun GalleryScreen(
         context.startActivity(intent)
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(color = MaterialTheme.colorScheme.surfaceContainer)
-            .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
+    AdaptiveScreenBackground(
+        modifier = Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
     ) {
         val fixedTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 150.dp
         val fixedBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 90.dp
@@ -204,23 +204,11 @@ fun GalleryScreen(
                     translationY = topBarOffset
                     alpha = topBarAlpha
                 }
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.95f),
-                            MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.8f),
-                            Color.Transparent
-                        )
-                    )
-                )
                 .windowInsetsPadding(WindowInsets.statusBars)
         ) {
-            CenterAlignedTopAppBar(
-                title = { Text("船坞档案", style = AppTypography.TitleLarge) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-            )
-            
-            ModernSearchAndFilterBar(
+            AdaptiveGalleryTopBar(
+                title = "船坞档案",
+                totalCount = state.ships.size,
                 searchQuery = state.searchQuery,
                 onSearchQueryChange = { query -> onIntent(GalleryIntent.Search(query)) },
                 onFilterClick = { 
@@ -254,6 +242,187 @@ fun GalleryScreen(
     }
 }
 
+/**
+ * 自适应船坞顶部栏 - 根据UI风格自动切换布局
+ * 新UI：BlyyTopBar + 玻璃搜索栏（HUD风格）
+ * 旧UI：集成的Material Design顶栏，搜索框内嵌在标题区
+ */
+@Composable
+private fun AdaptiveGalleryTopBar(
+    title: String,
+    totalCount: Int,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onFilterClick: () -> Unit,
+    hasActiveFilters: Boolean
+) {
+    val uiStyle = LocalUiStyle.current
+    val isCommandCenter = uiStyle.isCommandCenter()
+    
+    if (isCommandCenter) {
+        Column {
+            BlyyTopBar(
+                title = title,
+                subtitle = "共 $totalCount 位舰娘"
+            )
+            ModernSearchAndFilterBar(
+                searchQuery = searchQuery,
+                onSearchQueryChange = onSearchQueryChange,
+                onFilterClick = onFilterClick,
+                hasActiveFilters = hasActiveFilters
+            )
+        }
+    } else {
+        ClassicGallerySearchBar(
+            title = title,
+            totalCount = totalCount,
+            searchQuery = searchQuery,
+            onSearchQueryChange = onSearchQueryChange,
+            onFilterClick = onFilterClick,
+            hasActiveFilters = hasActiveFilters
+        )
+    }
+}
+
+/**
+ * 经典风格船坞搜索栏 - Material Design 风格，搜索框与标题集成
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ClassicGallerySearchBar(
+    title: String,
+    totalCount: Int,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onFilterClick: () -> Unit,
+    hasActiveFilters: Boolean
+) {
+    val isDark = isSystemInDarkTheme()
+    val surfaceColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+    
+    val filterButtonScale by animateFloatAsState(
+        targetValue = if (hasActiveFilters) 1.1f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f),
+        label = "ClassicFilterScale"
+    )
+    
+    Column {
+        // 顶部标题栏
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = AppTypography.TitleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "共 $totalCount 位舰娘",
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+            }
+        }
+        
+        // 搜索栏
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Screen.Horizontal)
+                .height(52.dp),
+            shape = RoundedCornerShape(AppSpacing.Corner.Xxl),
+            color = surfaceColor,
+            shadowElevation = 1.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = AppSpacing.Padding.InputHorizontal),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(AppSpacing.Icon.Md)
+                )
+                
+                Spacer(modifier = Modifier.width(AppSpacing.Md))
+                
+                Box(modifier = Modifier.weight(1f)) {
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            text = "搜索舰娘...",
+                            style = AppTypography.BodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = onSearchQueryChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = AppTypography.BodyLarge.copy(
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        singleLine = true,
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
+                    )
+                }
+                
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(
+                        onClick = { onSearchQueryChange("") },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "清除",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(AppSpacing.Icon.Sm)
+                        )
+                    }
+                }
+                
+                Spacer(modifier = Modifier.width(AppSpacing.Xs))
+                
+                Surface(
+                    onClick = onFilterClick,
+                    shape = CircleShape,
+                    color = if (hasActiveFilters) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                    },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .scale(filterButtonScale)
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FilterList,
+                            contentDescription = "筛选",
+                            tint = if (hasActiveFilters) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            modifier = Modifier.size(AppSpacing.Icon.Sm)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ModernSearchAndFilterBar(
     searchQuery: String,
@@ -277,7 +446,7 @@ private fun ModernSearchAndFilterBar(
             .fillMaxWidth()
             .padding(horizontal = AppSpacing.Screen.Horizontal)
             .height(AppSpacing.Height.Input),
-        shape = RoundedCornerShape(AppSpacing.Corner.Xxl),
+        shape = BlyyShapes.PanelMedium,
         color = glassSurface.copy(alpha = 0.95f),
         shadowElevation = AppSpacing.Elevation.Md
     ) {
@@ -292,7 +461,7 @@ private fun ModernSearchAndFilterBar(
                             glassBorder.copy(alpha = 0.2f)
                         )
                     ),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Xxl)
+                    shape = if (LocalUiStyle.current.isCommandCenter()) BlyyShapes.PanelMedium else RoundedCornerShape(AppSpacing.Corner.Xxl)
                 )
         ) {
             Row(
@@ -450,11 +619,17 @@ private fun ModernFilterBottomSheet(
     var tempType by remember { mutableStateOf(selectedType) }
     var tempRarity by remember { mutableStateOf(selectedRarity) }
 
+    val sheetShape = if (LocalUiStyle.current.isCommandCenter()) {
+        CutCornerShape(topStart = 16.dp, topEnd = 16.dp)
+    } else {
+        RoundedCornerShape(topStart = AppSpacing.Corner.Xxl, topEnd = AppSpacing.Corner.Xxl)
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = glassSurface.copy(alpha = 0.98f),
-        shape = RoundedCornerShape(topStart = AppSpacing.Corner.Xxl, topEnd = AppSpacing.Corner.Xxl),
+        shape = sheetShape,
         dragHandle = {
             ModernDragHandle()
         }

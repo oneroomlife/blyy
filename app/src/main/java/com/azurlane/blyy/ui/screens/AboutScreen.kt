@@ -63,6 +63,9 @@ import androidx.core.net.toUri
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
@@ -85,59 +88,48 @@ fun AboutScreen(
     val isDark = isSystemInDarkTheme()
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-    ) {
-        TopAppBar(
-            title = { Text("关于") },
-            navigationIcon = {
-                IconButton(onClick = onBack) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                        contentDescription = "返回"
-                    )
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = Color.Transparent
-            )
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(AppSpacing.Screen.Horizontal),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Section)
-        ) {
-            AppHeaderSection(currentVersion = viewModel.getVersionName())
-
-            OpenSourceSection(
-                context = context,
-                glassSurface = glassSurface
+    AdaptiveScreenBackground {
+        Column(modifier = Modifier.fillMaxSize()) {
+            BlyyTopBar(
+                title = "关于",
+                subtitle = "碧蓝语音 BLYY",
+                onBackClick = onBack
             )
 
-            DisclaimerSection(
-                context = context,
-                glassSurface = glassSurface
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(AppSpacing.Screen.Horizontal),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Section)
+            ) {
+                AppHeaderSection(currentVersion = viewModel.getVersionName())
 
-            UpdateChannelSection(
-                selectedChannel = state.selectedChannel,
-                onChannelSelected = { viewModel.onIntent(AboutIntent.SelectChannel(it)) },
-                glassSurface = glassSurface
-            )
+                OpenSourceSection(
+                    context = context,
+                    glassSurface = glassSurface
+                )
 
-            CheckUpdateSection(
-                state = state,
-                onCheckUpdate = { viewModel.onIntent(AboutIntent.CheckUpdate) },
-                context = context,
-                glassSurface = glassSurface
-            )
+                DisclaimerSection(
+                    context = context,
+                    glassSurface = glassSurface
+                )
 
-            Spacer(modifier = Modifier.height(AppSpacing.Xl))
+                UpdateChannelSection(
+                    selectedChannel = state.selectedChannel,
+                    onChannelSelected = { viewModel.onIntent(AboutIntent.SelectChannel(it)) },
+                    glassSurface = glassSurface
+                )
+
+                CheckUpdateSection(
+                    state = state,
+                    onCheckUpdate = { viewModel.onIntent(AboutIntent.CheckUpdate) },
+                    context = context,
+                    glassSurface = glassSurface
+                )
+
+                Spacer(modifier = Modifier.height(AppSpacing.Xl))
+            }
         }
     }
 }

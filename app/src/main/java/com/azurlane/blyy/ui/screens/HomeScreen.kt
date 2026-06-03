@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 package com.azurlane.blyy.ui.screens
 
 import android.content.Intent
@@ -10,11 +11,14 @@ import androidx.compose.animation.AnimatedContentScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -45,12 +49,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.util.UnstableApi
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.components.ShipCardShimmer
+import com.azurlane.blyy.ui.components.adaptiveGlassSurface
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.viewmodel.HomeIntent
 import com.azurlane.blyy.viewmodel.HomeViewState
@@ -83,25 +90,28 @@ fun HomeScreen(
     animatedContentScope: AnimatedContentScope
 ) {
     val context = LocalContext.current
+    val uiStyle = LocalUiStyle.current
+    val isCommandCenter = uiStyle.isCommandCenter()
+    
     fun openWiki(ship: Ship) {
         val processedName = ship.name
             .replace(".改", "")
             .replace("改", "")
             .replace("Kai", "")
-
+        
         val wikiNameMapping = mapOf(
             "DEAD" to "DEAD_MASTER",
             "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
         )
-
+        
         val wikiName = wikiNameMapping[processedName] ?: processedName
         val url = "https://wiki.biligame.com/blhx/${java.net.URLEncoder.encode(wikiName, "UTF-8")}"
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         context.startActivity(intent)
     }
-
+    
     Box(modifier = Modifier.fillMaxSize()) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && isCommandCenter) {
             val shader = remember { RuntimeShader(FLUID_SHADER) }
             val time by produceState(0f) {
                 while (true) {
@@ -121,35 +131,13 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    color = MaterialTheme.colorScheme.surfaceContainer
+                    if (isCommandCenter) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer
                 )
         )
 
-        Scaffold(
-            topBar = {
-                CenterAlignedTopAppBar(
-                    title = {
-                        Text(
-                            "我的后宅",
-                            style = AppTypography.TitleLarge
-                        )
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onOpenMenu) {
-                            Icon(
-                                imageVector = Icons.Filled.Menu,
-                                contentDescription = "菜单"
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent
-                    ),
-                    windowInsets = WindowInsets(0.dp)
-                )
-            },
-            containerColor = Color.Transparent,
-            contentWindowInsets = WindowInsets(0.dp)
+        AdaptiveHomeScreenTopBar(
+            title = "我的后宅",
+            onOpenMenu = onOpenMenu
         ) { innerPadding ->
             PullToRefreshBox(
                 isRefreshing = state.isLoading,
@@ -220,6 +208,101 @@ fun HomeScreen(
     }
 }
 
+/**
+ * 自适应首页顶部栏 - 根据UI风格自动适配
+ * 新UI: 科技风HUD面板设计，带有切角边框和渐变装饰
+ * 旧UI: 经典Material Design顶栏，清晰简洁
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AdaptiveHomeScreenTopBar(
+    title: String,
+    onOpenMenu: () -> Unit,
+    content: @Composable (PaddingValues) -> Unit
+) {
+    val uiStyle = LocalUiStyle.current
+    val isCommandCenter = uiStyle.isCommandCenter()
+    
+    Scaffold(
+        topBar = {
+            if (isCommandCenter) {
+                BlyyTopBar(
+                    title = title,
+                    onMenuClick = onOpenMenu
+                )
+            } else {
+                ClassicHomeTopBar(
+                    title = title,
+                    onMenuClick = onOpenMenu
+                )
+            }
+        },
+        containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0.dp)
+    ) { innerPadding ->
+        content(innerPadding)
+    }
+}
+
+/**
+ * 经典风格首页顶栏 - 简洁清晰，符合Material Design规范
+ */
+@Composable
+private fun ClassicHomeTopBar(
+    title: String,
+    onMenuClick: () -> Unit
+) {
+    val glassSurface = adaptiveGlassSurface()
+    
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.Transparent)
+            .statusBarsPadding()
+            .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 菜单按钮 - 带渐变边框的圆形背景
+        IconButton(onClick = onMenuClick) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(glassSurface.copy(alpha = 0.6f))
+                    .border(
+                        width = AppSpacing.Border.Thin,
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                            )
+                        ),
+                        shape = CircleShape
+                    )
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Menu,
+                    contentDescription = "菜单",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .align(Alignment.Center)
+                )
+            }
+        }
+        
+        Spacer(modifier = Modifier.width(AppSpacing.Lg))
+        
+        // 标题
+        Text(
+            text = title,
+            style = AppTypography.TitleLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
 @Composable
 fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
     // 控制错落式入场动画的状态
@@ -254,17 +337,17 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 1. 悬浮艺术装置（图标区）
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800)) + slideInVertically(tween(800, easing = AppAnimation.Easings.Decelerate)) { 100 }
+                enter = fadeIn(tween(800)) + slideInVertically(tween(800, easing = FastOutSlowInEasing)) { 100 }
             ) {
                 PremiumFloatingArtwork()
             }
-
+            
             Spacer(modifier = Modifier.height(AppSpacing.Xxxl))
-
+            
             // 2. 标题（带渐变金属质感）
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 150)) + slideInVertically(tween(800, delayMillis = 150, easing = AppAnimation.Easings.Decelerate)) { 50 }
+                enter = fadeIn(tween(800, delayMillis = 150)) + slideInVertically(tween(800, delayMillis = 150, easing = FastOutSlowInEasing)) { 50 }
             ) {
                 Text(
                     text = "后宅空荡荡的...",
@@ -279,11 +362,11 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
                     modifier = Modifier.padding(bottom = AppSpacing.Md)
                 )
             }
-
+            
             // 3. 描述文本
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 300)) + slideInVertically(tween(800, delayMillis = 300, easing = AppAnimation.Easings.Decelerate)) { 50 }
+                enter = fadeIn(tween(800, delayMillis = 300)) + slideInVertically(tween(800, delayMillis = 300, easing = FastOutSlowInEasing)) { 50 }
             ) {
                 Text(
                     text = "在船坞中长按舰娘头像可以与其誓约\n构建属于你们的专属避风港",
@@ -293,13 +376,13 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
                     lineHeight = AppTypography.EmptyDescription.fontSize * 1.5f // 增加行高提升呼吸感
                 )
             }
-
+            
             Spacer(modifier = Modifier.height(48.dp))
-
+            
             // 4. 高级交互按钮
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 450)) + slideInVertically(tween(800, delayMillis = 450, easing = AppAnimation.Easings.Decelerate)) { 50 }
+                enter = fadeIn(tween(800, delayMillis = 450)) + slideInVertically(tween(800, delayMillis = 450, easing = FastOutSlowInEasing)) { 50 }
             ) {
                 PremiumInteractiveButton(
                     text = "去挑选舰娘",
@@ -312,11 +395,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
 
 @Composable
 private fun PremiumFloatingArtwork() {
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val secondaryColor = MaterialTheme.colorScheme.secondary
-    val surfaceColor = MaterialTheme.colorScheme.surface
     val infiniteTransition = rememberInfiniteTransition(label = "ArtworkAnim")
-
+    
     // Y轴悬浮
     val offsetY by infiniteTransition.animateFloat(
         initialValue = -15f,
@@ -327,7 +407,7 @@ private fun PremiumFloatingArtwork() {
         ),
         label = "FloatingOffset"
     )
-
+    
     // 外环缓慢旋转（体现机械/罗盘感）
     val rotation by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -364,7 +444,7 @@ private fun PremiumFloatingArtwork() {
                 .background(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            primaryColor.copy(alpha = glowAlpha),
+                            MaterialTheme.colorScheme.primary.copy(alpha = glowAlpha),
                             Color.Transparent
                         )
                     )
@@ -381,9 +461,9 @@ private fun PremiumFloatingArtwork() {
                     brush = Brush.sweepGradient(
                         colors = listOf(
                             Color.Transparent,
-                            primaryColor.copy(alpha = 0.8f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
                             Color.Transparent,
-                            secondaryColor.copy(alpha = 0.5f)
+                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)
                         )
                     ),
                     shape = CircleShape
@@ -398,8 +478,8 @@ private fun PremiumFloatingArtwork() {
                 .background(
                     brush = Brush.linearGradient(
                         colors = listOf(
-                            surfaceColor.copy(alpha = 0.8f),
-                            surfaceColor.copy(alpha = 0.4f)
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)
                         ),
                         start = Offset(0f, 0f),
                         end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
@@ -410,7 +490,7 @@ private fun PremiumFloatingArtwork() {
                     brush = Brush.linearGradient(
                         colors = listOf(
                             Color.White.copy(alpha = 0.5f), // 高光边缘
-                            primaryColor.copy(alpha = 0.2f),
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
                             Color.Transparent
                         )
                     ),
@@ -423,14 +503,8 @@ private fun PremiumFloatingArtwork() {
                 imageVector = Icons.Filled.Favorite,
                 contentDescription = null,
                 modifier = Modifier
-                    .size(38.dp)
-                    .graphicsLayer {
-                        shadowElevation = 8.dp.toPx()
-                        shape = CircleShape
-                        ambientShadowColor = primaryColor
-                        spotShadowColor = primaryColor
-                    },
-                tint = primaryColor
+                    .size(38.dp),
+                tint = MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -441,11 +515,9 @@ fun PremiumInteractiveButton(
     text: String,
     onClick: () -> Unit
 ) {
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
-
+    
     // 按压时的物理回弹缩放
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.92f else 1f,
@@ -473,7 +545,7 @@ fun PremiumInteractiveButton(
             .background(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        primaryColor.copy(alpha = 0.4f),
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
                         Color.Transparent
                     ),
                     radius = 200f
@@ -490,8 +562,8 @@ fun PremiumInteractiveButton(
                 .background(
                     brush = Brush.linearGradient(
                         colors = listOf(
-                            primaryColor,
-                            primaryColor.copy(alpha = 0.8f)
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
                         )
                     )
                 )
@@ -532,14 +604,14 @@ fun PremiumInteractiveButton(
             Text(
                 text = text,
                 style = AppTypography.ButtonText,
-                color = onPrimaryColor
+                color = MaterialTheme.colorScheme.onPrimary
             )
             Spacer(modifier = Modifier.width(AppSpacing.Sm))
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp),
-                tint = onPrimaryColor
+                tint = MaterialTheme.colorScheme.onPrimary
             )
         }
     }

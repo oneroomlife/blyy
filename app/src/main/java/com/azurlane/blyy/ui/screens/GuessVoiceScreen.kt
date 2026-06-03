@@ -85,6 +85,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
+import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
@@ -207,84 +209,13 @@ private fun ModernGuessVoiceContent(
     val scrollState = rememberScrollState()
     val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
-    val gradientColors = if (isDark) {
-        listOf(
-            MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f),
-            MaterialTheme.colorScheme.surface
-        )
-    } else {
-        listOf(
-            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
-            MaterialTheme.colorScheme.surface
-        )
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(brush = Brush.verticalGradient(colors = gradientColors))
-    ) {
+    AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(
-                                            MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
-                                            Color.Transparent
-                                        )
-                                    ),
-                                    shape = CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.MusicNote,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                "听音识舰娘",
-                                style = AppTypography.TitleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                "聆听语音，猜出舰娘",
-                                style = AppTypography.LabelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                },
-                navigationIcon = {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                CircleShape
-                            )
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = "返回",
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                },
-                actions = {
-                    VoiceScoreChip(totalScore = state.score.totalScore)
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+            BlyyTopBar(
+                title = "听音识舰娘",
+                subtitle = "聆听语音，猜出舰娘",
+                onBackClick = onBack,
+                actions = { VoiceScoreChip(totalScore = state.score.totalScore) }
             )
 
             Column(

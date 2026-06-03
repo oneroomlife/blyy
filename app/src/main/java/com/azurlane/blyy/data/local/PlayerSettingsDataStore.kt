@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.azurlane.blyy.data.model.VoiceLanguage
+import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.viewmodel.PlayMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -42,6 +43,10 @@ class PlayerSettingsDataStore @Inject constructor(
         
         // 悬浮窗状态
         private val SECRETARY_OVERLAY_ENABLED_KEY = booleanPreferencesKey("secretary_overlay_enabled")
+
+        // 外观设置
+        private val UI_STYLE_KEY = stringPreferencesKey("ui_style")
+        private val FORCE_DARK_THEME_KEY = booleanPreferencesKey("force_dark_theme")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -82,6 +87,17 @@ class PlayerSettingsDataStore @Inject constructor(
     // 悬浮窗状态
     val secretaryOverlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
 
+    // 外观
+    val uiStyle: Flow<UiStyle> = context.dataStore.data.map { prefs ->
+        when (prefs[UI_STYLE_KEY]) {
+            UiStyle.CLASSIC.name -> UiStyle.CLASSIC
+            else -> UiStyle.COMMAND_CENTER
+        }
+    }
+
+    /** 默认 true — 暗色模式优先 */
+    val forceDarkTheme: Flow<Boolean> = context.dataStore.data.map { it[FORCE_DARK_THEME_KEY] ?: true }
+
     // 语音语言
     val voiceLanguage: Flow<VoiceLanguage> = context.dataStore.data
         .map { preferences: Preferences ->
@@ -120,6 +136,18 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setSecretaryOverlayEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_OVERLAY_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setUiStyle(style: UiStyle) {
+        context.dataStore.edit { prefs ->
+            prefs[UI_STYLE_KEY] = style.name
+        }
+    }
+
+    suspend fun setForceDarkTheme(force: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[FORCE_DARK_THEME_KEY] = force
         }
     }
 
