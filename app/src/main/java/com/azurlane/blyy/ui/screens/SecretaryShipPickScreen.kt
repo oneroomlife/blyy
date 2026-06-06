@@ -1,6 +1,5 @@
 package com.azurlane.blyy.ui.screens
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +53,7 @@ import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 
 @Composable
 fun SecretaryShipPickFromHomeScreen(
@@ -219,7 +219,7 @@ private fun SearchAndFilterBar(
     onFilterClick: () -> Unit,
     hasActiveFilters: Boolean
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
 
     Surface(

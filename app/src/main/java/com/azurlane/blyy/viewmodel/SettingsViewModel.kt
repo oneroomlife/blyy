@@ -13,7 +13,7 @@ import javax.inject.Inject
 
 data class SettingsState(
     val uiStyle: UiStyle = UiStyle.COMMAND_CENTER,
-    val forceDarkTheme: Boolean = true
+    val forceDarkTheme: Boolean = false
 )
 
 @HiltViewModel
@@ -25,7 +25,7 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiStyle.COMMAND_CENTER)
 
     val forceDarkTheme: StateFlow<Boolean> = settings.forceDarkTheme
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     fun setUiStyle(style: UiStyle) {
         viewModelScope.launch { settings.setUiStyle(style) }

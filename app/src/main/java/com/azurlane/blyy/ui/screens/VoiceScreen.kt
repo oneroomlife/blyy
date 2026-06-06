@@ -18,7 +18,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -224,7 +223,8 @@ fun VoiceScreenContent(
                 ) {
                     GlassPlayerControlBar(
                         playerState = playerState,
-                        playerViewModel = playerViewModel
+                        playerViewModel = playerViewModel,
+                        onVoiceIntent = onVoiceIntent
                     )
                 }
             }
@@ -317,7 +317,7 @@ private fun VoiceLanguageSwitch(
     onLanguageChange: (VoiceLanguage) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
 
     val cnScale by animateFloatAsState(
         targetValue = if (currentLanguage == VoiceLanguage.CN) 1.05f else 1f,
@@ -439,7 +439,7 @@ private fun VoiceLanguageSwitch(
 
 @Composable
 private fun AnimatedBackground(avatarUrl: String) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val shader = remember { RuntimeShader(FLUID_SHADER_VOICE) }
@@ -822,9 +822,10 @@ private fun VoiceItemRow(
 @Composable
 private fun GlassPlayerControlBar(
     playerState: PlayerUiState,
-    playerViewModel: PlayerViewModel
+    playerViewModel: PlayerViewModel,
+    onVoiceIntent: (VoiceIntent) -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
@@ -922,8 +923,8 @@ private fun GlassPlayerControlBar(
                         glassSurface = glassSurface,
                         onSeek = { playerViewModel.seekTo(it) },
                         onPlayPauseClick = { playerViewModel.playOrPause() },
-                        onPreviousClick = { playerViewModel.skipToPrevious() },
-                        onNextClick = { playerViewModel.skipToNext() },
+                        onPreviousClick = { onVoiceIntent(VoiceIntent.SkipPrevious) },
+                        onNextClick = { onVoiceIntent(VoiceIntent.SkipNext) },
                         onModeClick = { playerViewModel.cyclePlayMode() },
                         onListClick = { showPlayLaterSheet = true }
                     )
@@ -981,7 +982,7 @@ private fun CollapsedPlayerBar(
     onModeClick: () -> Unit,
     onExpandClick: () -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val infiniteTransition = rememberInfiniteTransition(label = "GlowPulse")
     
     val glowScale by infiniteTransition.animateFloat(
@@ -1634,7 +1635,7 @@ private fun DraggableFigure(
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val hapticFeedback = LocalHapticFeedback.current
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     
     val screenWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeight = with(density) { configuration.screenHeightDp.dp.toPx() }

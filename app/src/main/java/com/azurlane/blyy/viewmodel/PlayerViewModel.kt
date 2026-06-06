@@ -230,6 +230,17 @@ class PlayerViewModel @Inject constructor(
 
     fun skipToNext() {
         browser?.let { player ->
+            if (_uiState.value.isPlayingFromQueue) {
+                val queue = _uiState.value.playLaterList
+                if (queue.isNotEmpty()) {
+                    val currentUrl = _uiState.value.currentlyPlayingQueueItemUrl
+                    val currentIndex = queue.indexOfFirst { it.voiceUrl == currentUrl }
+                    val nextIndex = (currentIndex + 1) % queue.size
+                    playFromPlayLater(queue[nextIndex])
+                }
+                return@let
+            }
+
             if (player.hasNextMediaItem()) {
                 player.seekToNext()
             } else if (player.mediaItemCount > 0) {
@@ -241,12 +252,32 @@ class PlayerViewModel @Inject constructor(
 
     fun skipToPrevious() {
         browser?.let { player ->
+            if (_uiState.value.isPlayingFromQueue) {
+                val queue = _uiState.value.playLaterList
+                if (queue.isNotEmpty()) {
+                    val currentUrl = _uiState.value.currentlyPlayingQueueItemUrl
+                    val currentIndex = queue.indexOfFirst { it.voiceUrl == currentUrl }
+                    val prevIndex = if (currentIndex <= 0) queue.size - 1 else currentIndex - 1
+                    playFromPlayLater(queue[prevIndex])
+                }
+                return@let
+            }
+
             if (player.hasPreviousMediaItem()) {
                 player.seekToPrevious()
             } else if (player.mediaItemCount > 0) {
                 player.seekTo(player.mediaItemCount - 1, 0)
             }
             player.play()
+        }
+    }
+
+    fun clearQueueMode() {
+        _uiState.update {
+            it.copy(
+                isPlayingFromQueue = false,
+                currentlyPlayingQueueItemUrl = null
+            )
         }
     }
 

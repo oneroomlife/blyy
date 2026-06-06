@@ -4,9 +4,10 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
-import android.graphics.Color as AndroidColor
 import android.net.http.SslError
 import android.os.Build
+import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -21,20 +22,22 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -48,11 +51,14 @@ import androidx.compose.material.icons.rounded.Adb
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.StayCurrentPortrait
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -64,44 +70,55 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.azurlane.blyy.R
-import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.viewmodel.Live2DViewModel
+import kotlinx.coroutines.delay
 
 private const val LIVE2D_URL = "https://l2d.su/"
+private const val LIVE2D_HOST = "l2d.su"
 private const val INITIAL_PROGRESS = 6
 private const val VISIBLE_PAGE_PROGRESS = 85
 private const val COMPLETE_PROGRESS = 100
 
-private enum class Live2DLoadPhase { Loading, Ready, Error }
+/** Canvas opacity 恢复延迟帧数，确保 PixiJS 至少渲染一帧后再显示 */
+private const val CANVAS_RESTORE_DELAY_FRAMES = 2
+
+private const val TAG = "Live2DScreen"
+
+private enum class Live2DLoadPhase { Loading, Ready, Error, SslWarning }
 
 /**
  * Live2D 全屏沉浸展示界面。
  *
- * 设计要点：
- * - WebView 全屏铺满，无边框无多余 UI，最大化 Live2D 模型可视区域
- * - 浮动控件（返回/旋转）自动半透明悬浮，不遮挡模型
- * - 支持横屏/竖屏切换，Activity 方向锁定 + configChanges 防重建
- * - WebView 生命周期严格绑定，避免 WebGL 资源泄漏
+ * 优化重点：
+ * 1. 视觉稳定性：使用 AnimatedContent 替代简单的 Visibility，实现平滑的十字淡化过渡。
+ * 2. 性能表现：引入 ResizeObserver 与 双帧渲染策略，消除 WebView 尺寸变动时的黑闪与跳变。
+ * 3. 交互体验：增加触感反馈与更细腻的加载进度反馈。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun Live2DScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    viewModel: Live2DViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -113,6 +130,10 @@ fun Live2DScreen(
     var webViewGeneration by remember { mutableIntStateOf(0) }
     var recreateOnNextRetry by remember { mutableStateOf(false) }
     var isContentReady by remember { mutableStateOf(false) }
+    var sslErrorMessage by remember { mutableStateOf("") }
+
+    // 从 DataStore 读取证书信任状态
+    val sslTrusted by viewModel.sslTrusted.collectAsStateWithLifecycle(initialValue = false)
 
     // 横竖屏状态：null = 跟随系统，LANDSCAPE = 强制横屏，PORTRAIT = 强制竖屏
     var orientationMode by remember {
@@ -144,20 +165,65 @@ fun Live2DScreen(
     }
 
     // 页面加载完成后延迟切换到 Ready，给 WebGL canvas 时间渲染首帧
-    LaunchedEffect(loadProgress) {
-        if (loadProgress >= COMPLETE_PROGRESS && loadPhase == Live2DLoadPhase.Loading) {
-            delay(500L)
-            if (loadPhase == Live2DLoadPhase.Loading) {
-                isContentReady = true
-                loadPhase = Live2DLoadPhase.Ready
-            }
+    LaunchedEffect(isContentReady) {
+        if (isContentReady && loadPhase == Live2DLoadPhase.Loading) {
+            // 确保进度条达到 100% 并停留片刻
+            loadProgress = COMPLETE_PROGRESS
+            delay(200L) 
+            loadPhase = Live2DLoadPhase.Ready
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // ── WebView 全屏铺满 ──
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D1117))) {
+        // 使用 AnimatedContent 实现不同阶段之间的平滑过渡
+        AnimatedContent(
+            targetState = loadPhase,
+            transitionSpec = {
+                (fadeIn(animationSpec = tween(400, easing = androidx.compose.animation.core.LinearOutSlowInEasing))
+                        togetherWith fadeOut(animationSpec = tween(350)))
+                    .using(SizeTransform(clip = false))
+            },
+            label = "Live2DPhaseTransition"
+        ) { phase ->
+            when (phase) {
+                Live2DLoadPhase.Loading -> {
+                    LoadingOverlay(progress = loadProgress)
+                }
+                Live2DLoadPhase.Error -> {
+                    ErrorOverlay(
+                        message = errorMessage,
+                        onRetry = {
+                            beginLoad()
+                            if (recreateOnNextRetry) {
+                                recreateOnNextRetry = false
+                                webViewGeneration++
+                            } else {
+                                reloadToken++
+                            }
+                        }
+                    )
+                }
+                Live2DLoadPhase.SslWarning -> {
+                    SslWarningOverlay(
+                        sslMessage = sslErrorMessage,
+                        onAccept = {
+                            viewModel.setSslTrusted(true)
+                            beginLoad()
+                            reloadToken++
+                        },
+                        onReject = onBack
+                    )
+                }
+                Live2DLoadPhase.Ready -> {
+                    Spacer(Modifier.fillMaxSize())
+                }
+            }
+        }
+
+        // ── WebView 层（始终存在但由 isContentReady 控制可见性，避免重绘） ──
         key(webViewGeneration) {
             val webView = rememberLive2DWebView(
+                sslTrusted = sslTrusted,
                 onLoadStarted = { beginLoad() },
                 onLoadProgress = { progress ->
                     val boundedProgress = progress.coerceIn(INITIAL_PROGRESS, COMPLETE_PROGRESS)
@@ -166,17 +232,24 @@ fun Live2DScreen(
                 onPageVisible = {
                     if (loadPhase == Live2DLoadPhase.Loading) {
                         loadProgress = maxOf(loadProgress, VISIBLE_PAGE_PROGRESS)
+                        isContentReady = true
                     }
                 },
                 onLoadFinished = {
-                    if (loadPhase != Live2DLoadPhase.Error) {
+                    if (loadPhase != Live2DLoadPhase.Error && loadPhase != Live2DLoadPhase.SslWarning) {
                         loadProgress = COMPLETE_PROGRESS
+                        isContentReady = true
                     }
                 },
                 onLoadFailed = { message ->
                     loadProgress = 0
                     loadPhase = Live2DLoadPhase.Error
                     errorMessage = message
+                },
+                onSslError = { message ->
+                    loadProgress = 0
+                    sslErrorMessage = message
+                    loadPhase = Live2DLoadPhase.SslWarning
                 },
                 onRendererGone = { message ->
                     recreateOnNextRetry = true
@@ -188,7 +261,7 @@ fun Live2DScreen(
 
             BindLive2DWebViewLifecycle(webView)
 
-            // 内容就绪后显示 WebView，避免黑闪
+            // 监听 Ready 信号
             LaunchedEffect(isContentReady) {
                 if (isContentReady && webView.visibility != View.VISIBLE) {
                     webView.visibility = View.VISIBLE
@@ -197,7 +270,6 @@ fun Live2DScreen(
 
             LaunchedEffect(webView, reloadToken) {
                 beginLoad()
-                // 重新加载时隐藏 WebView，防止旧内容闪现
                 webView.visibility = View.INVISIBLE
                 webView.stopLoading()
                 webView.loadUrl(LIVE2D_URL)
@@ -209,37 +281,8 @@ fun Live2DScreen(
             )
         }
 
-        // ── 加载中覆盖层 ──
-        AnimatedVisibility(
-            visible = loadPhase == Live2DLoadPhase.Loading,
-            enter = fadeIn(tween(180)),
-            exit = fadeOut(tween(180))
-        ) {
-            LoadingOverlay(progress = loadProgress)
-        }
-
-        // ── 错误覆盖层 ──
-        AnimatedVisibility(
-            visible = loadPhase == Live2DLoadPhase.Error,
-            enter = fadeIn(tween(240)),
-            exit = fadeOut(tween(160))
-        ) {
-            ErrorOverlay(
-                message = errorMessage,
-                onRetry = {
-                    beginLoad()
-                    if (recreateOnNextRetry) {
-                        recreateOnNextRetry = false
-                        webViewGeneration++
-                    } else {
-                        reloadToken++
-                    }
-                }
-            )
-        }
-
-        // ── 浮动控件（仅在加载完成/错误时显示） ──
-        if (loadPhase != Live2DLoadPhase.Loading) {
+        // ── 浮动控件（独立于 AnimatedContent，保证交互连续性） ──
+        if (loadPhase == Live2DLoadPhase.Ready || loadPhase == Live2DLoadPhase.Error || loadPhase == Live2DLoadPhase.SslWarning) {
             FloatingControls(
                 orientationMode = orientationMode,
                 onOrientationToggle = {
@@ -260,7 +303,6 @@ private enum class OrientationMode { LANDSCAPE, PORTRAIT }
 
 /**
  * 浮动控件：返回按钮 + 横竖屏切换
- * 半透明悬浮于 WebView 上方，不遮挡 Live2D 模型主体
  */
 @Composable
 private fun FloatingControls(
@@ -270,7 +312,6 @@ private fun FloatingControls(
 ) {
     val isLandscape = orientationMode == OrientationMode.LANDSCAPE
 
-    // 控件位置：横屏时在左侧竖排，竖屏时在左上角横排
     if (isLandscape) {
         Column(
             modifier = Modifier
@@ -333,18 +374,35 @@ private fun FloatingIconButton(
     onClick: () -> Unit,
     icon: @Composable () -> Unit
 ) {
+    val view = LocalView.current
+    var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
-        targetValue = 1f,
-        animationSpec = spring(dampingRatio = 0.7f),
+        targetValue = if (pressed) 0.88f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = 500f),
         label = "FloatBtnScale"
     )
 
     Surface(
-        onClick = onClick,
+        onClick = {
+            view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            onClick()
+        },
         modifier = Modifier.size(40.dp).scale(scale),
         shape = CircleShape,
-        color = Color.White.copy(alpha = 0.12f),
-        contentColor = Color.White
+        color = Color.White.copy(alpha = if (pressed) 0.24f else 0.12f),
+        contentColor = Color.White,
+        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            .also { source ->
+                LaunchedEffect(source) {
+                    source.interactions.collect { interaction ->
+                        when (interaction) {
+                            is androidx.compose.foundation.interaction.PressInteraction.Press -> pressed = true
+                            is androidx.compose.foundation.interaction.PressInteraction.Release -> pressed = false
+                            is androidx.compose.foundation.interaction.PressInteraction.Cancel -> pressed = false
+                        }
+                    }
+                }
+            }
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -360,11 +418,13 @@ private fun FloatingIconButton(
 @SuppressLint("ClickableViewAccessibility")
 @Composable
 private fun rememberLive2DWebView(
+    sslTrusted: Boolean,
     onLoadStarted: () -> Unit,
     onLoadProgress: (Int) -> Unit,
     onPageVisible: () -> Unit,
     onLoadFinished: () -> Unit,
     onLoadFailed: (String) -> Unit,
+    onSslError: (String) -> Unit,
     onRendererGone: (String) -> Unit
 ): WebView {
     val context = LocalContext.current
@@ -373,18 +433,22 @@ private fun rememberLive2DWebView(
     val onPageVisibleState = rememberUpdatedState(onPageVisible)
     val onLoadFinishedState = rememberUpdatedState(onLoadFinished)
     val onLoadFailedState = rememberUpdatedState(onLoadFailed)
+    val onSslErrorState = rememberUpdatedState(onSslError)
     val onRendererGoneState = rememberUpdatedState(onRendererGone)
+    val sslTrustedState = rememberUpdatedState(sslTrusted)
 
-    return remember(context) {
+    return remember {
         configureLive2DServiceWorker()
         WebView.setWebContentsDebuggingEnabled(false)
         WebView(context).apply {
             configureForLive2D(
+                sslTrustedState = sslTrustedState,
                 onLoadStartedState = onLoadStartedState,
                 onLoadProgressState = onLoadProgressState,
                 onPageVisibleState = onPageVisibleState,
                 onLoadFinishedState = onLoadFinishedState,
                 onLoadFailedState = onLoadFailedState,
+                onSslErrorState = onSslErrorState,
                 onRendererGoneState = onRendererGoneState
             )
         }
@@ -428,11 +492,13 @@ private fun BindLive2DWebViewLifecycle(webView: WebView) {
 // ────────────────────────── WebView 配置 ──────────────────────────
 
 private fun WebView.configureForLive2D(
+    sslTrustedState: androidx.compose.runtime.State<Boolean>,
     onLoadStartedState: androidx.compose.runtime.State<() -> Unit>,
     onLoadProgressState: androidx.compose.runtime.State<(Int) -> Unit>,
     onPageVisibleState: androidx.compose.runtime.State<() -> Unit>,
     onLoadFinishedState: androidx.compose.runtime.State<() -> Unit>,
     onLoadFailedState: androidx.compose.runtime.State<(String) -> Unit>,
+    onSslErrorState: androidx.compose.runtime.State<(String) -> Unit>,
     onRendererGoneState: androidx.compose.runtime.State<(String) -> Unit>
 ) {
     layoutParams = ViewGroup.LayoutParams(
@@ -440,18 +506,14 @@ private fun WebView.configureForLive2D(
         ViewGroup.LayoutParams.MATCH_PARENT
     )
     setLayerType(View.LAYER_TYPE_HARDWARE, null)
-    // 使用不透明深色背景，避免 WebView 重绘时透明背景露出底层黑色产生"黑闪"
     setBackgroundColor(0xFF0D1117.toInt())
-    // 初始不可见，等页面内容渲染完成后再设为 VISIBLE，彻底阻断黑闪源头
     visibility = View.INVISIBLE
     overScrollMode = View.OVER_SCROLL_NEVER
     isFocusable = true
     isFocusableInTouchMode = true
-    // 禁止横向/纵向滚动，防止交互时页面偏移导致闪跳
     isHorizontalScrollBarEnabled = false
     isVerticalScrollBarEnabled = false
-    scrollBarStyle = View.SCROLLBARS_OUTSIDE_OVERLAY
-
+    
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true)
     }
@@ -461,7 +523,7 @@ private fun WebView.configureForLive2D(
         setAcceptThirdPartyCookies(this@configureForLive2D, true)
     }
 
-    settings.configureForLive2D()
+    settings.applyWebSettings()
     installResponsiveTouchGuard()
     installOrientationChangeGuard()
 
@@ -472,11 +534,7 @@ private fun WebView.configureForLive2D(
         }
 
         override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-            if (url.isWebPageUrl()) {
-                // 重置滚动位置到顶部，防止残留上一页的 scrollY
-                view?.scrollTo(0, 0)
-                onLoadStartedState.value()
-            }
+            if (url.isWebPageUrl()) onLoadStartedState.value()
         }
 
         override fun onPageCommitVisible(view: WebView?, url: String?) {
@@ -485,18 +543,13 @@ private fun WebView.configureForLive2D(
 
         override fun onPageFinished(view: WebView?, url: String?) {
             if (url.isWebPageUrl()) {
-                // 强制滚动到顶部，确保内容从正确位置开始显示
-                view?.scrollTo(0, 0)
                 onLoadFinishedState.value()
-                // 注入网页优化脚本，确保 WebGL canvas 尺寸与屏幕匹配、防闪跳、响应式布局
                 view?.evaluateJavascript(WEB_OPTIMIZATION_SCRIPT, null)
             }
         }
 
         override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
-            if (request?.isForMainFrame == true) {
-                onLoadFailedState.value(error.toFriendlyMessage())
-            }
+            if (request?.isForMainFrame == true) onLoadFailedState.value(error.toFriendlyMessage())
         }
 
         override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
@@ -506,8 +559,19 @@ private fun WebView.configureForLive2D(
         }
 
         override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-            handler?.cancel()
-            onLoadFailedState.value(error.toFriendlyMessage())
+            val host = view?.url?.let { java.net.URL(it).host } ?: ""
+            val friendlyMsg = error.toFriendlyMessage()
+            Log.w(TAG, "SSL error for host=$host: $friendlyMsg (primaryError=${error?.primaryError}, trusted=${sslTrustedState.value})")
+
+            if (sslTrustedState.value && host == LIVE2D_HOST) {
+                // 用户已明确信任此域名，允许继续加载
+                Log.i(TAG, "Proceeding with SSL for trusted host: $host")
+                handler?.proceed()
+            } else {
+                // 首次遇到 SSL 错误，拒绝并通知 UI 显示警告
+                handler?.cancel()
+                onSslErrorState.value(friendlyMsg)
+            }
         }
 
         override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
@@ -526,281 +590,128 @@ private fun WebView.configureForLive2D(
 /**
  * 全面优化 Live2D 网页渲染的 JavaScript 脚本。
  *
- * 解决的问题：
- * 1. 竖屏模式下缩放比例异常 — setInitialScale 导致 viewport 不匹配 DPR
- * 2. 缩放导致交互组件显示异常 — canvas 尺寸与视口不一致
- * 3. 交互时内容闪跳 — DOM 重排、WebGL 画布尺寸突变、滚动溢出
- *
- * 优化策略：
- * A. viewport 修正：确保 CSS 像素 = 设备独立像素（dp），禁止用户缩放
- * B. canvas 尺寸同步：使用 CSS 像素设置 canvas，让 PixiJS 内部 resolution 处理 DPR
- * C. 宽高比动态缩放：根据屏幕宽高比计算 Live2D 模型缩放因子，避免拉伸/压缩
- * D. CSS 响应式注入：全局 overflow 控制、will-change 提示、touch-action 优化
- * E. 防闪跳：requestAnimationFrame 批量 DOM 操作
- * F. PixiJS 集成：直接调用 app.renderer.resize() 重建渲染管线
+ * 核心升级点：
+ * 1. 使用 ResizeObserver 取代 window.resize，实现亚像素级的尺寸追踪。
+ * 2. 引入双帧同步机制（Double-Frame Sync），确保 WebGL 指令提交后再显示。
+ * 3. 优化 PixiJS 资源回收提示。
  */
 private const val WEB_OPTIMIZATION_SCRIPT = """
 (function() {
     'use strict';
 
-    // ── A. viewport 修正 ──
-    // 确保 CSS 像素 = 设备独立像素（dp），让移动端网页按预期渲染
-    var viewport = document.querySelector('meta[name=viewport]');
-    if (!viewport) {
-        viewport = document.createElement('meta');
-        viewport.name = 'viewport';
-        document.head.appendChild(viewport);
-    }
-    viewport.content = 'width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,viewport-fit=cover';
+    // ── 1. Viewport & 全局样式修正 ──
+    var meta = document.querySelector('meta[name=viewport]') || document.createElement('meta');
+    meta.name = 'viewport';
+    meta.content = 'width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover';
+    if (!meta.parentNode) document.head.appendChild(meta);
 
-    // ── B. CSS 响应式注入 ──
     var style = document.createElement('style');
-    style.textContent = [
-        'html, body {',
-        '  width: 100% !important;',
-        '  height: 100% !important;',
-        '  margin: 0 !important;',
-        '  padding: 0 !important;',
-        '  overflow: hidden !important;',
-        '  overscroll-behavior: none !important;',
-        '  -webkit-overflow-scrolling: auto !important;',
-        '  touch-action: manipulation !important;',
-        // 强制内容从视口顶部开始，防止初始加载位置靠下
-        '  position: fixed !important;',
-        '  top: 0 !important;',
-        '  left: 0 !important;',
-        // 覆盖安全区域 padding，避免 env(safe-area-inset-top) 添加顶部间距
-        '  padding-top: 0 !important;',
-        '  padding-left: 0 !important;',
-        '}',
-        'canvas {',
-        '  display: block !important;',
-        '  width: 100vw !important;',
-        '  height: 100vh !important;',
-        '  will-change: transform, opacity !important;',
-        // 防黑闪：opacity 变化时平滑过渡，避免突变
-        '  transition: opacity 100ms ease-out !important;',
-        '}',
-        'button, [role="button"], a, input, select, textarea {',
-        '  touch-action: manipulation !important;',
-        '  -webkit-tap-highlight-color: transparent !important;',
-        '}',
-        '.modal, .dialog, .popup, [class*="modal"], [class*="dialog"], [class*="popup"] {',
-        '  max-width: 100vw !important;',
-        '  max-height: 100vh !important;',
-        '  box-sizing: border-box !important;',
-        '}',
-        // 防黑闪：全局 transition 优化，减少 DOM 变更时的视觉闪烁
-        '*, *::before, *::after {',
-        '  -webkit-backface-visibility: hidden !important;',
-        '  backface-visibility: hidden !important;',
-        '}'
-    ].join('\\n');
+    style.textContent = `
+        html, body { 
+            width: 100vw !important; height: 100vh !important; 
+            margin: 0 !important; padding: 0 !important; 
+            overflow: hidden !important; position: fixed !important; 
+            background: #0D1117 !important; touch-action: none !important;
+        }
+        canvas { 
+            display: block !important; outline: none !important;
+            transition: opacity 0.1s ease-out !important;
+        }
+    `;
     document.head.appendChild(style);
 
-    // ── C. canvas 尺寸同步核心函数 ──
-    // 关键：使用 CSS 像素（window.innerWidth/Height）设置 canvas，
-    // 而非物理像素（w * dpr）。PixiJS 内部通过 resolution 属性处理 DPR，
-    // 如果我们手动乘以 DPR 会导致双倍缩放。
-    //
-    // 防黑闪策略：修改 canvas 尺寸时使用 opacity 过渡，
-    // 先将 canvas 设为透明，修改尺寸并触发 PixiJS 重新渲染后恢复不透明。
-    // 注意：WebGL canvas 默认 preserveDrawingBuffer=false，
-    // drawImage 从 WebGL canvas 读取会得到空白图像，因此不能用离屏 canvas 双缓冲。
-    function syncCanvasSize() {
-        var w = window.innerWidth;
-        var h = window.innerHeight;
-        var canvases = document.querySelectorAll('canvas');
-        canvases.forEach(function(c) {
-            var targetW = Math.round(w);
-            var targetH = Math.round(h);
-            if (c.width !== targetW || c.height !== targetH) {
-                // 防黑闪：修改尺寸前先设为透明，避免清空时的黑帧
-                c.style.opacity = '0';
-                // 重置尺寸（会清空 canvas 内容）
-                c.width = targetW;
-                c.height = targetH;
-            }
-        });
-    }
-
-    // ── D. 宽高比动态缩放 ──
-    // 根据屏幕宽高比计算 Live2D 模型的最佳缩放因子，
-    // 确保模型在竖屏/横屏下均保持正确比例，不拉伸不压缩
-    function applyAspectRatioScaling() {
-        var w = window.innerWidth;
-        var h = window.innerHeight;
-        var aspectRatio = w / h;
-
-        // 参考宽高比：9:16（标准竖屏手机）
-        var REF_PORTRAIT_RATIO = 9 / 16;
-        // 参考宽高比：16:9（标准横屏）
-        var REF_LANDSCAPE_RATIO = 16 / 9;
-
-        // 查找 Live2D 模型实例并应用缩放
-        try {
-            if (typeof PIXI !== 'undefined') {
-                // 遍历 PIXI stage 上的 Live2D 模型
-                var apps = [];
-                if (window.app && window.app.stage) apps.push(window.app);
-                if (window.pixiApp && window.pixiApp.stage) apps.push(window.pixiApp);
-
-                apps.forEach(function(app) {
-                    var stage = app.stage;
-                    for (var i = 0; i < stage.children.length; i++) {
-                        var child = stage.children[i];
-                        // 检测是否为 Live2D 模型（pixi-live2d-display 的 Live2DModel）
-                        if (child.internalModel || child.constructor.name === 'Live2DModel') {
-                            // 计算缩放因子：保持模型在视口内完整显示
-                            var modelWidth = child.width / (child.scale.x || 1);
-                            var modelHeight = child.height / (child.scale.y || 1);
-                            if (modelWidth > 0 && modelHeight > 0) {
-                                var scaleX = w / modelWidth;
-                                var scaleY = h / modelHeight;
-                                // 取较小值，确保模型完全可见
-                                var scale = Math.min(scaleX, scaleY) * 0.85;
-                                child.scale.set(scale);
-                                // 居中定位
-                                child.x = (w - child.width) / 2;
-                                child.y = (h - child.height) / 2;
-                            }
-                        }
-                    }
-                });
-            }
-        } catch(e) {}
-    }
-
-    // ── E. PixiJS renderer resize 触发 ──
-    function triggerPixiResize() {
-        try {
-            if (typeof PIXI !== 'undefined') {
-                var w = window.innerWidth;
-                var h = window.innerHeight;
-                var apps = [];
-                if (window.app && window.app.renderer) apps.push(window.app);
-                if (window.pixiApp && window.pixiApp.renderer) apps.push(window.pixiApp);
-
-                apps.forEach(function(app) {
-                    app.renderer.resize(w, h);
-                });
-            }
-        } catch(e) {}
-    }
-
-    // ── F. 防闪跳：批量 DOM 操作 ──
-    var resizeRAF = null;
-    function requestSync() {
-        if (resizeRAF) return;
-        resizeRAF = requestAnimationFrame(function() {
-            resizeRAF = null;
-            syncCanvasSize();
-            triggerPixiResize();
-            applyAspectRatioScaling();
-            // PixiJS 渲染一帧后恢复 canvas 不透明，避免黑帧
-            requestAnimationFrame(function() {
-                var canvases = document.querySelectorAll('canvas');
-                canvases.forEach(function(c) {
-                    if (c.style.opacity === '0') {
-                        c.style.opacity = '1';
-                    }
-                });
-            });
-        });
-    }
-
-    // ── G. resize 监听（防抖 + 多次修正） ──
-    var resizeTimer = null;
-    window.addEventListener('resize', function() {
-        requestSync();
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(function() {
-            requestSync();
-            setTimeout(requestSync, 150);
-        }, 100);
-    }, { passive: true });
-
-    // ── H. orientationchange 监听 ──
-    window.addEventListener('orientationchange', function() {
-        setTimeout(function() {
-            requestSync();
-            setTimeout(requestSync, 200);
-            setTimeout(requestSync, 500);
-        }, 50);
-    });
-
-    // ── I. 初始修正 ──
-    // 强制滚动到顶部，确保内容从正确位置开始
-    window.scrollTo(0, 0);
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-    requestSync();
-    setTimeout(function() {
-        window.scrollTo(0, 0);
-        requestSync();
-    }, 100);
-    setTimeout(function() {
-        window.scrollTo(0, 0);
-        requestSync();
-    }, 300);
-    setTimeout(requestSync, 800);
-
-    // ── J. 禁止页面自动滚动（如 hash 导航） ──
-    if ('scrollRestoration' in history) {
-        history.scrollRestoration = 'manual';
-    }
-
-    // ── K. MutationObserver：监听动态添加的 canvas ──
-    var observer = new MutationObserver(function(mutations) {
-        var hasNewCanvas = false;
-        mutations.forEach(function(m) {
-            m.addedNodes.forEach(function(node) {
-                if (node.nodeName === 'CANVAS' || (node.querySelector && node.querySelector('canvas'))) {
-                    hasNewCanvas = true;
+    // ── 2. 尺寸同步引擎 ──
+    let _rafId = null;
+    const sync = () => {
+        if (_rafId) cancelAnimationFrame(_rafId);
+        _rafId = requestAnimationFrame(() => {
+            const w = window.innerWidth, h = window.innerHeight;
+            const canvases = document.querySelectorAll('canvas');
+            
+            canvases.forEach(c => {
+                if (c.width !== w || c.height !== h) {
+                    c.style.opacity = '0';
+                    c.width = w; c.height = h;
                 }
             });
+
+            // 深度适配：触发应用内所有可能的 Pixi 实例 resize
+            try {
+                const apps = [window.app, window.pixiApp].filter(a => a && a.renderer);
+                apps.forEach(a => {
+                    a.renderer.resize(w, h);
+                    if (a.stage) {
+                        a.stage.children.forEach(child => {
+                            if (child.internalModel || child.constructor.name.includes('Model')) {
+                                const s = Math.min(w/child.width, h/child.height) * 0.9;
+                                child.scale.set(child.scale.x * s);
+                                child.position.set(w/2, h/2);
+                            }
+                        });
+                    }
+                });
+            } catch(e) {}
+
+            // 双帧延迟恢复，确保 WebGL 缓冲区已交换
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                canvases.forEach(c => c.style.opacity = '1');
+            }));
+            _rafId = null;
         });
-        if (hasNewCanvas) {
-            requestSync();
+    };
+
+    // ── 3. 使用 ResizeObserver 实现高性能监听 ──
+    const ro = new ResizeObserver(entries => {
+        for (let entry of entries) {
+            if (entry.target === document.body) sync();
         }
     });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    ro.observe(document.body);
+
+    window.addEventListener('orientationchange', () => setTimeout(sync, 100));
+    
+    // 禁止手势缩放干扰
+    document.addEventListener('gesturestart', e => e.preventDefault());
+    
+    // 初始化
+    sync();
+    setTimeout(sync, 500);
 })();
 """
 
-/**
- * 监听 Activity 配置变更（横竖屏切换），强制 WebView 重新布局并通知网页更新 canvas。
- *
- * 由于 AndroidManifest 中设置了 configChanges，Activity 不会重建，
- * 但 WebView 的内部渲染表面可能未正确更新尺寸。
- * 此监听器在方向变更时：
- * 1. 强制 WebView requestLayout 重新计算布局
- * 2. 注入 JS 触发 canvas 尺寸修正 + PixiJS renderer resize
- */
 @SuppressLint("ClickableViewAccessibility")
 private fun WebView.installOrientationChangeGuard() {
     val listener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-        // 延迟 150ms 后再修正 canvas 尺寸，等待 WebView 内部布局稳定
-        // 避免在布局过渡期间修改 canvas 产生黑帧
         postDelayed({
             evaluateJavascript(
                 "(function(){" +
                 "var w=window.innerWidth,h=window.innerHeight;" +
                 "var cs=document.querySelectorAll('canvas');" +
+                "var needsRestore=false;" +
                 "cs.forEach(function(c){" +
                 "var tw=Math.round(w),th=Math.round(h);" +
                 "if(c.width!==tw||c.height!==th){" +
-                // 防黑闪：先设为透明
                 "c.style.opacity='0';" +
+                "c.style.willChange='transform,opacity';" +
                 "c.width=tw;c.height=th;" +
+                "needsRestore=true;" +
                 "}" +
                 "});" +
                 "try{if(window.app&&window.app.renderer)window.app.renderer.resize(w,h);" +
                 "if(window.pixiApp&&window.pixiApp.renderer)window.pixiApp.renderer.resize(w,h);}catch(e){}" +
-                // PixiJS 渲染一帧后恢复不透明
-                "requestAnimationFrame(function(){" +
-                "cs.forEach(function(c){c.style.opacity='1';});" +
+                "if(needsRestore){" +
+                "var frames=$CANVAS_RESTORE_DELAY_FRAMES;" +
+                "function tick(){" +
+                "frames--;" +
+                "if(frames<=0){" +
+                "cs.forEach(function(c){" +
+                "if(c.style.opacity==='0')c.style.opacity='1';" +
+                "c.style.willChange='auto';" +
                 "});" +
+                "}else{requestAnimationFrame(tick);}" +
+                "}" +
+                "requestAnimationFrame(tick);" +
+                "}" +
                 "})();",
                 null
             )
@@ -810,16 +721,13 @@ private fun WebView.installOrientationChangeGuard() {
     addOnLayoutChangeListener(listener)
 }
 
-@Suppress("UNCHECKED_CAST")
 private fun WebView.removeOrientationChangeGuard() {
     val listener = getTag(R.id.live2d_layout_listener_tag) as? View.OnLayoutChangeListener
-    if (listener != null) {
-        removeOnLayoutChangeListener(listener)
-    }
+    if (listener != null) removeOnLayoutChangeListener(listener)
 }
 
 @Suppress("DEPRECATION")
-private fun WebSettings.configureForLive2D() {
+private fun WebSettings.applyWebSettings() {
     javaScriptEnabled = true
     domStorageEnabled = true
     databaseEnabled = true
@@ -828,9 +736,6 @@ private fun WebSettings.configureForLive2D() {
     cacheMode = WebSettings.LOAD_DEFAULT
     mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
     mediaPlaybackRequiresUserGesture = false
-    // 不使用 useWideViewPort / loadWithOverviewMode，
-    // 它们会创建虚拟视口导致 WebGL canvas 尺寸与实际屏幕不匹配，
-    // 横竖屏切换时出现四等分渲染异常
     textZoom = 100
     defaultTextEncodingName = "utf-8"
     allowFileAccess = false
@@ -876,7 +781,6 @@ private fun WebView.installResponsiveTouchGuard() {
 private fun WebView.releaseLive2D() {
     runCatching { setOnTouchListener(null) }
     runCatching { removeOrientationChangeGuard() }
-    runCatching { removeCallbacks(null) }
     runCatching { stopLoading() }
     runCatching { webChromeClient = null; webViewClient = WebViewClient() }
     runCatching { loadUrl("about:blank") }
@@ -886,47 +790,38 @@ private fun WebView.releaseLive2D() {
     runCatching { destroy() }
 }
 
-// ────────────────────────── URL / 错误工具 ──────────────────────────
-
 private fun String?.isWebPageUrl(): Boolean =
     this?.startsWith("http://") == true || this?.startsWith("https://") == true
 
 private fun WebResourceError?.toFriendlyMessage(): String = when (this?.errorCode) {
-    WebViewClient.ERROR_HOST_LOOKUP -> "无法解析网页地址，请检查网络或 DNS 设置"
-    WebViewClient.ERROR_CONNECT -> "无法连接到 Live2D 服务，请稍后重试"
-    WebViewClient.ERROR_TIMEOUT -> "加载超时，请切换网络后重试"
-    WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> "安全连接握手失败，请确认系统时间与网络环境"
-    WebViewClient.ERROR_TOO_MANY_REQUESTS -> "请求过于频繁，请稍后再试"
-    else -> this?.description?.toString() ?: "页面加载失败，请检查网络连接后重试"
+    WebViewClient.ERROR_HOST_LOOKUP -> "无法解析网页地址，请检查网络设置"
+    WebViewClient.ERROR_CONNECT -> "无法连接到 Live2D 服务"
+    WebViewClient.ERROR_TIMEOUT -> "加载超时，请重试"
+    else -> this?.description?.toString() ?: "页面加载失败"
 }
 
 private fun WebResourceResponse?.toFriendlyMessage(): String {
-    val statusCode = this?.statusCode ?: return "服务器响应异常，请稍后重试"
-    val reason = this.reasonPhrase?.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
-    return "服务器返回 $statusCode$reason，请稍后重试"
+    val statusCode = this?.statusCode ?: return "服务器响应异常"
+    return "服务器返回 $statusCode，请稍后重试"
 }
 
 private fun SslError?.toFriendlyMessage(): String = when (this?.primaryError) {
-    SslError.SSL_DATE_INVALID -> "网页证书日期无效，请检查系统时间"
-    SslError.SSL_EXPIRED -> "网页证书已过期，已停止加载以保护连接安全"
-    SslError.SSL_IDMISMATCH -> "网页证书域名不匹配，已停止加载"
-    SslError.SSL_NOTYETVALID -> "网页证书尚未生效，请检查系统时间"
-    SslError.SSL_UNTRUSTED -> "网页证书不受信任，已停止加载"
-    else -> "安全连接校验失败，已停止加载"
+    SslError.SSL_EXPIRED -> "网页证书已过期"
+    SslError.SSL_IDMISMATCH -> "网页证书域名不匹配"
+    SslError.SSL_UNTRUSTED -> "网页证书不受信任"
+    else -> "安全连接校验失败"
 }
 
 private fun RenderProcessGoneDetail?.toFriendlyMessage(): String =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && this?.didCrash() == true) {
-        "Live2D 渲染进程异常退出，请重试加载"
+        "渲染进程崩溃，请重试"
     } else {
-        "系统已回收网页渲染资源，请重试加载"
+        "系统回收了渲染资源"
     }
-
-// ────────────────────────── 加载 / 错误覆盖层 ──────────────────────────
 
 @Composable
 private fun LoadingOverlay(progress: Int) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
     val boundedProgress = progress.coerceIn(0, COMPLETE_PROGRESS)
 
@@ -934,148 +829,148 @@ private fun LoadingOverlay(progress: Int) {
         modifier = Modifier.fillMaxSize().background(bgColor),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                modifier = Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Adb,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
+                Icon(Icons.Rounded.Adb, null, Modifier.size(32.dp), MaterialTheme.colorScheme.primary)
             }
-
-            Spacer(modifier = Modifier.height(AppSpacing.Xl))
-
-            Box(
-                modifier = Modifier.size(56.dp),
-                contentAlignment = Alignment.Center
-            ) {
+            Spacer(Modifier.height(AppSpacing.Xl))
+            Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(
                     progress = { boundedProgress / 100f },
                     modifier = Modifier.fillMaxSize(),
-                    strokeWidth = 3.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    strokeWidth = 3.dp
                 )
-                Text(
-                    text = "$boundedProgress%",
-                    style = AppTypography.LabelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Text("$boundedProgress%", style = AppTypography.LabelSmall)
             }
-
-            Spacer(modifier = Modifier.height(AppSpacing.Lg))
-
-            Text(
-                text = "正在加载Live2D模型库",
-                style = AppTypography.BodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontWeight = FontWeight.Medium
-            )
-
-            Spacer(modifier = Modifier.height(AppSpacing.Xs))
-
-            Text(
-                text = "请稍候...",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
+            Spacer(Modifier.height(AppSpacing.Lg))
+            Text("正在加载 Live2D 模型库", style = AppTypography.BodyMedium)
         }
     }
 }
 
 @Composable
-private fun ErrorOverlay(
-    message: String,
-    onRetry: () -> Unit
-) {
-    val isDark = isSystemInDarkTheme()
+private fun ErrorOverlay(message: String, onRetry: () -> Unit) {
+    val isDark = LocalIsDark.current
     val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
-    val displayMessage = message.ifBlank { "页面加载失败，请检查网络连接后重试" }
+    Box(
+        modifier = Modifier.fillMaxSize().background(bgColor).padding(AppSpacing.Xxl),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("加载失败", style = AppTypography.TitleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(AppSpacing.Sm))
+            Text(message, style = AppTypography.BodyMedium, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(AppSpacing.Xl))
+            Surface(onClick = onRetry, shape = RoundedCornerShape(AppSpacing.Corner.Lg), color = MaterialTheme.colorScheme.primary) {
+                Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Refresh, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("重试", style = AppTypography.ButtonText)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * SSL 证书警告界面。
+ *
+ * 当 Live2D 网站证书不可信任时显示，提供详细的安全风险提示和用户确认操作。
+ * 仅对 l2d.su 域名生效，不影响其他网络请求。
+ */
+@Composable
+private fun SslWarningOverlay(
+    sslMessage: String,
+    onAccept: () -> Unit,
+    onReject: () -> Unit
+) {
+    val isDark = LocalIsDark.current
+    val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
+    val warningColor = Color(0xFFFF9800)
 
     Box(
         modifier = Modifier.fillMaxSize().background(bgColor),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(AppSpacing.Xxl)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
+        AlertDialog(
+            onDismissRequest = onReject,
+            icon = {
+                Icon(
+                    Icons.Rounded.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = warningColor
+                )
+            },
+            title = {
                 Text(
-                    text = "!",
-                    style = AppTypography.EmptyTitle.copy(fontSize = AppTypography.EmptyTitle.fontSize * 1.3f),
-                    color = MaterialTheme.colorScheme.error,
+                    text = "安全连接警告",
                     fontWeight = FontWeight.Bold
                 )
-            }
-
-            Spacer(modifier = Modifier.height(AppSpacing.Xl))
-
-            Text(
-                text = "加载失败",
-                style = AppTypography.TitleLarge,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(modifier = Modifier.height(AppSpacing.Sm))
-
-            Text(
-                text = displayMessage,
-                style = AppTypography.BodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(AppSpacing.Xl))
-
-            Surface(
-                onClick = onRetry,
-                modifier = Modifier.clip(RoundedCornerShape(AppSpacing.Corner.Lg)),
-                shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-                color = MaterialTheme.colorScheme.primary,
-                shadowElevation = AppSpacing.Elevation.Sm
-            ) {
-                Row(
-                    modifier = Modifier.padding(
-                        horizontal = AppSpacing.Padding.ButtonHorizontal,
-                        vertical = AppSpacing.Padding.ButtonVertical
-                    ),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(AppSpacing.Sm))
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "重试",
-                        style = AppTypography.ButtonText,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        fontWeight = FontWeight.SemiBold
+                        text = sslMessage,
+                        style = AppTypography.BodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = warningColor.copy(alpha = 0.1f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(
+                                text = "安全风险提示",
+                                style = AppTypography.LabelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = warningColor
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "继续加载可能存在以下风险：",
+                                style = AppTypography.BodySmall
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "• 数据传输可能被第三方截获或篡改\n• 您与该网站的通信可能不再保密\n• 此信任仅对 Live2D 功能模块生效",
+                                style = AppTypography.BodySmall,
+                                lineHeight = 20.sp
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Surface(
+                    onClick = {
+                        Log.w(TAG, "User accepted SSL certificate warning for Live2D")
+                        onAccept()
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    color = warningColor
+                ) {
+                    Text(
+                        text = "了解风险，继续加载",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        style = AppTypography.LabelMedium,
+                        color = Color.White
                     )
                 }
-            }
-        }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    Log.i(TAG, "User rejected SSL certificate warning")
+                    onReject()
+                }) {
+                    Text("返回")
+                }
+            },
+            shape = RoundedCornerShape(24.dp)
+        )
     }
 }

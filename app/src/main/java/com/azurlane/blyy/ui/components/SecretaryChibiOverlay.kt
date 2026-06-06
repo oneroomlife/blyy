@@ -31,7 +31,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import kotlin.math.roundToInt
 
 @Composable
@@ -103,7 +103,7 @@ fun SecretaryChibiOverlay(
         label = "FigureAlpha"
     )
 
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val bubbleMaxHeight = 200.dp
     val bubbleWidth = 220.dp
     

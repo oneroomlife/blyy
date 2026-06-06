@@ -190,7 +190,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             val forceDarkTheme by playerSettings.forceDarkTheme.collectAsStateWithLifecycle(
-                initialValue = true
+                initialValue = false
             )
             val systemDark = isSystemInDarkTheme()
             BlyyTheme(
@@ -861,7 +861,7 @@ private fun ModernDrawerSheet(
     onNavigate: (String) -> Unit,
     onClose: () -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
 

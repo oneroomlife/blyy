@@ -11,6 +11,10 @@ import com.valentinilk.shimmer.shimmer
 
 @Composable
 fun ShipCardShimmer() {
+    val isDark = LocalIsDark.current
+    val shimmerStart = if (isDark) AppColors.Effect.ShimmerStartDark else AppColors.Effect.ShimmerStartLight
+    val shimmerEnd = if (isDark) AppColors.Effect.ShimmerEndDark else AppColors.Effect.ShimmerEndLight
+
     Box(
         modifier = Modifier
             .shimmer()
@@ -24,9 +28,9 @@ fun ShipCardShimmer() {
                 .background(
                     brush = androidx.compose.ui.graphics.Brush.linearGradient(
                         colors = listOf(
-                            AppColors.Effect.ShimmerStart,
-                            AppColors.Effect.ShimmerEnd,
-                            AppColors.Effect.ShimmerStart
+                            shimmerStart,
+                            shimmerEnd,
+                            shimmerStart
                         )
                     )
                 )

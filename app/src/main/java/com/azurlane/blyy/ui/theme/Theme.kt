@@ -127,7 +127,10 @@ fun BlyyTheme(
 
     val typography = if (uiStyle.isCommandCenter()) CommandCenterTypography else ClassicTypography
 
-    CompositionLocalProvider(LocalUiStyle provides uiStyle) {
+    CompositionLocalProvider(
+        LocalUiStyle provides uiStyle,
+        LocalIsDark provides darkTheme
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = typography,
