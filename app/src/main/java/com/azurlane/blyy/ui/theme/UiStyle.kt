@@ -11,4 +11,7 @@ enum class UiStyle {
 
 val LocalUiStyle = compositionLocalOf { UiStyle.COMMAND_CENTER }
 
+/** 统一的深浅色判断，由 BlyyTheme 的 darkTheme 参数驱动，替代 isSystemInDarkTheme() */
+val LocalIsDark = compositionLocalOf { true }
+
 fun UiStyle.isCommandCenter(): Boolean = this == UiStyle.COMMAND_CENTER

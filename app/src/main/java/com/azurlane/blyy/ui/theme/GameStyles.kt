@@ -377,7 +377,7 @@ fun GameGlassCard(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val isDark = LocalIsDark.current
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
 

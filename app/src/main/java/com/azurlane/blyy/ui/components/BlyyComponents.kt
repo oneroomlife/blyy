@@ -8,7 +8,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -30,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -54,6 +55,7 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.BlyyShapes
 import com.azurlane.blyy.ui.theme.ClassicColors
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.chamferedShape
@@ -87,7 +89,7 @@ fun CommandCenterBackground(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val bgBrush = if (isDark) AppColors.Gradient.BackgroundDark() else AppColors.Gradient.BackgroundLight()
     val gridColor = if (isDark) AppColors.Effect.GridDark else AppColors.Effect.GridLight
     val glowColor = if (isDark) AppColors.Effect.TopGlowDark else AppColors.Effect.TopGlowLight
@@ -145,7 +147,7 @@ fun BlyyTopBar(
         return
     }
 
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
     val accentColor = MaterialTheme.colorScheme.primary
 
@@ -245,7 +247,7 @@ fun BlyyPanel(
         return
     }
 
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
     val shape = chamferedShape(chamfer)
 
@@ -322,7 +324,7 @@ fun BlyyPrimaryButton(
             )
             .clickable(
                 interactionSource = interactionSource,
-                indication = null,
+                indication = ripple(color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.2f)),
                 enabled = enabled,
                 onClick = onClick
             )
@@ -365,7 +367,7 @@ fun BlyySecondaryButton(
         animationSpec = AppAnimation.Specs.press(),
         label = "btnScale2"
     )
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
 
     Box(
@@ -380,7 +382,7 @@ fun BlyySecondaryButton(
             )
             .clickable(
                 interactionSource = interactionSource,
-                indication = null,
+                indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                 enabled = enabled,
                 onClick = onClick
             )
@@ -428,6 +430,7 @@ fun BlyyChip(
 
     Box(
         modifier = modifier
+            .minimumInteractiveComponentSize()
             .scale(scale)
             .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
             .background(bgColor)
@@ -436,7 +439,11 @@ fun BlyyChip(
                 color = borderColor,
                 shape = RoundedCornerShape(AppSpacing.Corner.Sm)
             )
-            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                onClick = onClick
+            )
             .padding(horizontal = AppSpacing.Padding.ChipHorizontal, vertical = AppSpacing.Padding.ChipVertical),
         contentAlignment = Alignment.Center
     ) {
@@ -551,7 +558,7 @@ fun adaptiveCardShape() =
 
 @Composable
 fun adaptiveGlassSurface(): Color {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     return when {
         LocalUiStyle.current == UiStyle.CLASSIC && isDark -> ClassicColors.GlassSurfaceDark
         LocalUiStyle.current == UiStyle.CLASSIC -> ClassicColors.GlassSurfaceLight
@@ -562,7 +569,7 @@ fun adaptiveGlassSurface(): Color {
 
 @Composable
 fun adaptiveGlassBorder(): Color {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     return when {
         LocalUiStyle.current == UiStyle.CLASSIC && isDark -> ClassicColors.GlassBorderDark
         LocalUiStyle.current == UiStyle.CLASSIC -> ClassicColors.GlassBorderLight

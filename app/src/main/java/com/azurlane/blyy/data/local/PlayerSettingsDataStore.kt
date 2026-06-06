@@ -47,6 +47,9 @@ class PlayerSettingsDataStore @Inject constructor(
         // 外观设置
         private val UI_STYLE_KEY = stringPreferencesKey("ui_style")
         private val FORCE_DARK_THEME_KEY = booleanPreferencesKey("force_dark_theme")
+
+        // Live2D 证书信任（仅限 l2d.su 域名）
+        private val LIVE2D_SSL_TRUSTED_KEY = booleanPreferencesKey("live2d_ssl_trusted")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -95,8 +98,11 @@ class PlayerSettingsDataStore @Inject constructor(
         }
     }
 
-    /** 默认 true — 暗色模式优先 */
-    val forceDarkTheme: Flow<Boolean> = context.dataStore.data.map { it[FORCE_DARK_THEME_KEY] ?: true }
+    /** 默认 false — 跟随系统深浅色设置 */
+    val forceDarkTheme: Flow<Boolean> = context.dataStore.data.map { it[FORCE_DARK_THEME_KEY] ?: false }
+
+    /** Live2D 域名证书信任标记，仅对 l2d.su 生效 */
+    val live2dSslTrusted: Flow<Boolean> = context.dataStore.data.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
 
     // 语音语言
     val voiceLanguage: Flow<VoiceLanguage> = context.dataStore.data
@@ -148,6 +154,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setForceDarkTheme(force: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[FORCE_DARK_THEME_KEY] = force
+        }
+    }
+
+    suspend fun setLive2dSslTrusted(trusted: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[LIVE2D_SSL_TRUSTED_KEY] = trusted
         }
     }
 

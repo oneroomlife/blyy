@@ -7,7 +7,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -297,7 +296,7 @@ private fun ClassicGallerySearchBar(
     onFilterClick: () -> Unit,
     hasActiveFilters: Boolean
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val surfaceColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
     
     val filterButtonScale by animateFloatAsState(
@@ -430,7 +429,7 @@ private fun ModernSearchAndFilterBar(
     onFilterClick: () -> Unit,
     hasActiveFilters: Boolean
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
@@ -611,7 +610,7 @@ private fun ModernFilterBottomSheet(
     allTypes: List<String>,
     allRarities: List<String>
 ) {
-    val isDark = isSystemInDarkTheme()
+    val isDark = LocalIsDark.current
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val haptic = LocalHapticFeedback.current
     

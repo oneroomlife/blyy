@@ -466,9 +466,6 @@ private fun BoxScope.OathSpecialEffect() {
     val sparklePositions = listOf(
         Pair(0.15f, 0.15f),
         Pair(0.85f, 0.12f),
-        Pair(0.2f, 0.85f),
-        Pair(0.82f, 0.88f),
-        Pair(0.5f, 0.08f),
         Pair(0.5f, 0.92f)
     )
     
@@ -499,7 +496,7 @@ private fun BoxScope.OathSpecialEffect() {
                         AppColors.Favorite.PinkDark.copy(alpha = borderGlowAlpha)
                     )
                 ),
-                shape = RoundedCornerShape(20.dp)
+                shape = adaptiveCardShape()
             )
     )
     

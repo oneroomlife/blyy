@@ -167,11 +167,38 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     }
 
     private fun skipNext() {
-        onController { it.seekToNextMediaItem() }
+        onController { player ->
+            val voices = state.value.voices
+            if (voices.isEmpty()) return@onController
+
+            val currentIndex = _currentVoiceIndex.value
+            val nextIndex = if (currentIndex < 0) 0 else (currentIndex + 1) % voices.size
+
+            val currentMode = getPlayModeFromPlayer(player)
+            playVoiceAtIndex(nextIndex, currentMode)
+        }
     }
 
     private fun skipPrevious() {
-        onController { it.seekToPreviousMediaItem() }
+        onController { player ->
+            val voices = state.value.voices
+            if (voices.isEmpty()) return@onController
+
+            val currentIndex = _currentVoiceIndex.value
+            val prevIndex = if (currentIndex <= 0) voices.size - 1 else currentIndex - 1
+
+            val currentMode = getPlayModeFromPlayer(player)
+            playVoiceAtIndex(prevIndex, currentMode)
+        }
+    }
+
+    private fun getPlayModeFromPlayer(player: Player): PlayMode {
+        return when {
+            player.shuffleModeEnabled -> PlayMode.SHUFFLE
+            player.repeatMode == Player.REPEAT_MODE_ONE -> PlayMode.REPEAT_ONE
+            player.repeatMode == Player.REPEAT_MODE_ALL -> PlayMode.REPEAT_ALL
+            else -> PlayMode.PLAY_ONCE
+        }
     }
 
     private fun playVoiceAtIndex(index: Int, playMode: PlayMode) {
@@ -181,19 +208,23 @@ class VoiceViewModel @OptIn(UnstableApi::class)
                 _currentVoiceIndex.value = index
 
                 when (playMode) {
-                    PlayMode.PLAY_ONCE -> {
+                    PlayMode.PLAY_ONCE, PlayMode.REPEAT_ONE -> {
+                        // 在单次播放或单曲循环模式下，只加载当前项，避免自动跳转到下一首
                         player.setMediaItem(createMediaItem(currentVoices[index]))
-                        player.repeatMode = Player.REPEAT_MODE_OFF
+                        player.repeatMode = if (playMode == PlayMode.REPEAT_ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+                        player.shuffleModeEnabled = false
                     }
-                    PlayMode.REPEAT_ONE -> {
-                        player.setMediaItem(createMediaItem(currentVoices[index]))
-                        player.repeatMode = Player.REPEAT_MODE_ONE
-                    }
-                    PlayMode.REPEAT_ALL, PlayMode.SHUFFLE -> {
+                    PlayMode.REPEAT_ALL -> {
                         val mediaItems = currentVoices.map { createMediaItem(it) }
                         player.setMediaItems(mediaItems, index, 0)
                         player.repeatMode = Player.REPEAT_MODE_ALL
-                        player.shuffleModeEnabled = (playMode == PlayMode.SHUFFLE)
+                        player.shuffleModeEnabled = false
+                    }
+                    PlayMode.SHUFFLE -> {
+                        val mediaItems = currentVoices.map { createMediaItem(it) }
+                        player.setMediaItems(mediaItems, index, 0)
+                        player.repeatMode = Player.REPEAT_MODE_ALL
+                        player.shuffleModeEnabled = true
                     }
                 }
 
@@ -211,8 +242,10 @@ class VoiceViewModel @OptIn(UnstableApi::class)
                 if (availableIndices.isNotEmpty()) {
                     val randomIndex = availableIndices.random()
                     _currentVoiceIndex.value = randomIndex
-                    val mediaItem = createMediaItem(voices[randomIndex])
-                    player.setMediaItem(mediaItem)
+                    
+                    // 默认按单次播放处理，仅加载单曲。手动切歌由 skipNext/Previous 处理。
+                    player.setMediaItem(createMediaItem(voices[randomIndex]))
+
                     player.repeatMode = Player.REPEAT_MODE_OFF
                     player.shuffleModeEnabled = false
                     player.prepare()
