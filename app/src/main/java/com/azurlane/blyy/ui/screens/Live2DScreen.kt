@@ -2,6 +2,9 @@ package com.azurlane.blyy.ui.screens
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.net.http.SslError
@@ -11,6 +14,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.ServiceWorkerController
@@ -22,6 +26,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
@@ -43,11 +48,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.rounded.Adb
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.StayCurrentPortrait
@@ -90,6 +98,7 @@ import com.azurlane.blyy.R
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.viewmodel.Live2DLoadPhase
 import com.azurlane.blyy.viewmodel.Live2DViewModel
 import kotlinx.coroutines.delay
 
@@ -102,9 +111,14 @@ private const val COMPLETE_PROGRESS = 100
 /** Canvas opacity 恢复延迟帧数，确保 PixiJS 至少渲染一帧后再显示 */
 private const val CANVAS_RESTORE_DELAY_FRAMES = 2
 
-private const val TAG = "Live2DScreen"
+/** 加载超时时间（毫秒） */
+private const val LOAD_TIMEOUT_MS = 45_000L
 
-private enum class Live2DLoadPhase { Loading, Ready, Error, SslWarning }
+/** 加载卡住检测阈值：进度在指定时间内无变化则判定为卡住 */
+private const val STUCK_CHECK_INTERVAL_MS = 5_000L
+private const val STUCK_THRESHOLD_MS = 15_000L
+
+private const val TAG = "Live2DScreen"
 
 /**
  * Live2D 全屏沉浸展示界面。
@@ -113,6 +127,8 @@ private enum class Live2DLoadPhase { Loading, Ready, Error, SslWarning }
  * 1. 视觉稳定性：使用 AnimatedContent 替代简单的 Visibility，实现平滑的十字淡化过渡。
  * 2. 性能表现：引入 ResizeObserver 与 双帧渲染策略，消除 WebView 尺寸变动时的黑闪与跳变。
  * 3. 交互体验：增加触感反馈与更细腻的加载进度反馈。
+ * 4. 可靠性：加载超时检测、卡住检测、WebGL 状态监控、JavaScript 错误捕获。
+ * 5. 可诊断性：完整的错误信息复制功能，包含设备信息、加载阶段、控制台日志等。
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -162,6 +178,22 @@ fun Live2DScreen(
         loadProgress = INITIAL_PROGRESS
         errorMessage = ""
         isContentReady = false
+        viewModel.updateLoadState {
+            it.copy(
+                phase = Live2DLoadPhase.Loading,
+                progress = INITIAL_PROGRESS,
+                errorMessage = "",
+                sslErrorMessage = "",
+                sslErrorCode = -1,
+                loadStartTimeMs = System.currentTimeMillis(),
+                pageStartedTimeMs = 0L,
+                pageVisibleTimeMs = 0L,
+                pageFinishedTimeMs = 0L,
+                errorTimeMs = 0L,
+                consoleErrors = emptyList(),
+                webGLStatus = "unknown"
+            )
+        }
     }
 
     // 页面加载完成后延迟切换到 Ready，给 WebGL canvas 时间渲染首帧
@@ -169,8 +201,54 @@ fun Live2DScreen(
         if (isContentReady && loadPhase == Live2DLoadPhase.Loading) {
             // 确保进度条达到 100% 并停留片刻
             loadProgress = COMPLETE_PROGRESS
-            delay(200L) 
+            delay(200L)
             loadPhase = Live2DLoadPhase.Ready
+            viewModel.updateLoadState { it.copy(phase = Live2DLoadPhase.Ready, progress = COMPLETE_PROGRESS) }
+        }
+    }
+
+    // ── 加载超时检测 ──
+    LaunchedEffect(reloadToken, webViewGeneration) {
+        val startTime = System.currentTimeMillis()
+        var lastProgress = INITIAL_PROGRESS
+        var lastProgressTime = startTime
+
+        while (loadPhase == Live2DLoadPhase.Loading) {
+            delay(STUCK_CHECK_INTERVAL_MS)
+            val elapsed = System.currentTimeMillis() - startTime
+
+            // 总超时检测
+            if (elapsed > LOAD_TIMEOUT_MS) {
+                Log.w(TAG, "Load timeout after ${elapsed}ms, progress=$loadProgress")
+                loadPhase = Live2DLoadPhase.Error
+                errorMessage = "加载超时（${elapsed / 1000}秒），请检查网络后重试"
+                viewModel.updateLoadState {
+                    it.copy(
+                        phase = Live2DLoadPhase.Error,
+                        errorMessage = errorMessage,
+                        errorTimeMs = System.currentTimeMillis()
+                    )
+                }
+                break
+            }
+
+            // 卡住检测：进度长时间无变化
+            if (loadProgress != lastProgress) {
+                lastProgress = loadProgress
+                lastProgressTime = System.currentTimeMillis()
+            } else if (System.currentTimeMillis() - lastProgressTime > STUCK_THRESHOLD_MS) {
+                Log.w(TAG, "Load stuck at ${loadProgress}% for ${STUCK_THRESHOLD_MS}ms")
+                loadPhase = Live2DLoadPhase.Error
+                errorMessage = "加载停滞在 ${loadProgress}%，请重试"
+                viewModel.updateLoadState {
+                    it.copy(
+                        phase = Live2DLoadPhase.Error,
+                        errorMessage = errorMessage,
+                        errorTimeMs = System.currentTimeMillis()
+                    )
+                }
+                break
+            }
         }
     }
 
@@ -200,6 +278,11 @@ fun Live2DScreen(
                             } else {
                                 reloadToken++
                             }
+                        },
+                        onCopyError = {
+                            val report = viewModel.generateErrorReport(context)
+                            copyToClipboard(context, "Live2D错误报告", report)
+                            Toast.makeText(context, "错误信息已复制", Toast.LENGTH_SHORT).show()
                         }
                     )
                 }
@@ -211,7 +294,12 @@ fun Live2DScreen(
                             beginLoad()
                             reloadToken++
                         },
-                        onReject = onBack
+                        onReject = onBack,
+                        onCopyError = {
+                            val report = viewModel.generateErrorReport(context)
+                            copyToClipboard(context, "Live2D_SSL错误报告", report)
+                            Toast.makeText(context, "错误信息已复制", Toast.LENGTH_SHORT).show()
+                        }
                     )
                 }
                 Live2DLoadPhase.Ready -> {
@@ -224,38 +312,79 @@ fun Live2DScreen(
         key(webViewGeneration) {
             val webView = rememberLive2DWebView(
                 sslTrusted = sslTrusted,
-                onLoadStarted = { beginLoad() },
+                onLoadStarted = {
+                    beginLoad()
+                    viewModel.updateLoadState { it.copy(pageStartedTimeMs = System.currentTimeMillis()) }
+                },
                 onLoadProgress = { progress ->
                     val boundedProgress = progress.coerceIn(INITIAL_PROGRESS, COMPLETE_PROGRESS)
                     loadProgress = maxOf(loadProgress, boundedProgress)
+                    viewModel.updateLoadState { it.copy(progress = loadProgress) }
                 },
                 onPageVisible = {
                     if (loadPhase == Live2DLoadPhase.Loading) {
                         loadProgress = maxOf(loadProgress, VISIBLE_PAGE_PROGRESS)
                         isContentReady = true
+                        viewModel.updateLoadState {
+                            it.copy(pageVisibleTimeMs = System.currentTimeMillis(), progress = loadProgress)
+                        }
                     }
                 },
                 onLoadFinished = {
                     if (loadPhase != Live2DLoadPhase.Error && loadPhase != Live2DLoadPhase.SslWarning) {
                         loadProgress = COMPLETE_PROGRESS
                         isContentReady = true
+                        viewModel.updateLoadState {
+                            it.copy(pageFinishedTimeMs = System.currentTimeMillis(), progress = COMPLETE_PROGRESS)
+                        }
                     }
                 },
                 onLoadFailed = { message ->
                     loadProgress = 0
                     loadPhase = Live2DLoadPhase.Error
                     errorMessage = message
+                    viewModel.updateLoadState {
+                        it.copy(
+                            phase = Live2DLoadPhase.Error,
+                            errorMessage = message,
+                            errorTimeMs = System.currentTimeMillis(),
+                            progress = 0
+                        )
+                    }
                 },
-                onSslError = { message ->
+                onSslError = { message, errorCode ->
                     loadProgress = 0
                     sslErrorMessage = message
                     loadPhase = Live2DLoadPhase.SslWarning
+                    viewModel.updateLoadState {
+                        it.copy(
+                            phase = Live2DLoadPhase.SslWarning,
+                            sslErrorMessage = message,
+                            sslErrorCode = errorCode,
+                            errorTimeMs = System.currentTimeMillis(),
+                            progress = 0
+                        )
+                    }
                 },
                 onRendererGone = { message ->
                     recreateOnNextRetry = true
                     loadProgress = 0
                     loadPhase = Live2DLoadPhase.Error
                     errorMessage = message
+                    viewModel.updateLoadState {
+                        it.copy(
+                            phase = Live2DLoadPhase.Error,
+                            errorMessage = message,
+                            errorTimeMs = System.currentTimeMillis(),
+                            progress = 0
+                        )
+                    }
+                },
+                onConsoleError = { message ->
+                    viewModel.addConsoleError(message)
+                },
+                onWebGLStatus = { status ->
+                    viewModel.updateLoadState { it.copy(webGLStatus = status) }
                 }
             )
 
@@ -295,6 +424,13 @@ fun Live2DScreen(
             )
         }
     }
+}
+
+// ────────────────────────── 剪贴板工具 ──────────────────────────
+
+private fun copyToClipboard(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+    clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
 }
 
 // ────────────────────────── 横竖屏模式 ──────────────────────────
@@ -424,8 +560,10 @@ private fun rememberLive2DWebView(
     onPageVisible: () -> Unit,
     onLoadFinished: () -> Unit,
     onLoadFailed: (String) -> Unit,
-    onSslError: (String) -> Unit,
-    onRendererGone: (String) -> Unit
+    onSslError: (String, Int) -> Unit,
+    onRendererGone: (String) -> Unit,
+    onConsoleError: (String) -> Unit,
+    onWebGLStatus: (String) -> Unit
 ): WebView {
     val context = LocalContext.current
     val onLoadStartedState = rememberUpdatedState(onLoadStarted)
@@ -435,6 +573,8 @@ private fun rememberLive2DWebView(
     val onLoadFailedState = rememberUpdatedState(onLoadFailed)
     val onSslErrorState = rememberUpdatedState(onSslError)
     val onRendererGoneState = rememberUpdatedState(onRendererGone)
+    val onConsoleErrorState = rememberUpdatedState(onConsoleError)
+    val onWebGLStatusState = rememberUpdatedState(onWebGLStatus)
     val sslTrustedState = rememberUpdatedState(sslTrusted)
 
     return remember {
@@ -449,7 +589,9 @@ private fun rememberLive2DWebView(
                 onLoadFinishedState = onLoadFinishedState,
                 onLoadFailedState = onLoadFailedState,
                 onSslErrorState = onSslErrorState,
-                onRendererGoneState = onRendererGoneState
+                onRendererGoneState = onRendererGoneState,
+                onConsoleErrorState = onConsoleErrorState,
+                onWebGLStatusState = onWebGLStatusState
             )
         }
     }
@@ -498,8 +640,10 @@ private fun WebView.configureForLive2D(
     onPageVisibleState: androidx.compose.runtime.State<() -> Unit>,
     onLoadFinishedState: androidx.compose.runtime.State<() -> Unit>,
     onLoadFailedState: androidx.compose.runtime.State<(String) -> Unit>,
-    onSslErrorState: androidx.compose.runtime.State<(String) -> Unit>,
-    onRendererGoneState: androidx.compose.runtime.State<(String) -> Unit>
+    onSslErrorState: androidx.compose.runtime.State<(String, Int) -> Unit>,
+    onRendererGoneState: androidx.compose.runtime.State<(String) -> Unit>,
+    onConsoleErrorState: androidx.compose.runtime.State<(String) -> Unit>,
+    onWebGLStatusState: androidx.compose.runtime.State<(String) -> Unit>
 ) {
     layoutParams = ViewGroup.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -544,6 +688,8 @@ private fun WebView.configureForLive2D(
         override fun onPageFinished(view: WebView?, url: String?) {
             if (url.isWebPageUrl()) {
                 onLoadFinishedState.value()
+                // 注入 WebGL 检测和错误监控脚本
+                view?.evaluateJavascript(WEBGL_DETECT_AND_MONITOR_SCRIPT, null)
                 view?.evaluateJavascript(WEB_OPTIMIZATION_SCRIPT, null)
             }
         }
@@ -561,7 +707,15 @@ private fun WebView.configureForLive2D(
         override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
             val host = view?.url?.let { java.net.URL(it).host } ?: ""
             val friendlyMsg = error.toFriendlyMessage()
-            Log.w(TAG, "SSL error for host=$host: $friendlyMsg (primaryError=${error?.primaryError}, trusted=${sslTrustedState.value})")
+            val primaryError = error?.primaryError ?: -1
+            Log.w(TAG, "SSL error for host=$host: $friendlyMsg (primaryError=$primaryError, trusted=${sslTrustedState.value})")
+
+            // 记录 SSL 证书详细信息用于诊断
+            val certInfo = error?.certificate?.let { cert ->
+                "DN=${cert.issuedBy?.dName}, O=${cert.issuedBy?.oName}, U=${cert.issuedBy?.uName}, " +
+                "Valid=${cert.validNotBeforeDate}~${cert.validNotAfterDate}"
+            } ?: "null"
+            Log.w(TAG, "SSL certificate info: $certInfo")
 
             if (sslTrustedState.value && host == LIVE2D_HOST) {
                 // 用户已明确信任此域名，允许继续加载
@@ -570,7 +724,7 @@ private fun WebView.configureForLive2D(
             } else {
                 // 首次遇到 SSL 错误，拒绝并通知 UI 显示警告
                 handler?.cancel()
-                onSslErrorState.value(friendlyMsg)
+                onSslErrorState.value(friendlyMsg, primaryError)
             }
         }
 
@@ -584,8 +738,127 @@ private fun WebView.configureForLive2D(
         override fun onProgressChanged(view: WebView?, newProgress: Int) {
             onLoadProgressState.value(newProgress)
         }
+
+        override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+            val level = consoleMessage.messageLevel()
+            val msg = "[${level}] ${consoleMessage.message()} (${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})"
+            Log.d(TAG, "Console: $msg")
+
+            // 捕获错误和警告级别的控制台消息
+            when (level) {
+                ConsoleMessage.MessageLevel.ERROR,
+                ConsoleMessage.MessageLevel.WARNING -> {
+                    onConsoleErrorState.value(msg)
+                }
+                else -> Unit
+            }
+            return true
+        }
+
+        override fun onJsAlert(view: WebView?, url: String?, message: String?, result: android.webkit.JsResult?): Boolean {
+            Log.w(TAG, "JS Alert from $url: $message")
+            result?.confirm()
+            return true
+        }
     }
 }
+
+/**
+ * WebGL 检测与加载状态监控脚本。
+ * 在页面加载完成后注入，检测 WebGL 支持状态并监控模型加载过程中的错误。
+ */
+private const val WEBGL_DETECT_AND_MONITOR_SCRIPT = """
+(function() {
+    'use strict';
+
+    // ── WebGL 支持检测 ──
+    function detectWebGL() {
+        try {
+            var canvas = document.createElement('canvas');
+            var gl = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            if (gl) {
+                var renderer = gl.getParameter(gl.RENDERER);
+                var vendor = gl.getParameter(gl.VENDOR);
+                var version = gl.getParameter(gl.VERSION);
+                console.log('[Live2D] WebGL OK: renderer=' + renderer + ', vendor=' + vendor + ', version=' + version);
+                return 'supported: ' + renderer;
+            }
+            console.error('[Live2D] WebGL not available');
+            return 'not_supported';
+        } catch(e) {
+            console.error('[Live2D] WebGL detection failed: ' + e.message);
+            return 'error: ' + e.message;
+        }
+    }
+
+    var webglStatus = detectWebGL();
+
+    // ── 全局错误捕获 ──
+    window.addEventListener('error', function(e) {
+        console.error('[Live2D] Uncaught error: ' + e.message + ' at ' + e.filename + ':' + e.lineno + ':' + e.colno);
+    });
+
+    window.addEventListener('unhandledrejection', function(e) {
+        console.error('[Live2D] Unhandled promise rejection: ' + (e.reason ? e.reason.stack || e.reason.message || e.reason : 'unknown'));
+    });
+
+    // ── WebGL 上下文丢失监控 ──
+    document.addEventListener('webglcontextlost', function(e) {
+        console.error('[Live2D] WebGL context lost!');
+    }, true);
+
+    document.addEventListener('webglcontextrestored', function(e) {
+        console.log('[Live2D] WebGL context restored');
+    }, true);
+
+    // ── 资源加载错误监控 ──
+    document.addEventListener('error', function(e) {
+        var target = e.target;
+        if (target && (target.tagName === 'IMG' || target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
+            console.error('[Live2D] Resource load failed: ' + target.tagName + ' src=' + (target.src || target.href));
+        }
+    }, true);
+
+    // ── 模型加载状态轮询（每3秒检查一次，最多30次） ──
+    var checkCount = 0;
+    var maxChecks = 30;
+    var checkInterval = setInterval(function() {
+        checkCount++;
+        if (checkCount > maxChecks) {
+            clearInterval(checkInterval);
+            return;
+        }
+
+        // 检测 PixiJS 应用和 Live2D 模型状态
+        try {
+            var apps = [window.app, window.pixiApp].filter(function(a) { return a && a.renderer; });
+            if (apps.length > 0) {
+                apps.forEach(function(app) {
+                    var stage = app.stage;
+                    if (stage && stage.children && stage.children.length > 0) {
+                        var modelCount = 0;
+                        stage.children.forEach(function(child) {
+                            if (child.internalModel || (child.constructor && child.constructor.name && child.constructor.name.includes('Model'))) {
+                                modelCount++;
+                                // 检查模型是否完成加载
+                                if (child.internalModel) {
+                                    var state = child.internalModel.motionManager ? 'ready' : 'loading';
+                                    console.log('[Live2D] Model state: ' + state + ', textures: ' + (child.internalModel.settings?.textures?.length || 'unknown'));
+                                }
+                            }
+                        });
+                        if (modelCount > 0) {
+                            console.log('[Live2D] Found ' + modelCount + ' model(s) on stage');
+                        }
+                    }
+                });
+            }
+        } catch(e) {
+            // 静默忽略，不影响正常流程
+        }
+    }, 3000);
+})();
+"""
 
 /**
  * 全面优化 Live2D 网页渲染的 JavaScript 脚本。
@@ -809,6 +1082,8 @@ private fun SslError?.toFriendlyMessage(): String = when (this?.primaryError) {
     SslError.SSL_EXPIRED -> "网页证书已过期"
     SslError.SSL_IDMISMATCH -> "网页证书域名不匹配"
     SslError.SSL_UNTRUSTED -> "网页证书不受信任"
+    SslError.SSL_DATE_INVALID -> "证书日期无效，请检查设备系统时间是否正确"
+    SslError.SSL_INVALID -> "证书验证失败"
     else -> "安全连接校验失败"
 }
 
@@ -852,7 +1127,11 @@ private fun LoadingOverlay(progress: Int) {
 }
 
 @Composable
-private fun ErrorOverlay(message: String, onRetry: () -> Unit) {
+private fun ErrorOverlay(
+    message: String,
+    onRetry: () -> Unit,
+    onCopyError: () -> Unit
+) {
     val isDark = LocalIsDark.current
     val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
     Box(
@@ -864,11 +1143,27 @@ private fun ErrorOverlay(message: String, onRetry: () -> Unit) {
             Spacer(Modifier.height(AppSpacing.Sm))
             Text(message, style = AppTypography.BodyMedium, textAlign = TextAlign.Center)
             Spacer(Modifier.height(AppSpacing.Xl))
-            Surface(onClick = onRetry, shape = RoundedCornerShape(AppSpacing.Corner.Lg), color = MaterialTheme.colorScheme.primary) {
-                Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.Refresh, null, Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("重试", style = AppTypography.ButtonText)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(onClick = onRetry, shape = RoundedCornerShape(AppSpacing.Corner.Lg), color = MaterialTheme.colorScheme.primary) {
+                    Row(Modifier.padding(horizontal = 24.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Refresh, null, Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("重试", style = AppTypography.ButtonText)
+                    }
+                }
+                Surface(
+                    onClick = onCopyError,
+                    shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+                    color = MaterialTheme.colorScheme.errorContainer
+                ) {
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.ContentCopy, null, Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("复制错误信息", style = AppTypography.ButtonText, color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
                 }
             }
         }
@@ -885,7 +1180,8 @@ private fun ErrorOverlay(message: String, onRetry: () -> Unit) {
 private fun SslWarningOverlay(
     sslMessage: String,
     onAccept: () -> Unit,
-    onReject: () -> Unit
+    onReject: () -> Unit,
+    onCopyError: () -> Unit
 ) {
     val isDark = LocalIsDark.current
     val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
@@ -912,7 +1208,10 @@ private fun SslWarningOverlay(
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
                     Text(
                         text = sslMessage,
                         style = AppTypography.BodyMedium,
@@ -940,6 +1239,31 @@ private fun SslWarningOverlay(
                                 text = "• 数据传输可能被第三方截获或篡改\n• 您与该网站的通信可能不再保密\n• 此信任仅对 Live2D 功能模块生效",
                                 style = AppTypography.BodySmall,
                                 lineHeight = 20.sp
+                            )
+                        }
+                    }
+                    // 复制错误信息按钮
+                    Surface(
+                        onClick = onCopyError,
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.errorContainer
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                Icons.Rounded.ContentCopy, null, Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "复制错误详情",
+                                style = AppTypography.LabelMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
                             )
                         }
                     }

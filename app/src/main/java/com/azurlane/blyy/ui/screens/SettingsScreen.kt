@@ -36,6 +36,7 @@ fun SettingsScreen(
 ) {
     val uiStyle by viewModel.uiStyle.collectAsStateWithLifecycle()
     val forceDark by viewModel.forceDarkTheme.collectAsStateWithLifecycle()
+    val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
 
     AdaptiveScreenBackground {
@@ -78,6 +79,16 @@ fun SettingsScreen(
                         description = if (forceDark) "已强制深色，忽略系统设置" else "跟随系统浅色/深色设置",
                         checked = forceDark,
                         onCheckedChange = viewModel::setForceDarkTheme,
+                        usePanel = isCommandCenter
+                    )
+                }
+
+                SettingsSection(title = "更新") {
+                    SettingsToggleRow(
+                        title = "自动检测更新",
+                        description = if (autoCheckUpdate) "启动时自动检查新版本" else "不会自动检查更新，可在关于页手动检查",
+                        checked = autoCheckUpdate,
+                        onCheckedChange = viewModel::setAutoCheckUpdateEnabled,
                         usePanel = isCommandCenter
                     )
                 }

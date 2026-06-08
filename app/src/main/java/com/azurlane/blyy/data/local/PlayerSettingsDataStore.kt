@@ -50,6 +50,10 @@ class PlayerSettingsDataStore @Inject constructor(
 
         // Live2D 证书信任（仅限 l2d.su 域名）
         private val LIVE2D_SSL_TRUSTED_KEY = booleanPreferencesKey("live2d_ssl_trusted")
+
+        // 自动检测更新
+        private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
+        private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -103,6 +107,12 @@ class PlayerSettingsDataStore @Inject constructor(
 
     /** Live2D 域名证书信任标记，仅对 l2d.su 生效 */
     val live2dSslTrusted: Flow<Boolean> = context.dataStore.data.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
+
+    /** 自动检测更新开关，默认开启 */
+    val autoCheckUpdateEnabled: Flow<Boolean> = context.dataStore.data.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
+
+    /** 用户跳过的更新版本号，用于"稍后提醒"功能 */
+    val skippedUpdateVersion: Flow<String> = context.dataStore.data.map { it[SKIPPED_UPDATE_VERSION_KEY] ?: "" }
 
     // 语音语言
     val voiceLanguage: Flow<VoiceLanguage> = context.dataStore.data
@@ -160,6 +170,18 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setLive2dSslTrusted(trusted: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[LIVE2D_SSL_TRUSTED_KEY] = trusted
+        }
+    }
+
+    suspend fun setAutoCheckUpdateEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[AUTO_CHECK_UPDATE_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setSkippedUpdateVersion(version: String) {
+        context.dataStore.edit { prefs ->
+            prefs[SKIPPED_UPDATE_VERSION_KEY] = version
         }
     }
 

@@ -3,11 +3,9 @@ package com.azurlane.blyy.ui.theme
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.FloatAnimationSpec
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -110,6 +108,29 @@ object AppAnimation {
         )
     }
     
+    // ── 统一按压反馈规范 ──
+    object Press {
+        /** 轻按 — Chip、小按钮、标签 */
+        const val LightScale = 0.96f
+        /** 标准 — 卡片、列表项 */
+        const val StandardScale = 0.97f
+        /** 强按 — 主操作按钮、FAB */
+        const val HeavyScale = 0.94f
+
+        fun <T> light(): AnimationSpec<T> = spring(
+            dampingRatio = 0.75f,
+            stiffness = 500f
+        )
+        fun <T> standard(): AnimationSpec<T> = spring(
+            dampingRatio = 0.7f,
+            stiffness = 400f
+        )
+        fun <T> heavy(): AnimationSpec<T> = spring(
+            dampingRatio = 0.65f,
+            stiffness = 350f
+        )
+    }
+    
     object Specs {
         fun <T> fast(): AnimationSpec<T> = tween(
             durationMillis = Duration.Fast,
@@ -147,9 +168,9 @@ object AppAnimation {
             stiffness = Spring.StiffnessMedium
         )
         
-        fun <T> press(): AnimationSpec<T> = tween(
-            durationMillis = Duration.Instant,
-            easing = Easings.Standard
+        fun <T> press(): AnimationSpec<T> = spring(
+            dampingRatio = 0.7f,
+            stiffness = 400f
         )
         
         fun <T> slideIn(): AnimationSpec<T> = tween(
@@ -225,8 +246,8 @@ object AppAnimation {
         )
         
         fun <T> press(): AnimationSpec<T> = spring(
-            dampingRatio = 0.85f,
-            stiffness = 300f
+            dampingRatio = 0.7f,
+            stiffness = 400f
         )
         
         fun <T> hover(): AnimationSpec<T> = tween(

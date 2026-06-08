@@ -24,8 +24,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
@@ -64,11 +66,8 @@ fun ShipCard(
     var showMenu by remember { mutableStateOf(false) }
     
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.96f else 1f,
-        animationSpec = spring(
-            dampingRatio = 0.7f,
-            stiffness = 400f
-        ),
+        targetValue = if (isPressed) AppAnimation.Press.StandardScale else 1f,
+        animationSpec = AppAnimation.Press.standard(),
         label = "CardScale"
     )
     
@@ -144,13 +143,13 @@ fun ShipCard(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .fillMaxHeight(0.38f)
+                    .fillMaxHeight(0.42f)
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.6f),
-                                Color.Black.copy(alpha = 0.85f)
+                                Color.Black.copy(alpha = 0.45f),
+                                Color.Black.copy(alpha = 0.92f)
                             )
                         )
                     )
@@ -221,7 +220,7 @@ fun ShipCard(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(AppSpacing.Corner.Sm),
-                        color = rarityColor.copy(alpha = 0.45f),
+                        color = rarityColor.copy(alpha = 0.55f),
                         modifier = Modifier
                             .then(
                                 if (isHighRarity) {
@@ -246,7 +245,7 @@ fun ShipCard(
                     
                     Surface(
                         shape = RoundedCornerShape(AppSpacing.Corner.Sm),
-                        color = Color.White.copy(alpha = 0.18f)
+                        color = Color.White.copy(alpha = 0.28f)
                     ) {
                         Text(
                             text = ship.type,
@@ -402,16 +401,6 @@ private fun RarityGlow(rarityColor: Color, rarityGradient: Brush) {
         label = "GlowAlpha"
     )
     
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0.92f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween<Float>(3000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "PulseScale"
-    )
-    
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -423,7 +412,7 @@ private fun RarityGlow(rarityColor: Color, rarityGradient: Brush) {
                         rarityColor.copy(alpha = glowAlpha * 0.2f),
                         Color.Transparent
                     ),
-                    radius = 0.75f * pulseScale
+                    radius = 0.75f
                 )
             )
     )
@@ -443,16 +432,6 @@ private fun BoxScope.OathSpecialEffect() {
         label = "PinkGlowAlpha"
     )
     
-    val innerGlowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.05f,
-        targetValue = 0.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween<Float>(2400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "InnerGlowAlpha"
-    )
-    
     val borderGlowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.3f,
         targetValue = 0.6f,
@@ -463,12 +442,7 @@ private fun BoxScope.OathSpecialEffect() {
         label = "BorderGlowAlpha"
     )
     
-    val sparklePositions = listOf(
-        Pair(0.15f, 0.15f),
-        Pair(0.85f, 0.12f),
-        Pair(0.5f, 0.92f)
-    )
-    
+    // 粉色径向光晕
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -484,6 +458,7 @@ private fun BoxScope.OathSpecialEffect() {
             )
     )
     
+    // 渐变边框
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -500,57 +475,54 @@ private fun BoxScope.OathSpecialEffect() {
             )
     )
     
+    // 闪光粒子 — 合并为单个 drawBehind 减少布局层级
+    val sparkleAlpha0 by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween<Float>(1800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ), label = "Sparkle0"
+    )
+    val sparkleAlpha1 by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween<Float>(2000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ), label = "Sparkle1"
+    )
+    val sparkleAlpha2 by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween<Float>(2200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Restart
+        ), label = "Sparkle2"
+    )
+    
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        AppColors.Favorite.Pink.copy(alpha = innerGlowAlpha * 0.3f),
-                        Color.Transparent,
-                        AppColors.Favorite.PinkLight.copy(alpha = innerGlowAlpha * 0.2f),
-                        Color.Transparent
-                    )
+            .drawBehind {
+                val sparkleRadius = 3.dp.toPx()
+                val sparkleColor = AppColors.Favorite.PinkLight
+                val w = this.size.width
+                val h = this.size.height
+                drawCircle(
+                    color = sparkleColor.copy(alpha = sparkleAlpha0 * 0.9f),
+                    radius = sparkleRadius,
+                    center = Offset(w * 0.15f, h * 0.15f)
                 )
-            )
+                drawCircle(
+                    color = sparkleColor.copy(alpha = sparkleAlpha1 * 0.9f),
+                    radius = sparkleRadius,
+                    center = Offset(w * 0.85f, h * 0.12f)
+                )
+                drawCircle(
+                    color = sparkleColor.copy(alpha = sparkleAlpha2 * 0.9f),
+                    radius = sparkleRadius,
+                    center = Offset(w * 0.5f, h * 0.92f)
+                )
+            }
     )
-    
-    sparklePositions.forEachIndexed { index, (x, y) ->
-        val sparkleAlpha by infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween<Float>(
-                    durationMillis = 1800 + index * 200,
-                    easing = FastOutSlowInEasing
-                ),
-                repeatMode = RepeatMode.Restart
-            ),
-            label = "SparkleAlpha$index"
-        )
-        
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
-            contentAlignment = Alignment.TopStart
-        ) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .offset(
-                        x = ((x - 0.5f) * 200f).dp,
-                        y = ((y - 0.5f) * 200f).dp
-                    )
-                    .size(6.dp)
-                    .background(
-                        color = AppColors.Favorite.PinkLight.copy(alpha = sparkleAlpha * 0.9f),
-                        shape = CircleShape
-                    )
-            )
-        }
-    }
 }
 
 @Composable

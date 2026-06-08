@@ -82,7 +82,12 @@ fun AdaptiveScreenBackground(
 }
 
 /**
- * 指挥中心背景 — 深海渐变 + 网格 + 顶部光晕
+ * 指挥中心背景 — 深海渐变 + 氛围光晕 + 顶部聚焦光
+ *
+ * 替代原有网格线设计，采用多层径向光晕营造深海指挥室的纵深氛围感：
+ * - 顶部聚焦光：模拟指挥台上方的主光源
+ * - 左下角氛围光：品牌色微光，增加空间纵深
+ * - 右下角辅助光：第三色微光，丰富色彩层次
  */
 @Composable
 fun CommandCenterBackground(
@@ -91,30 +96,37 @@ fun CommandCenterBackground(
 ) {
     val isDark = LocalIsDark.current
     val bgBrush = if (isDark) AppColors.Gradient.BackgroundDark() else AppColors.Gradient.BackgroundLight()
-    val gridColor = if (isDark) AppColors.Effect.GridDark else AppColors.Effect.GridLight
-    val glowColor = if (isDark) AppColors.Effect.TopGlowDark else AppColors.Effect.TopGlowLight
+    val primaryGlow = if (isDark) AppColors.PrimaryDark.copy(alpha = 0.06f) else AppColors.PrimaryLight.copy(alpha = 0.04f)
+    val tertiaryGlow = if (isDark) AppColors.TertiaryDark.copy(alpha = 0.04f) else AppColors.TertiaryLight.copy(alpha = 0.03f)
+    val topGlowColor = if (isDark) AppColors.Effect.TopGlowDark else AppColors.Effect.TopGlowLight.copy(alpha = 0.25f)
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(bgBrush)
             .drawBehind {
-                val step = 32.dp.toPx()
-                var x = 0f
-                while (x <= size.width) {
-                    drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 0.5f)
-                    x += step
-                }
-                var y = 0f
-                while (y <= size.height) {
-                    drawLine(gridColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
-                    y += step
-                }
+                // 顶部聚焦光 — 模拟指挥台主光源
                 drawRect(
                     brush = Brush.radialGradient(
-                        colors = listOf(glowColor, Color.Transparent),
-                        center = Offset(size.width * 0.5f, 0f),
-                        radius = size.height * 0.6f
+                        colors = listOf(topGlowColor, Color.Transparent),
+                        center = Offset(size.width * 0.5f, -size.height * 0.1f),
+                        radius = size.height * 0.7f
+                    )
+                )
+                // 左下角品牌色氛围光 — 增加空间纵深
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(primaryGlow, Color.Transparent),
+                        center = Offset(-size.width * 0.15f, size.height * 1.1f),
+                        radius = size.width * 0.7f
+                    )
+                )
+                // 右下角第三色辅助光 — 丰富色彩层次
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(tertiaryGlow, Color.Transparent),
+                        center = Offset(size.width * 1.15f, size.height * 1.1f),
+                        radius = size.width * 0.6f
                     )
                 )
             }
@@ -248,7 +260,7 @@ fun BlyyPanel(
     }
 
     val isDark = LocalIsDark.current
-    val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
+    val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light.copy(alpha = 0.95f)
     val shape = chamferedShape(chamfer)
 
     Box(
@@ -292,8 +304,8 @@ fun BlyyPrimaryButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) AppAnimation.Interaction.PressScale else 1f,
-        animationSpec = AppAnimation.Specs.press(),
+        targetValue = if (isPressed) AppAnimation.Press.HeavyScale else 1f,
+        animationSpec = AppAnimation.Press.heavy(),
         label = "btnScale"
     )
     val bgColor by animateColorAsState(
@@ -363,8 +375,8 @@ fun BlyySecondaryButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) AppAnimation.Interaction.PressScale else 1f,
-        animationSpec = AppAnimation.Specs.press(),
+        targetValue = if (isPressed) AppAnimation.Press.HeavyScale else 1f,
+        animationSpec = AppAnimation.Press.heavy(),
         label = "btnScale2"
     )
     val isDark = LocalIsDark.current
@@ -420,8 +432,8 @@ fun BlyyChip(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.95f else 1f,
-        animationSpec = spring(stiffness = 400f),
+        targetValue = if (isPressed) AppAnimation.Press.LightScale else 1f,
+        animationSpec = AppAnimation.Press.light(),
         label = "chipScale"
     )
     val bgColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)

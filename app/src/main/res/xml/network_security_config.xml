@@ -1,4 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="true" />
+
+    <!-- Live2D 域名专用配置：信任系统预装证书 + 用户证书，解决部分设备 SSL 证书链不完整问题 -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">l2d.su</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
 </network-security-config>

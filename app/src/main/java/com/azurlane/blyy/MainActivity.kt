@@ -25,6 +25,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -56,10 +58,12 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -84,6 +88,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -128,9 +133,12 @@ import com.azurlane.blyy.viewmodel.HomeViewModel
 import com.azurlane.blyy.viewmodel.ShipGalleryViewModel
 import com.azurlane.blyy.viewmodel.VoiceIntent
 import com.azurlane.blyy.viewmodel.VoiceViewModel
+import com.azurlane.blyy.viewmodel.UpdateCheckViewModel
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.utils.OverlayPermissionHelper
 import com.azurlane.blyy.SecretaryOverlayService
+import com.azurlane.blyy.util.AppUpdateChecker
+import com.azurlane.blyy.util.UpdateInfo
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.GlobalScope
 import javax.inject.Inject
@@ -344,6 +352,31 @@ fun AppContent() {
     )
 
     SharedTransitionLayout {
+        // ── 启动时自动检测更新 ──
+        val updateChecker: AppUpdateChecker = hiltViewModel<UpdateCheckViewModel>().updateChecker
+        var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+
+        LaunchedEffect(Unit) {
+            // 延迟1秒执行，避免影响启动性能
+            kotlinx.coroutines.delay(1000L)
+            updateInfo = updateChecker.checkForUpdate()
+        }
+
+        if (updateInfo != null) {
+            UpdateAvailableDialog(
+                updateInfo = updateInfo!!,
+                onUpdate = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo!!.downloadUrl))
+                    context.startActivity(intent)
+                    updateInfo = null
+                },
+                onDismiss = {
+                    scope.launch { updateChecker.skipVersion(updateInfo!!.versionName) }
+                    updateInfo = null
+                }
+            )
+        }
+
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
@@ -374,56 +407,58 @@ fun AppContent() {
                     modifier = Modifier.fillMaxSize(),
                     enterTransition = {
                         slideInHorizontally(
-                            initialOffsetX = { it / 4 },
-                            animationSpec = tween(
-                                durationMillis = AppAnimation.Duration.PageTransition,
-                                easing = AppAnimation.Easings.EmphasizedDecelerate
+                            initialOffsetX = { it / 3 },
+                            animationSpec = spring(
+                                dampingRatio = 0.85f,
+                                stiffness = Spring.StiffnessMediumLow
                             )
                         ) + fadeIn(
                             tween(
-                                durationMillis = AppAnimation.Duration.Normal,
+                                durationMillis = 300,
+                                delayMillis = 50,
                                 easing = AppAnimation.Easings.EmphasizedDecelerate
                             )
                         )
                     },
                     exitTransition = {
                         slideOutHorizontally(
-                            targetOffsetX = { -it / 4 },
+                            targetOffsetX = { -it / 5 },
                             animationSpec = tween(
-                                durationMillis = AppAnimation.Duration.Normal,
+                                durationMillis = 300,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         ) + fadeOut(
                             tween(
-                                durationMillis = AppAnimation.Duration.Fast,
+                                durationMillis = 200,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         )
                     },
                     popEnterTransition = {
                         slideInHorizontally(
-                            initialOffsetX = { -it / 4 },
-                            animationSpec = tween(
-                                durationMillis = AppAnimation.Duration.PageTransition,
-                                easing = AppAnimation.Easings.EmphasizedDecelerate
+                            initialOffsetX = { -it / 5 },
+                            animationSpec = spring(
+                                dampingRatio = 0.85f,
+                                stiffness = Spring.StiffnessMediumLow
                             )
                         ) + fadeIn(
                             tween(
-                                durationMillis = AppAnimation.Duration.Normal,
+                                durationMillis = 300,
+                                delayMillis = 50,
                                 easing = AppAnimation.Easings.EmphasizedDecelerate
                             )
                         )
                     },
                     popExitTransition = {
                         slideOutHorizontally(
-                            targetOffsetX = { it / 4 },
+                            targetOffsetX = { it / 3 },
                             animationSpec = tween(
-                                durationMillis = AppAnimation.Duration.Normal,
+                                durationMillis = 300,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         ) + fadeOut(
                             tween(
-                                durationMillis = AppAnimation.Duration.Fast,
+                                durationMillis = 200,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         )
@@ -1134,4 +1169,120 @@ private fun ModernDrawerItem(
             }
         }
     }
+}
+
+/**
+ * 应用更新可用时的模态弹窗。
+ *
+ * 显示新版本号、更新内容摘要，以及"立即更新"和"稍后提醒"两个操作按钮。
+ */
+@Composable
+private fun UpdateAvailableDialog(
+    updateInfo: UpdateInfo,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val accentColor = if (isCommandCenter) AppColors.Accent.Cyan else MaterialTheme.colorScheme.primary
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                accentColor.copy(alpha = 0.2f),
+                                Color.Transparent
+                            )
+                        ),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Star,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        },
+        title = {
+            Text(
+                text = "发现新版本",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Surface(
+                    shape = BlyyShapes.PanelSmall,
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "v${updateInfo.versionName}",
+                            style = AppTypography.TitleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = accentColor
+                        )
+                    }
+                }
+
+                if (updateInfo.changelog.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "更新内容",
+                            style = AppTypography.LabelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 160.dp)
+                        ) {
+                            LazyColumn {
+                                item {
+                                    Text(
+                                        text = updateInfo.changelog,
+                                        style = AppTypography.BodySmall,
+                                        lineHeight = 20.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Surface(
+                onClick = onUpdate,
+                shape = RoundedCornerShape(8.dp),
+                color = accentColor
+            ) {
+                Text(
+                    text = "立即更新",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    style = AppTypography.LabelMedium,
+                    color = Color.White
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("稍后提醒")
+            }
+        },
+        shape = RoundedCornerShape(24.dp)
+    )
 }

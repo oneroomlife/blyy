@@ -13,7 +13,8 @@ import javax.inject.Inject
 
 data class SettingsState(
     val uiStyle: UiStyle = UiStyle.COMMAND_CENTER,
-    val forceDarkTheme: Boolean = false
+    val forceDarkTheme: Boolean = false,
+    val autoCheckUpdateEnabled: Boolean = true
 )
 
 @HiltViewModel
@@ -27,11 +28,18 @@ class SettingsViewModel @Inject constructor(
     val forceDarkTheme: StateFlow<Boolean> = settings.forceDarkTheme
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val autoCheckUpdateEnabled: StateFlow<Boolean> = settings.autoCheckUpdateEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     fun setUiStyle(style: UiStyle) {
         viewModelScope.launch { settings.setUiStyle(style) }
     }
 
     fun setForceDarkTheme(force: Boolean) {
         viewModelScope.launch { settings.setForceDarkTheme(force) }
+    }
+
+    fun setAutoCheckUpdateEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setAutoCheckUpdateEnabled(enabled) }
     }
 }
