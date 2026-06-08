@@ -363,15 +363,27 @@ fun AppContent() {
         }
 
         if (updateInfo != null) {
+            // 先捕获当前值，避免回调中 updateInfo 已被置空导致 NPE
+            val currentUpdateInfo = updateInfo!!
             UpdateAvailableDialog(
-                updateInfo = updateInfo!!,
+                updateInfo = currentUpdateInfo,
                 onUpdate = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(updateInfo!!.downloadUrl))
-                    context.startActivity(intent)
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl))
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Failed to open update URL", e)
+                    }
                     updateInfo = null
                 },
                 onDismiss = {
-                    scope.launch { updateChecker.skipVersion(updateInfo!!.versionName) }
+                    scope.launch {
+                        try {
+                            updateChecker.skipVersion(currentUpdateInfo.versionName)
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to skip version", e)
+                        }
+                    }
                     updateInfo = null
                 }
             )

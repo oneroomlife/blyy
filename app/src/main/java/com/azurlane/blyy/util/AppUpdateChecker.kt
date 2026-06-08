@@ -50,8 +50,9 @@ class AppUpdateChecker @Inject constructor(
         private const val TAG = "AppUpdateChecker"
         private const val GITHUB_API_LATEST = "https://api.github.com/repos/oneroomlife/blyy/releases/latest"
         private const val GITHUB_RELEASE_PAGE = "https://github.com/oneroomlife/blyy/releases"
-        private const val CONNECT_TIMEOUT_MS = 10_000
-        private const val READ_TIMEOUT_MS = 10_000
+        private const val CONNECT_TIMEOUT_MS = 15_000
+        private const val READ_TIMEOUT_MS = 15_000
+        private const val MAX_RETRIES = 2
     }
 
     /**
@@ -68,14 +69,15 @@ class AppUpdateChecker @Inject constructor(
         }
 
         return try {
-            val result = fetchLatestRelease()
+            val result = fetchLatestReleaseWithRetry()
             if (result == null) {
-                Log.w(TAG, "Failed to fetch latest release info")
+                Log.w(TAG, "Failed to fetch latest release info after retries")
                 return null
             }
 
             val (latestVersion, changelog, downloadUrl) = result
-            Log.d(TAG, "Current: $currentVersion, Latest: $latestVersion")
+            Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion")
+            Log.d(TAG, "Changelog length: ${changelog.length}, Download URL: $downloadUrl")
 
             if (!isNewerVersion(latestVersion)) {
                 Log.d(TAG, "App is up to date")
@@ -92,7 +94,7 @@ class AppUpdateChecker @Inject constructor(
             Log.i(TAG, "New version available: $latestVersion")
             UpdateInfo(
                 versionName = latestVersion,
-                changelog = changelog,
+                changelog = changelog.ifEmpty { "暂无更新日志" },
                 downloadUrl = downloadUrl.ifEmpty { GITHUB_RELEASE_PAGE }
             )
         } catch (e: Exception) {
@@ -109,6 +111,23 @@ class AppUpdateChecker @Inject constructor(
         Log.d(TAG, "User skipped version: $version")
     }
 
+    /**
+     * 获取当前版本号（供外部查询）
+     */
+    fun getAppVersion(): String = currentVersion
+
+    private suspend fun fetchLatestReleaseWithRetry(): Triple<String, String, String>? {
+        repeat(MAX_RETRIES) { attempt ->
+            val result = fetchLatestRelease()
+            if (result != null) return result
+            if (attempt < MAX_RETRIES - 1) {
+                Log.d(TAG, "Retry ${attempt + 1}/$MAX_RETRIES after 1s delay")
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+        return null
+    }
+
     private suspend fun fetchLatestRelease(): Triple<String, String, String>? =
         withContext(Dispatchers.IO) {
             var connection: HttpURLConnection? = null
@@ -118,23 +137,36 @@ class AppUpdateChecker @Inject constructor(
                 connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
-                connection.setRequestProperty("User-Agent", "BLYY-Android-App")
+                connection.setRequestProperty("User-Agent", "BLYY-Android-App/${currentVersion}")
                 connection.connectTimeout = CONNECT_TIMEOUT_MS
                 connection.readTimeout = READ_TIMEOUT_MS
+                connection.instanceFollowRedirects = true
 
                 val responseCode = connection.responseCode
                 Log.d(TAG, "Response code: $responseCode")
 
-                if (responseCode == HttpURLConnection.HTTP_OK) {
-                    val response = connection.inputStream.bufferedReader().readText()
-                    parseReleaseResponse(response)
-                } else {
-                    val errorStream = connection.errorStream?.bufferedReader()?.readText()
-                    Log.e(TAG, "HTTP $responseCode: $errorStream")
-                    null
+                when (responseCode) {
+                    HttpURLConnection.HTTP_OK -> {
+                        val response = connection.inputStream.bufferedReader().use { it.readText() }
+                        Log.d(TAG, "Response length: ${response.length}")
+                        parseReleaseResponse(response)
+                    }
+                    HttpURLConnection.HTTP_NOT_FOUND -> {
+                        Log.e(TAG, "Release not found (404) - no releases published yet")
+                        null
+                    }
+                    403 -> {
+                        Log.e(TAG, "API rate limit exceeded (403)")
+                        null
+                    }
+                    else -> {
+                        val errorStream = connection.errorStream?.bufferedReader()?.use { it.readText() }
+                        Log.e(TAG, "HTTP $responseCode: $errorStream")
+                        null
+                    }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Network error during update check", e)
+                Log.e(TAG, "Network error during update check: ${e.message}", e)
                 null
             } finally {
                 connection?.disconnect()
@@ -145,38 +177,64 @@ class AppUpdateChecker @Inject constructor(
         return try {
             val release = JSONObject(response)
             val tagName = release.getString("tag_name").removePrefix("v")
-            val body = release.optString("body", "暂无更新日志").trim()
+            val body = release.optString("body", "").trim()
             val htmlUrl = release.optString("html_url", GITHUB_RELEASE_PAGE)
 
-            val assets = release.getJSONArray("assets")
+            // 格式化 changelog - 限制长度，截断过长内容
+            val formattedChangelog = formatChangelog(body)
+
+            val assets = release.optJSONArray("assets")
             var downloadUrl = ""
 
-            for (i in 0 until assets.length()) {
-                val asset = assets.getJSONObject(i)
-                val name = asset.getString("name")
-                if (name.endsWith(".apk")) {
-                    downloadUrl = asset.getString("browser_download_url")
-                    Log.d(TAG, "Found APK: $name")
-                    break
+            if (assets != null) {
+                for (i in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(i)
+                    val name = asset.getString("name")
+                    if (name.endsWith(".apk", ignoreCase = true)) {
+                        downloadUrl = asset.getString("browser_download_url")
+                        Log.d(TAG, "Found APK: $name -> $downloadUrl")
+                        break
+                    }
                 }
             }
 
             if (downloadUrl.isEmpty()) {
                 downloadUrl = htmlUrl
-                Log.d(TAG, "No APK asset found, using release page")
+                Log.d(TAG, "No APK asset found, using release page: $htmlUrl")
             }
 
-            Triple(tagName, downloadUrl, body)
+            Log.i(TAG, "Parsed release: version=$tagName, hasChangelog=${body.isNotEmpty()}, hasApk=${downloadUrl != htmlUrl}")
+            // 修复：Triple 顺序必须与解构顺序一致 (version, changelog, downloadUrl)
+            Triple(tagName, formattedChangelog, downloadUrl)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse release response", e)
+            Log.e(TAG, "Failed to parse release response: ${e.message}", e)
             null
         }
+    }
+
+    private fun formatChangelog(body: String): String {
+        if (body.isEmpty()) return ""
+
+        // 移除 Markdown 标题标记，保留内容
+        var formatted = body
+            .replace(Regex("^#+\\s*"), "")
+            .replace(Regex("\\n#+\\s*"), "\n")
+            .trim()
+
+        // 限制长度，避免弹窗过大
+        if (formatted.length > 500) {
+            formatted = formatted.take(500) + "..."
+        }
+
+        return formatted
     }
 
     private fun isNewerVersion(latestVersion: String): Boolean {
         return try {
             val current = normalizeVersion(currentVersion)
             val latest = normalizeVersion(latestVersion)
+
+            Log.d(TAG, "Version compare: current=$current, latest=$latest")
 
             for (i in 0 until maxOf(current.size, latest.size)) {
                 val currentPart = current.getOrElse(i) { 0 }
