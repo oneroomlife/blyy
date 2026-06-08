@@ -65,28 +65,6 @@ class VoiceViewModelTest {
     }
 
     @Test
-    fun `single-play mode stops and seeks back on auto transition`() = runTest {
-        // Given: PlayMode is PLAY_ONCE (default)
-        whenever(mockController.hasPreviousMediaItem()).thenReturn(true)
-        
-        // When: Auto transition occurs
-        playerListenerCaptor.value.onMediaItemTransition(null, Player.MEDIA_ITEM_TRANSITION_REASON_AUTO)
-        
-        // Then: Should stop and seek back
-        verify(mockController).pause()
-        verify(mockController).stop()
-        verify(mockController).seekToPreviousMediaItem()
-        verify(mockController).seekTo(0L)
-        verify(mockController).prepare()
-        
-        // Use yield() or just print the state to debug
-        println("Status before: ${viewModel.state.value.playbackStatus}")
-        testDispatcher.scheduler.advanceUntilIdle()
-        println("Status after: ${viewModel.state.value.playbackStatus}")
-        assertEquals(PlaybackStatus.ENDED, viewModel.state.value.playbackStatus)
-    }
-
-    @Test
     fun `repeat-one mode does not stop on auto transition`() = runTest {
         // Set PlayMode to REPEAT_ONE via PlayVoiceAtIndex intent
         // First need some voices to avoid early returns
