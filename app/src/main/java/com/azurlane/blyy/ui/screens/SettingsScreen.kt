@@ -8,14 +8,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -27,6 +37,7 @@ import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
+import com.azurlane.blyy.ui.theme.isWatchScreen
 import com.azurlane.blyy.viewmodel.SettingsViewModel
 
 @Composable
@@ -39,6 +50,10 @@ fun SettingsScreen(
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
 
+    // 小助手配置
+    val assistantDefaultUid by viewModel.assistantDefaultUid.collectAsStateWithLifecycle()
+    val assistantDefaultServer by viewModel.assistantDefaultServer.collectAsStateWithLifecycle()
+
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
             BlyyTopBar(
@@ -50,7 +65,8 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(AppSpacing.Screen.Horizontal),
+                    .padding(AppSpacing.Screen.Horizontal)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Lg)
             ) {
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
@@ -93,6 +109,16 @@ fun SettingsScreen(
                     )
                 }
 
+                // ── 小助手配置 ──
+                SettingsSection(title = "碧蓝航线助手") {
+                    AssistantConfigSection(
+                        defaultUid = assistantDefaultUid,
+                        defaultServer = assistantDefaultServer,
+                        onUidChange = viewModel::setAssistantDefaultUid,
+                        onServerChange = viewModel::setAssistantDefaultServer,
+                        usePanel = isCommandCenter
+                    )
+                }
             }
         }
     }
@@ -122,11 +148,13 @@ private fun SettingsToggleRow(
     onCheckedChange: (Boolean) -> Unit,
     usePanel: Boolean
 ) {
+    val isWatch = isWatchScreen()
+
     val rowContent: @Composable () -> Unit = {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(AppSpacing.Lg),
+                .padding(if (isWatch) AppSpacing.Md else AppSpacing.Lg),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -148,10 +176,98 @@ private fun SettingsToggleRow(
     } else {
         androidx.compose.material3.Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(AppSpacing.Corner.Lg),
+            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
         ) {
             rowContent()
+        }
+    }
+}
+
+/**
+ * 小助手配置表单区域
+ *
+ * 包含两个输入项：
+ * - 默认 UID：游戏内 UID，查询时自动填充
+ * - 默认服务器：服务器名称，查询时自动填充
+ */
+@Composable
+private fun AssistantConfigSection(
+    defaultUid: String,
+    defaultServer: String,
+    onUidChange: (String) -> Unit,
+    onServerChange: (String) -> Unit,
+    usePanel: Boolean
+) {
+    val isWatch = isWatchScreen()
+
+    val formContent: @Composable () -> Unit = {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(if (isWatch) AppSpacing.Md else AppSpacing.Lg),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+        ) {
+            //  UID 输入
+            Column {
+                Text(
+                    text = "UID",
+                    style = AppTypography.TitleSmall,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
+                Spacer(modifier = Modifier.height(AppSpacing.Sm))
+                OutlinedTextField(
+                    value = defaultUid,
+                    onValueChange = onUidChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("输入游戏内 UID", style = AppTypography.BodySmall) },
+                    textStyle = AppTypography.BodyMedium,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    ),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Sm)
+                )
+            }
+
+            // 服务器输入
+            Column {
+                Text(
+                    text = "服务器",
+                    style = AppTypography.TitleSmall,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
+                Spacer(modifier = Modifier.height(AppSpacing.Sm))
+                OutlinedTextField(
+                    value = defaultServer,
+                    onValueChange = onServerChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("服务器名", style = AppTypography.BodySmall) },
+                    textStyle = AppTypography.BodyMedium,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    ),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Sm)
+                )
+            }
+        }
+    }
+
+    if (usePanel) {
+        BlyyPanel(modifier = Modifier.fillMaxWidth(), content = formContent)
+    } else {
+        androidx.compose.material3.Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+        ) {
+            formContent()
         }
     }
 }

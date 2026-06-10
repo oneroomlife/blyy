@@ -53,6 +53,7 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.Support
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -119,6 +120,7 @@ import com.azurlane.blyy.ui.screens.HomeScreen
 import com.azurlane.blyy.ui.screens.ShipGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
 import com.azurlane.blyy.ui.screens.AboutScreen
+import com.azurlane.blyy.ui.screens.AssistantScreen
 import com.azurlane.blyy.ui.screens.Live2DScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
@@ -319,7 +321,8 @@ fun AppContent() {
             currentDestination?.route != Screen.About.route &&
             currentDestination?.route?.startsWith("secretary") != true &&
             currentDestination?.route != "settings" &&
-            currentDestination?.route != "live2d"
+            currentDestination?.route != "live2d" &&
+            currentDestination?.route != "assistant"
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
 
@@ -597,6 +600,14 @@ fun AppContent() {
                             onBack = { navController.popBackStack() }
                         )
                     }
+                    composable("assistant") {
+                        AssistantScreen(
+                            onBack = { navController.popBackStack() },
+                            onNavigateToSettings = {
+                                navController.navigate("settings") { launchSingleTop = true }
+                            }
+                        )
+                    }
                     composable("secretary_mode") {
                         // 使用 collectAsState 实现响应式状态更新
                         val overlayEnabled by MainActivity.overlayState.collectAsState()
@@ -731,6 +742,7 @@ private fun ModernNavigationBar(
     onNavigate: (String) -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val isWatch = isWatchScreen()
     val glassSurface = adaptiveGlassSurface()
     val glassBorder = adaptiveGlassBorder()
     val navShape = if (isCommandCenter) BlyyShapes.NavBar else RoundedCornerShape(AppSpacing.Corner.Xl)
@@ -752,13 +764,13 @@ private fun ModernNavigationBar(
                         )
                     )
                 )
-                .padding(top = AppSpacing.Sm, bottom = AppSpacing.Sm)
+                .padding(top = if (isWatch) 4.dp else AppSpacing.Sm, bottom = if (isWatch) 4.dp else AppSpacing.Sm)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = AppSpacing.Lg)
-                    .height(72.dp)
+                    .height(if (isWatch) 48.dp else 72.dp)
                     .clip(navShape)
                     .background(
                         brush = if (isCommandCenter) {
@@ -817,11 +829,12 @@ private fun RowScope.ModernNavigationItem(
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
+    val isWatch = isWatchScreen()
     val iconScale by animateFloatAsState(
         targetValue = if (isSelected) 1.1f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
+            stiffness = Spring.StiffnessMediumLow
         ),
         label = "IconScale"
     )
@@ -843,7 +856,7 @@ private fun RowScope.ModernNavigationItem(
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(if (isWatch) 30.dp else 40.dp)
                     .then(
                         if (isSelected) {
                             Modifier
@@ -870,7 +883,7 @@ private fun RowScope.ModernNavigationItem(
                     imageVector = screen.icon,
                     contentDescription = screen.label,
                     modifier = Modifier
-                        .size(24.dp)
+                        .size(if (isWatch) 18.dp else 24.dp)
                         .scale(iconScale),
                     tint = if (isSelected) {
                         MaterialTheme.colorScheme.primary
@@ -881,11 +894,11 @@ private fun RowScope.ModernNavigationItem(
             }
             
             if (isSelected) {
-                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
+                Spacer(modifier = Modifier.height(if (isWatch) 1.dp else AppSpacing.Xxs))
                 
                 Text(
                     text = screen.label,
-                    style = AppTypography.NavigationLabel,
+                    style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = AppSpacing.Sm)
                 )
@@ -909,6 +922,7 @@ private fun ModernDrawerSheet(
     onClose: () -> Unit
 ) {
     val isDark = LocalIsDark.current
+    val isWatch = isWatchScreen()
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
 
@@ -942,6 +956,13 @@ private fun ModernDrawerSheet(
             color = MaterialTheme.colorScheme.secondary
         ),
         DrawerMenuItem(
+            route = "assistant",
+            label = "碧蓝航线助手",
+            icon = Icons.Rounded.Support,
+            description = "查询指挥官信息与建造记录",
+            color = MaterialTheme.colorScheme.secondary
+        ),
+        DrawerMenuItem(
             route = "settings",
             label = "设置",
             icon = Icons.Rounded.Settings,
@@ -958,8 +979,7 @@ private fun ModernDrawerSheet(
     )
 
     ModalDrawerSheet(
-        modifier = Modifier
-            .fillMaxWidth(0.85f)
+        modifier = if (isWatch) Modifier.fillMaxWidth(0.95f) else Modifier.fillMaxWidth(0.85f)
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(
@@ -1008,7 +1028,7 @@ private fun ModernDrawerSheet(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(44.dp)
+                                .size(if (isWatch) 32.dp else 44.dp)
                                 .background(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
@@ -1030,7 +1050,7 @@ private fun ModernDrawerSheet(
                         Column {
                             Text(
                                 text = "玩法菜单",
-                                style = AppTypography.TitleLarge,
+                                style = if (isWatch) AppTypography.TitleLarge.copy(fontSize = 18.sp) else AppTypography.TitleLarge,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -1108,10 +1128,11 @@ private fun ModernDrawerItem(
         targetValue = if (isSelected) 1.02f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMedium
+            stiffness = Spring.StiffnessMediumLow
         ),
         label = "itemScale"
     )
+    val isWatch = isWatchScreen()
 
     Surface(
         onClick = onClick,
@@ -1135,7 +1156,7 @@ private fun ModernDrawerItem(
         ) {
             Box(
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(if (isWatch) 36.dp else 48.dp)
                     .background(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -1151,7 +1172,7 @@ private fun ModernDrawerItem(
                     imageVector = item.icon,
                     contentDescription = null,
                     tint = item.color,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(if (isWatch) 18.dp else 24.dp)
                 )
             }
 
@@ -1195,6 +1216,7 @@ private fun UpdateAvailableDialog(
     onDismiss: () -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val isWatch = isWatchScreen()
     val accentColor = if (isCommandCenter) AppColors.Accent.Cyan else MaterialTheme.colorScheme.primary
 
     AlertDialog(
@@ -1202,7 +1224,7 @@ private fun UpdateAvailableDialog(
         icon = {
             Box(
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(if (isWatch) 36.dp else 48.dp)
                     .background(
                         brush = Brush.radialGradient(
                             colors = listOf(
@@ -1260,7 +1282,7 @@ private fun UpdateAvailableDialog(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 160.dp)
+                                .then(if (isWatch) Modifier.heightIn(max = 100.dp) else Modifier.heightIn(max = 160.dp))
                         ) {
                             LazyColumn {
                                 item {
@@ -1295,6 +1317,6 @@ private fun UpdateAvailableDialog(
                 Text("稍后提醒")
             }
         },
-        shape = RoundedCornerShape(24.dp)
+        shape = if (isWatch) RoundedCornerShape(16.dp) else RoundedCornerShape(24.dp)
     )
 }
