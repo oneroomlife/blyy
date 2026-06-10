@@ -10,6 +10,15 @@
     <!-- Android 14+ 前台服务类型声明 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
+    <!-- 支持手表等小屏设备 -->
+    <supports-screens
+        android:smallScreens="true"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true"
+        android:resizeable="true"
+        android:anyDensity="true" />
+
     <application
         android:name="com.azurlane.blyy.MyApplication"
         android:allowBackup="true"

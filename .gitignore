@@ -105,3 +105,6 @@ test-reports/
 
 # Trae IDE
 .trae/
+
+# Kotlin compilation cache (per-machine, never commit)
+.kotlin/
