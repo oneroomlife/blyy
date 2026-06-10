@@ -54,6 +54,10 @@ class PlayerSettingsDataStore @Inject constructor(
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
+
+        // 小助手配置
+        private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
+        private val ASSISTANT_DEFAULT_SERVER_KEY = stringPreferencesKey("assistant_default_server")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -265,6 +269,22 @@ class PlayerSettingsDataStore @Inject constructor(
             }
             preferences[PLAY_LATER_KEY] = Json.encodeToString(updatedList)
         }
+    }
+
+    // ── 小助手配置 ──
+
+    /** 小助手默认 UID */
+    val assistantDefaultUid: Flow<String> = context.dataStore.data.map { it[ASSISTANT_DEFAULT_UID_KEY] ?: "" }
+
+    /** 小助手默认服务器名/ID */
+    val assistantDefaultServer: Flow<String> = context.dataStore.data.map { it[ASSISTANT_DEFAULT_SERVER_KEY] ?: "" }
+
+    suspend fun setAssistantDefaultUid(uid: String) {
+        context.dataStore.edit { it[ASSISTANT_DEFAULT_UID_KEY] = uid }
+    }
+
+    suspend fun setAssistantDefaultServer(server: String) {
+        context.dataStore.edit { it[ASSISTANT_DEFAULT_SERVER_KEY] = server }
     }
 }
 

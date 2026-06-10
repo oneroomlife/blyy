@@ -31,6 +31,16 @@ class SettingsViewModel @Inject constructor(
     val autoCheckUpdateEnabled: StateFlow<Boolean> = settings.autoCheckUpdateEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
+    // ── 小助手配置 ──
+
+    /** 小助手默认 UID */
+    val assistantDefaultUid: StateFlow<String> = settings.assistantDefaultUid
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    /** 小助手默认服务器 */
+    val assistantDefaultServer: StateFlow<String> = settings.assistantDefaultServer
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
     fun setUiStyle(style: UiStyle) {
         viewModelScope.launch { settings.setUiStyle(style) }
     }
@@ -41,5 +51,13 @@ class SettingsViewModel @Inject constructor(
 
     fun setAutoCheckUpdateEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setAutoCheckUpdateEnabled(enabled) }
+    }
+
+    fun setAssistantDefaultUid(uid: String) {
+        viewModelScope.launch { settings.setAssistantDefaultUid(uid) }
+    }
+
+    fun setAssistantDefaultServer(server: String) {
+        viewModelScope.launch { settings.setAssistantDefaultServer(server) }
     }
 }
