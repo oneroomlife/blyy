@@ -60,6 +60,7 @@ import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.chamferedShape
 import com.azurlane.blyy.ui.theme.isCommandCenter
+import com.azurlane.blyy.ui.theme.isWatchScreen
 
 /**
  * 自适应页面背景 — 根据 UI 风格切换
@@ -83,11 +84,6 @@ fun AdaptiveScreenBackground(
 
 /**
  * 指挥中心背景 — 深海渐变 + 氛围光晕 + 顶部聚焦光
- *
- * 替代原有网格线设计，采用多层径向光晕营造深海指挥室的纵深氛围感：
- * - 顶部聚焦光：模拟指挥台上方的主光源
- * - 左下角氛围光：品牌色微光，增加空间纵深
- * - 右下角辅助光：第三色微光，丰富色彩层次
  */
 @Composable
 fun CommandCenterBackground(
@@ -105,7 +101,6 @@ fun CommandCenterBackground(
             .fillMaxSize()
             .background(bgBrush)
             .drawBehind {
-                // 顶部聚焦光 — 模拟指挥台主光源
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(topGlowColor, Color.Transparent),
@@ -113,7 +108,6 @@ fun CommandCenterBackground(
                         radius = size.height * 0.7f
                     )
                 )
-                // 左下角品牌色氛围光 — 增加空间纵深
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(primaryGlow, Color.Transparent),
@@ -121,7 +115,6 @@ fun CommandCenterBackground(
                         radius = size.width * 0.7f
                     )
                 )
-                // 右下角第三色辅助光 — 丰富色彩层次
                 drawRect(
                     brush = Brush.radialGradient(
                         colors = listOf(tertiaryGlow, Color.Transparent),
@@ -160,6 +153,7 @@ fun BlyyTopBar(
     }
 
     val isDark = LocalIsDark.current
+    val isWatch = isWatchScreen()
     val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
     val accentColor = MaterialTheme.colorScheme.primary
 
@@ -167,7 +161,7 @@ fun BlyyTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Sm)
+                .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = if (isWatch) AppSpacing.Xs else AppSpacing.Sm)
                 .clip(BlyyShapes.PanelMedium)
                 .background(panelColor)
                 .border(
@@ -181,18 +175,18 @@ fun BlyyTopBar(
                     ),
                     shape = BlyyShapes.PanelMedium
                 )
-                .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xs),
+                .padding(horizontal = if (isWatch) AppSpacing.Xs else AppSpacing.Sm, vertical = AppSpacing.Xs),
             verticalAlignment = Alignment.CenterVertically
         ) {
             when {
                 onBackClick != null -> {
-                    IconButton(onClick = onBackClick, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = accentColor)
+                    IconButton(onClick = onBackClick, modifier = Modifier.size(if (isWatch) 32.dp else 40.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = accentColor, modifier = Modifier.size(if (isWatch) 18.dp else 24.dp))
                     }
                 }
                 onMenuClick != null -> {
-                    IconButton(onClick = onMenuClick, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.Menu, "菜单", tint = accentColor)
+                    IconButton(onClick = onMenuClick, modifier = Modifier.size(if (isWatch) 32.dp else 40.dp)) {
+                        Icon(Icons.Default.Menu, "菜单", tint = accentColor, modifier = Modifier.size(if (isWatch) 18.dp else 24.dp))
                     }
                 }
             }
@@ -312,6 +306,7 @@ fun BlyyPrimaryButton(
         targetValue = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
         label = "btnBg"
     )
+    val isWatch = isWatchScreen()
 
     Box(
         modifier = modifier
@@ -340,7 +335,7 @@ fun BlyyPrimaryButton(
                 enabled = enabled,
                 onClick = onClick
             )
-            .padding(horizontal = AppSpacing.Padding.ButtonHorizontal, vertical = AppSpacing.Padding.ButtonVertical),
+            .padding(horizontal = if (isWatch) AppSpacing.Padding.ButtonHorizontal - 4.dp else AppSpacing.Padding.ButtonHorizontal, vertical = AppSpacing.Padding.ButtonVertical),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -348,7 +343,7 @@ fun BlyyPrimaryButton(
             verticalAlignment = Alignment.CenterVertically
         ) {
             icon?.let {
-                Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(20.dp))
+                Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(if (isWatch) 16.dp else 20.dp))
                 Spacer(Modifier.width(AppSpacing.Sm))
             }
             Text(
@@ -380,6 +375,7 @@ fun BlyySecondaryButton(
         label = "btnScale2"
     )
     val isDark = LocalIsDark.current
+    val isWatch = isWatchScreen()
     val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
 
     Box(
@@ -398,7 +394,7 @@ fun BlyySecondaryButton(
                 enabled = enabled,
                 onClick = onClick
             )
-            .padding(horizontal = AppSpacing.Padding.ButtonHorizontal, vertical = AppSpacing.Padding.ButtonVertical),
+            .padding(horizontal = if (isWatch) AppSpacing.Padding.ButtonHorizontal - 4.dp else AppSpacing.Padding.ButtonHorizontal, vertical = AppSpacing.Padding.ButtonVertical),
         contentAlignment = Alignment.Center
     ) {
         Row(
@@ -406,7 +402,7 @@ fun BlyySecondaryButton(
             verticalAlignment = Alignment.CenterVertically
         ) {
             icon?.let {
-                Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(if (isWatch) 16.dp else 20.dp))
                 Spacer(Modifier.width(AppSpacing.Sm))
             }
             Text(
@@ -439,6 +435,7 @@ fun BlyyChip(
     val bgColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
     val borderColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+    val isWatch = isWatchScreen()
 
     Box(
         modifier = modifier
@@ -456,7 +453,7 @@ fun BlyyChip(
                 indication = ripple(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
                 onClick = onClick
             )
-            .padding(horizontal = AppSpacing.Padding.ChipHorizontal, vertical = AppSpacing.Padding.ChipVertical),
+            .padding(horizontal = if (isWatch) AppSpacing.Padding.ChipHorizontal - 2.dp else AppSpacing.Padding.ChipHorizontal, vertical = AppSpacing.Padding.ChipVertical),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -465,146 +462,4 @@ fun BlyyChip(
             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
-}
-
-/**
- * 空状态视图
- */
-@Composable
-fun BlyyEmptyState(
-    title: String,
-    description: String,
-    modifier: Modifier = Modifier,
-    icon: ImageVector? = null,
-    action: @Composable (() -> Unit)? = null
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(AppSpacing.Xxxl),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        icon?.let {
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .background(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                Color.Transparent
-                            )
-                        ),
-                        shape = CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(it, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
-            }
-            Spacer(Modifier.height(AppSpacing.Lg))
-        }
-        Text(text = title, style = AppTypography.EmptyTitle, color = MaterialTheme.colorScheme.onSurface, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        Spacer(Modifier.height(AppSpacing.Sm))
-        Text(text = description, style = AppTypography.EmptyDescription, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        action?.let {
-            Spacer(Modifier.height(AppSpacing.Xxl))
-            it()
-        }
-    }
-}
-
-@Composable
-private fun ClassicTopBar(
-    title: String,
-    modifier: Modifier = Modifier,
-    subtitle: String? = null,
-    onMenuClick: (() -> Unit)? = null,
-    onBackClick: (() -> Unit)? = null,
-    actions: @Composable RowScope.() -> Unit = {}
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Sm),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        when {
-            onBackClick != null -> {
-                IconButton(onClick = onBackClick) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
-                }
-            }
-            onMenuClick != null -> {
-                IconButton(onClick = onMenuClick) {
-                    Icon(Icons.Default.Menu, "菜单")
-                }
-            }
-        }
-        Column(modifier = Modifier.weight(1f).padding(horizontal = AppSpacing.Sm)) {
-            Text(
-                text = title,
-                style = AppTypography.TitleLarge,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            subtitle?.let {
-                Text(
-                    text = it,
-                    style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-        Row(content = actions)
-    }
-}
-
-@Composable
-fun adaptiveCardShape() =
-    if (LocalUiStyle.current.isCommandCenter()) BlyyShapes.Card
-    else RoundedCornerShape(20.dp)
-
-@Composable
-fun adaptiveGlassSurface(): Color {
-    val isDark = LocalIsDark.current
-    return when {
-        LocalUiStyle.current == UiStyle.CLASSIC && isDark -> ClassicColors.GlassSurfaceDark
-        LocalUiStyle.current == UiStyle.CLASSIC -> ClassicColors.GlassSurfaceLight
-        isDark -> AppColors.GlassSurfaceDark
-        else -> AppColors.GlassSurfaceLight
-    }
-}
-
-@Composable
-fun adaptiveGlassBorder(): Color {
-    val isDark = LocalIsDark.current
-    return when {
-        LocalUiStyle.current == UiStyle.CLASSIC && isDark -> ClassicColors.GlassBorderDark
-        LocalUiStyle.current == UiStyle.CLASSIC -> ClassicColors.GlassBorderLight
-        isDark -> AppColors.GlassBorderDark
-        else -> AppColors.GlassBorderLight
-    }
-}
-
-/**
- * 装饰性 HUD 角标
- */
-@Composable
-fun HudCornerDecor(
-    modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.primary
-) {
-    Box(
-        modifier = modifier
-            .size(24.dp)
-            .drawBehind {
-                val stroke = 2.dp.toPx()
-                drawLine(color.copy(alpha = 0.7f), Offset(0f, 0f), Offset(size.width, 0f), strokeWidth = stroke)
-                drawLine(color.copy(alpha = 0.7f), Offset(0f, 0f), Offset(0f, size.height), strokeWidth = stroke)
-            }
-    )
 }
