@@ -1,6 +1,10 @@
 package com.azurlane.blyy.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,22 +12,32 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.AutoMode
+import androidx.compose.material.icons.rounded.CloudSync
+import androidx.compose.material.icons.rounded.PersonSearch
+import androidx.compose.material.icons.rounded.Sailing
+import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -31,9 +45,13 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyPanel
+import com.azurlane.blyy.ui.components.BlyySectionPanel
+import com.azurlane.blyy.ui.components.BlyySettingsRow
 import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
@@ -43,16 +61,13 @@ import com.azurlane.blyy.viewmodel.SettingsViewModel
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    onNavigateToAssistantConfig: () -> Unit = {},
+    onNavigateToJiuxinConfig: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiStyle by viewModel.uiStyle.collectAsStateWithLifecycle()
     val forceDark by viewModel.forceDarkTheme.collectAsStateWithLifecycle()
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
-    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
-
-    // 小助手配置
-    val assistantDefaultUid by viewModel.assistantDefaultUid.collectAsStateWithLifecycle()
-    val assistantDefaultServer by viewModel.assistantDefaultServer.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -71,8 +86,14 @@ fun SettingsScreen(
             ) {
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
 
-                SettingsSection(title = "界面风格") {
-                    SettingsToggleRow(
+                // ── 界面风格 ──
+                BlyySectionPanel(
+                    title = "界面风格",
+                    icon = Icons.Rounded.Sailing,
+                    accentColor = MaterialTheme.colorScheme.primary
+                ) {
+                    BlyySettingsRow(
+                        icon = Icons.Rounded.Sailing,
                         title = "指挥中心 UI",
                         description = if (uiStyle.isCommandCenter()) {
                             "当前：碧蓝航线科技风 HUD 界面"
@@ -84,190 +105,166 @@ fun SettingsScreen(
                             viewModel.setUiStyle(
                                 if (enabled) UiStyle.COMMAND_CENTER else UiStyle.CLASSIC
                             )
-                        },
-                        usePanel = isCommandCenter
+                        }
                     )
                 }
 
-                SettingsSection(title = "显示") {
-                    SettingsToggleRow(
+                // ── 显示 ──
+                BlyySectionPanel(
+                    title = "显示",
+                    icon = Icons.Rounded.AutoMode,
+                    accentColor = MaterialTheme.colorScheme.secondary
+                ) {
+                    BlyySettingsRow(
+                        icon = Icons.Rounded.AutoMode,
                         title = "始终深色模式",
                         description = if (forceDark) "已强制深色，忽略系统设置" else "跟随系统浅色/深色设置",
                         checked = forceDark,
-                        onCheckedChange = viewModel::setForceDarkTheme,
-                        usePanel = isCommandCenter
+                        onCheckedChange = viewModel::setForceDarkTheme
                     )
                 }
 
-                SettingsSection(title = "更新") {
-                    SettingsToggleRow(
+                // ── 更新 ──
+                BlyySectionPanel(
+                    title = "更新",
+                    icon = Icons.Rounded.CloudSync,
+                    accentColor = MaterialTheme.colorScheme.tertiary
+                ) {
+                    BlyySettingsRow(
+                        icon = Icons.Rounded.CloudSync,
                         title = "自动检测更新",
                         description = if (autoCheckUpdate) "启动时自动检查新版本" else "不会自动检查更新，可在关于页手动检查",
                         checked = autoCheckUpdate,
-                        onCheckedChange = viewModel::setAutoCheckUpdateEnabled,
-                        usePanel = isCommandCenter
+                        onCheckedChange = viewModel::setAutoCheckUpdateEnabled
                     )
                 }
 
-                // ── 小助手配置 ──
-                SettingsSection(title = "碧蓝航线助手") {
-                    AssistantConfigSection(
-                        defaultUid = assistantDefaultUid,
-                        defaultServer = assistantDefaultServer,
-                        onUidChange = viewModel::setAssistantDefaultUid,
-                        onServerChange = viewModel::setAssistantDefaultServer,
-                        usePanel = isCommandCenter
+                // ── 碧蓝航线助手 — 跳转入口 ──
+                BlyySectionPanel(
+                    title = "碧蓝航线助手",
+                    icon = Icons.Rounded.PersonSearch,
+                    accentColor = MaterialTheme.colorScheme.primary
+                ) {
+                    SettingsNavigationRow(
+                        icon = Icons.Rounded.PersonSearch,
+                        title = "助手配置",
+                        description = "配置 UID、服务器等查询参数",
+                        onClick = onNavigateToAssistantConfig
                     )
                 }
+
+                // ── 啾信功能 — 跳转入口 ──
+                BlyySectionPanel(
+                    title = "啾信",
+                    icon = Icons.Rounded.SmartToy,
+                    accentColor = MaterialTheme.colorScheme.secondary
+                ) {
+                    SettingsNavigationRow(
+                        icon = Icons.Rounded.SmartToy,
+                        title = "啾信配置",
+                        description = "配置 API 密钥、人格提示词、聊天选项",
+                        onClick = onNavigateToJiuxinConfig
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(AppSpacing.Xl))
             }
-        }
-    }
-}
-
-@Composable
-private fun SettingsSection(
-    title: String,
-    content: @Composable () -> Unit
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-        Text(
-            text = title,
-            style = AppTypography.LabelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.SemiBold
-        )
-        content()
-    }
-}
-
-@Composable
-private fun SettingsToggleRow(
-    title: String,
-    description: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    usePanel: Boolean
-) {
-    val isWatch = isWatchScreen()
-
-    val rowContent: @Composable () -> Unit = {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(if (isWatch) AppSpacing.Md else AppSpacing.Lg),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f).padding(end = AppSpacing.Md)) {
-                Text(title, style = AppTypography.TitleSmall, fontWeight = FontWeight.Medium)
-                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
-                Text(
-                    description,
-                    style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = checked, onCheckedChange = onCheckedChange)
-        }
-    }
-
-    if (usePanel) {
-        BlyyPanel(modifier = Modifier.fillMaxWidth(), content = rowContent)
-    } else {
-        androidx.compose.material3.Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-        ) {
-            rowContent()
         }
     }
 }
 
 /**
- * 小助手配置表单区域
- *
- * 包含两个输入项：
- * - 默认 UID：游戏内 UID，查询时自动填充
- * - 默认服务器：服务器名称，查询时自动填充
+ * 设置页导航行 — 点击跳转到子配置页
  */
 @Composable
-private fun AssistantConfigSection(
-    defaultUid: String,
-    defaultServer: String,
-    onUidChange: (String) -> Unit,
-    onServerChange: (String) -> Unit,
-    usePanel: Boolean
+private fun SettingsNavigationRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    description: String,
+    onClick: () -> Unit
 ) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val isDark = LocalIsDark.current
+    val accentColor = MaterialTheme.colorScheme.primary
     val isWatch = isWatchScreen()
 
-    val formContent: @Composable () -> Unit = {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(if (isWatch) AppSpacing.Md else AppSpacing.Lg),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
-        ) {
-            //  UID 输入
-            Column {
-                Text(
-                    text = "UID",
-                    style = AppTypography.TitleSmall,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
-                Spacer(modifier = Modifier.height(AppSpacing.Sm))
-                OutlinedTextField(
-                    value = defaultUid,
-                    onValueChange = onUidChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("输入游戏内 UID", style = AppTypography.BodySmall) },
-                    textStyle = AppTypography.BodyMedium,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Sm)
-                )
-            }
-
-            // 服务器输入
-            Column {
-                Text(
-                    text = "服务器",
-                    style = AppTypography.TitleSmall,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
-                Spacer(modifier = Modifier.height(AppSpacing.Sm))
-                OutlinedTextField(
-                    value = defaultServer,
-                    onValueChange = onServerChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("服务器名", style = AppTypography.BodySmall) },
-                    textStyle = AppTypography.BodyMedium,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Sm)
-                )
-            }
-        }
+    val containerModifier = if (isCommandCenter) {
+        Modifier.fillMaxWidth()
+    } else {
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
     }
 
-    if (usePanel) {
-        BlyyPanel(modifier = Modifier.fillMaxWidth(), content = formContent)
-    } else {
-        androidx.compose.material3.Surface(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    BlyyPanel(modifier = containerModifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+                .clickable(onClick = onClick)
+                .padding(if (isWatch) AppSpacing.Md else AppSpacing.Lg),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            formContent()
+            Box(
+                modifier = Modifier
+                    .size(if (isWatch) 32.dp else 40.dp)
+                    .then(
+                        if (isCommandCenter) {
+                            Modifier
+                                .background(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(
+                                            accentColor.copy(alpha = 0.15f),
+                                            Color.Transparent
+                                        )
+                                    ),
+                                    shape = CircleShape
+                                )
+                                .border(
+                                    width = AppSpacing.Border.Thin,
+                                    color = accentColor.copy(alpha = 0.3f),
+                                    shape = CircleShape
+                                )
+                        } else {
+                            Modifier.background(
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                                CircleShape
+                            )
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(if (isWatch) 16.dp else 20.dp),
+                    tint = accentColor
+                )
+            }
+
+            Spacer(modifier = Modifier.width(AppSpacing.Md))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = AppTypography.TitleSmall,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.height(AppSpacing.Xxs))
+                Text(
+                    text = description,
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            )
         }
     }
 }

@@ -58,6 +58,8 @@ class ShipRepository @Inject constructor(
                     } catch (e: Exception) { null }
                 }
                 shipDao.upsertShips(ships)
+                // 删除本地已不存在的舰船，保持数据库整洁
+                shipDao.deleteOldShips(ships.map { it.name })
                 Log.d(TAG, "Successfully refreshed ${ships.size} ships")
             },
             onFailure = { e ->

@@ -143,12 +143,13 @@ fun ShipCard(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .fillMaxHeight(0.42f)
+                    .fillMaxHeight(0.45f)
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.45f),
+                                Color.Black.copy(alpha = 0.3f),
+                                Color.Black.copy(alpha = 0.65f),
                                 Color.Black.copy(alpha = 0.92f)
                             )
                         )
@@ -392,13 +393,23 @@ private fun RarityGlow(rarityColor: Color, rarityGradient: Brush) {
     val infiniteTransition = rememberInfiniteTransition(label = "RarityGlow")
     
     val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.08f,
-        targetValue = 0.2f,
+        initialValue = 0.06f,
+        targetValue = 0.22f,
         animationSpec = infiniteRepeatable(
             animation = tween<Float>(3500, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "GlowAlpha"
+    )
+
+    val edgeGlowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.15f,
+        targetValue = 0.4f,
+        animationSpec = infiniteRepeatable(
+            animation = tween<Float>(2800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "EdgeGlowAlpha"
     )
     
     Box(
@@ -414,6 +425,23 @@ private fun RarityGlow(rarityColor: Color, rarityGradient: Brush) {
                     ),
                     radius = 0.75f
                 )
+            )
+    )
+
+    // 边缘光晕
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .border(
+                width = 1.5.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        rarityColor.copy(alpha = edgeGlowAlpha),
+                        rarityColor.copy(alpha = edgeGlowAlpha * 0.3f),
+                        rarityColor.copy(alpha = edgeGlowAlpha * 0.6f)
+                    )
+                ),
+                shape = adaptiveCardShape()
             )
     )
 }

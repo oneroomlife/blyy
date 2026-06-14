@@ -26,9 +26,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
@@ -46,6 +50,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -230,6 +235,79 @@ fun BlyyTopBar(
                 )
         )
     }
+}
+
+@Composable
+fun ClassicTopBar(
+    title: String,
+    modifier: Modifier,
+    subtitle: String?,
+    onMenuClick: (() -> Unit)?,
+    onBackClick: (() -> Unit)?,
+    actions: @Composable (RowScope.() -> Unit)
+) {
+    val isWatch = isWatchScreen()
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = if (isWatch) AppSpacing.Xs else AppSpacing.Sm)
+                .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = if (isWatch) AppSpacing.Xs else AppSpacing.Sm, vertical = AppSpacing.Xs),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            when {
+                onBackClick != null -> {
+                    IconButton(onClick = onBackClick, modifier = Modifier.size(if (isWatch) 32.dp else 40.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(if (isWatch) 18.dp else 24.dp))
+                    }
+                }
+                onMenuClick != null -> {
+                    IconButton(onClick = onMenuClick, modifier = Modifier.size(if (isWatch) 32.dp else 40.dp)) {
+                        Icon(Icons.Default.Menu, "菜单", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(if (isWatch) 18.dp else 24.dp))
+                    }
+                }
+            }
+
+            Column(modifier = Modifier.weight(1f).padding(horizontal = AppSpacing.Sm)) {
+                Text(
+                    text = title,
+                    style = AppTypography.TitleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                subtitle?.let {
+                    Text(
+                        text = it,
+                        style = AppTypography.LabelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Row(content = actions)
+        }
+
+        HorizontalDivider()
+    }
+}
+
+@Composable
+private fun HorizontalDivider() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
+    )
 }
 
 /**
@@ -461,5 +539,374 @@ fun BlyyChip(
             style = AppTypography.LabelMedium,
             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/**
+ * 自适应毛玻璃表面颜色
+ */
+@Composable
+fun adaptiveGlassSurface(): Color {
+    val isDark = LocalIsDark.current
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+
+    return if (isCommandCenter) {
+        if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
+    } else {
+        if (isDark) ClassicColors.GlassSurfaceDark else ClassicColors.GlassSurfaceLight
+    }
+}
+
+/**
+ * 自适应毛玻璃描边颜色
+ */
+@Composable
+fun adaptiveGlassBorder(): Color {
+    val isDark = LocalIsDark.current
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+
+    return if (isCommandCenter) {
+        if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
+    } else {
+        if (isDark) ClassicColors.GlassBorderDark else ClassicColors.GlassBorderLight
+    }
+}
+
+/**
+ * 自适应卡片形状
+ */
+@Composable
+fun adaptiveCardShape(): androidx.compose.ui.graphics.Shape {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val isWatch = isWatchScreen()
+
+    return if (isCommandCenter) {
+        if (isWatch) chamferedShape(7.dp) else BlyyShapes.Card
+    } else {
+        if (isWatch) RoundedCornerShape(AppSpacing.Corner.Md) else RoundedCornerShape(AppSpacing.Corner.Lg)
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  统一状态组件 — 空状态 / 错误状态 / 加载状态
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 统一空状态组件
+ *
+ * @param icon 主题图标（如 Icons.Rounded.SearchOff）
+ * @param title 主标题
+ * @param description 描述文字
+ * @param actionLabel 可选操作按钮文字
+ * @param onAction 可选操作回调
+ */
+@Composable
+fun BlyyEmptyState(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
+) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val accentColor = MaterialTheme.colorScheme.primary
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = AppSpacing.Xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .then(
+                    if (isCommandCenter) {
+                        Modifier
+                            .background(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(
+                                        accentColor.copy(alpha = 0.15f),
+                                        Color.Transparent
+                                    )
+                                ),
+                                shape = CircleShape
+                            )
+                            .border(
+                                width = AppSpacing.Border.Thin,
+                                brush = Brush.linearGradient(
+                                    colors = listOf(
+                                        accentColor.copy(alpha = 0.4f),
+                                        AppColors.Accent.Gold.copy(alpha = 0.2f)
+                                    )
+                                ),
+                                shape = CircleShape
+                            )
+                    } else {
+                        Modifier.background(
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                            CircleShape
+                        )
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(32.dp),
+                tint = accentColor.copy(alpha = 0.7f)
+            )
+        }
+
+        Text(
+            text = title,
+            style = AppTypography.TitleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        Text(
+            text = description,
+            style = AppTypography.BodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(horizontal = AppSpacing.Xxl)
+        )
+
+        if (actionLabel != null && onAction != null) {
+            Spacer(modifier = Modifier.height(AppSpacing.Sm))
+            BlyyPrimaryButton(
+                text = actionLabel,
+                onClick = onAction
+            )
+        }
+    }
+}
+
+/**
+ * 统一错误状态组件
+ */
+@Composable
+fun BlyyErrorState(
+    message: String,
+    modifier: Modifier = Modifier,
+    onRetry: (() -> Unit)? = null
+) {
+    BlyyPanel(
+        modifier = modifier.fillMaxWidth(),
+        accentColor = MaterialTheme.colorScheme.error
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AppSpacing.Lg),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+            )
+            Text(
+                text = message,
+                style = AppTypography.BodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center
+            )
+            if (onRetry != null) {
+                Spacer(modifier = Modifier.height(AppSpacing.Xs))
+                BlyySecondaryButton(
+                    text = "重试",
+                    onClick = onRetry
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 统一加载状态组件
+ */
+@Composable
+fun BlyyLoadingState(
+    message: String = "加载中...",
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = AppSpacing.Xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(36.dp),
+            color = MaterialTheme.colorScheme.primary,
+            strokeWidth = 3.dp
+        )
+        Text(
+            text = message,
+            style = AppTypography.BodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * 增强版设置行 — 带图标与动画开关
+ */
+@Composable
+fun BlyySettingsRow(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val accentColor = MaterialTheme.colorScheme.primary
+    val isWatch = isWatchScreen()
+
+    val containerModifier = if (isCommandCenter) {
+        modifier.fillMaxWidth()
+    } else {
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+    }
+
+    BlyyPanel(modifier = containerModifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(if (isWatch) AppSpacing.Md else AppSpacing.Lg),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(if (isWatch) 32.dp else 40.dp)
+                        .then(
+                            if (isCommandCenter) {
+                                Modifier
+                                    .background(
+                                        brush = Brush.radialGradient(
+                                            colors = listOf(
+                                                accentColor.copy(alpha = if (checked) 0.25f else 0.1f),
+                                                Color.Transparent
+                                            )
+                                        ),
+                                        shape = CircleShape
+                                    )
+                                    .border(
+                                        width = AppSpacing.Border.Thin,
+                                        color = accentColor.copy(alpha = if (checked) 0.4f else 0.15f),
+                                        shape = CircleShape
+                                    )
+                            } else {
+                                Modifier.background(
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (checked) 0.4f else 0.2f),
+                                    CircleShape
+                                )
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(if (isWatch) 16.dp else 20.dp),
+                        tint = if (checked) accentColor else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(AppSpacing.Md))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = AppTypography.TitleSmall,
+                        fontWeight = FontWeight.Medium,
+                        color = if (checked) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                    Spacer(modifier = Modifier.height(AppSpacing.Xxs))
+                    Text(
+                        text = description,
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(
+                    checkedTrackColor = accentColor.copy(alpha = 0.5f),
+                    checkedThumbColor = accentColor
+                )
+            )
+        }
+    }
+}
+
+/**
+ * 增强版分段面板 — 带图标标题
+ */
+@Composable
+fun BlyySectionPanel(
+    title: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    accentColor: Color = MaterialTheme.colorScheme.primary,
+    content: @Composable () -> Unit
+) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = accentColor
+            )
+            Text(
+                text = title,
+                style = AppTypography.LabelLarge,
+                color = accentColor,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (isCommandCenter) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(1.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(
+                                    accentColor.copy(alpha = 0.3f),
+                                    Color.Transparent
+                                )
+                            )
+                        )
+                )
+            }
+        }
+        BlyyPanel(content = content)
     }
 }

@@ -22,6 +22,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -39,6 +40,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -46,14 +48,16 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.Adb
+import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Support
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -126,6 +130,9 @@ import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipRandomScreen
+import com.azurlane.blyy.ui.screens.AssistantConfigScreen
+import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
+import com.azurlane.blyy.ui.screens.JiuxinChatScreen
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
 import com.azurlane.blyy.viewmodel.SecretaryShipViewModel
@@ -322,7 +329,10 @@ fun AppContent() {
             currentDestination?.route?.startsWith("secretary") != true &&
             currentDestination?.route != "settings" &&
             currentDestination?.route != "live2d" &&
-            currentDestination?.route != "assistant"
+            currentDestination?.route != "assistant" &&
+            currentDestination?.route != "assistant_config" &&
+            currentDestination?.route != "jiuxin_config" &&
+            currentDestination?.route != "jiuxin_chat"
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
 
@@ -592,7 +602,9 @@ fun AppContent() {
                     }
                     composable("settings") {
                         SettingsScreen(
-                            onBack = { navController.popBackStack() }
+                            onBack = { navController.popBackStack() },
+                            onNavigateToAssistantConfig = { navController.navigate("assistant_config") },
+                            onNavigateToJiuxinConfig = { navController.navigate("jiuxin_config") }
                         )
                     }
                     composable("live2d") {
@@ -606,6 +618,22 @@ fun AppContent() {
                             onNavigateToSettings = {
                                 navController.navigate("settings") { launchSingleTop = true }
                             }
+                        )
+                    }
+                    composable("assistant_config") {
+                        AssistantConfigScreen(
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("jiuxin_config") {
+                        JiuxinConfigScreen(
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("jiuxin_chat") {
+                        JiuxinChatScreen(
+                            onBack = { navController.popBackStack() },
+                            onNavigateToConfig = { navController.navigate("jiuxin_config") }
                         )
                     }
                     composable("secretary_mode") {
@@ -830,13 +858,22 @@ private fun RowScope.ModernNavigationItem(
     onClick: () -> Unit
 ) {
     val isWatch = isWatchScreen()
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val accentColor = MaterialTheme.colorScheme.primary
+
     val iconScale by animateFloatAsState(
-        targetValue = if (isSelected) 1.1f else 1f,
+        targetValue = if (isSelected) 1.15f else 1f,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
         label = "IconScale"
+    )
+
+    val indicatorAlpha by animateFloatAsState(
+        targetValue = if (isSelected) 1f else 0f,
+        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        label = "IndicatorAlpha"
     )
 
     Surface(
@@ -858,13 +895,12 @@ private fun RowScope.ModernNavigationItem(
                 modifier = Modifier
                     .size(if (isWatch) 30.dp else 40.dp)
                     .then(
-                        if (isSelected) {
+                        if (isCommandCenter && isSelected) {
                             Modifier
                                 .background(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
-                                            AppColors.Accent.Cyan.copy(alpha = 0.25f),
-                                            AppColors.Accent.Gold.copy(alpha = 0.08f),
+                                            accentColor.copy(alpha = 0.2f * indicatorAlpha),
                                             Color.Transparent
                                         )
                                     ),
@@ -872,8 +908,19 @@ private fun RowScope.ModernNavigationItem(
                                 )
                                 .border(
                                     width = 1.dp,
-                                    color = AppColors.Accent.Cyan.copy(alpha = 0.4f),
+                                    brush = Brush.linearGradient(
+                                        colors = listOf(
+                                            accentColor.copy(alpha = 0.5f * indicatorAlpha),
+                                            AppColors.Accent.Gold.copy(alpha = 0.2f * indicatorAlpha)
+                                        )
+                                    ),
                                     shape = CircleShape
+                                )
+                        } else if (isSelected) {
+                            Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f * indicatorAlpha),
+                                    CircleShape
                                 )
                         } else Modifier
                     ),
@@ -886,21 +933,45 @@ private fun RowScope.ModernNavigationItem(
                         .size(if (isWatch) 18.dp else 24.dp)
                         .scale(iconScale),
                     tint = if (isSelected) {
-                        MaterialTheme.colorScheme.primary
+                        accentColor
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     }
                 )
             }
-            
+
             if (isSelected) {
                 Spacer(modifier = Modifier.height(if (isWatch) 1.dp else AppSpacing.Xxs))
-                
+
                 Text(
                     text = screen.label,
                     style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = accentColor,
                     modifier = Modifier.padding(horizontal = AppSpacing.Sm)
+                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                // 选中指示点
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = AppSpacing.Sm)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(
+                            if (isCommandCenter) {
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        accentColor,
+                                        AppColors.Accent.Gold.copy(alpha = 0.6f)
+                                    )
+                                )
+                            } else {
+                                Brush.horizontalGradient(
+                                    colors = listOf(accentColor, accentColor)
+                                )
+                            }
+                        )
                 )
             }
         }
@@ -912,7 +983,8 @@ data class DrawerMenuItem(
     val label: String,
     val icon: ImageVector,
     val description: String,
-    val color: Color
+    val color: Color,
+    val group: String = ""
 )
 
 @Composable
@@ -923,8 +995,9 @@ private fun ModernDrawerSheet(
 ) {
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
-    val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
+    val accentColor = MaterialTheme.colorScheme.primary
 
     val menuItems = listOf(
         DrawerMenuItem(
@@ -932,51 +1005,68 @@ private fun ModernDrawerSheet(
             label = "今日秘书舰",
             icon = Icons.Rounded.Person,
             description = "设置常驻秘书舰，点击播放语音",
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.primary,
+            group = "娱乐"
         ),
         DrawerMenuItem(
             route = "live2d",
             label = "查看Live2D",
-            icon = Icons.Rounded.Adb,
+            icon = Icons.Rounded.ViewInAr,
             description = "浏览Live2D模型库",
-            color = MaterialTheme.colorScheme.tertiary
+            color = MaterialTheme.colorScheme.tertiary,
+            group = "娱乐"
         ),
         DrawerMenuItem(
             route = "guess_image",
             label = "看图识舰娘",
             icon = Icons.Rounded.Image,
             description = "通过图片辨认舰娘",
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.primary,
+            group = "挑战"
         ),
         DrawerMenuItem(
             route = "guess_voice",
             label = "听音识舰娘",
             icon = Icons.Rounded.MusicNote,
             description = "通过语音辨认舰娘",
-            color = MaterialTheme.colorScheme.secondary
+            color = MaterialTheme.colorScheme.secondary,
+            group = "挑战"
         ),
         DrawerMenuItem(
             route = "assistant",
             label = "碧蓝航线助手",
             icon = Icons.Rounded.Support,
             description = "查询指挥官信息与建造记录",
-            color = MaterialTheme.colorScheme.secondary
+            color = MaterialTheme.colorScheme.secondary,
+            group = "工具"
+        ),
+        DrawerMenuItem(
+            route = "jiuxin_chat",
+            label = "啾信",
+            icon = Icons.Rounded.SmartToy,
+            description = "与AI舰娘对话",
+            color = MaterialTheme.colorScheme.primary,
+            group = "工具"
         ),
         DrawerMenuItem(
             route = "settings",
             label = "设置",
             icon = Icons.Rounded.Settings,
             description = "界面风格与显示偏好",
-            color = MaterialTheme.colorScheme.tertiary
+            color = MaterialTheme.colorScheme.tertiary,
+            group = "系统"
         ),
         DrawerMenuItem(
             route = Screen.About.route,
             label = "关于",
             icon = Icons.Rounded.Star,
             description = "了解更多信息",
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.primary,
+            group = "系统"
         )
     )
+
+    val groupedItems = menuItems.groupBy { it.group }
 
     ModalDrawerSheet(
         modifier = if (isWatch) Modifier.fillMaxWidth(0.95f) else Modifier.fillMaxWidth(0.85f)
@@ -1013,12 +1103,13 @@ private fun ModernDrawerSheet(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(AppSpacing.Lg)
+                    .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md)
             ) {
+                // 顶部标题栏
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = AppSpacing.Xl),
+                        .padding(bottom = AppSpacing.Lg),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1026,90 +1117,179 @@ private fun ModernDrawerSheet(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(if (isWatch) 32.dp else 44.dp)
-                                .background(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(
-                                            MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                                            Color.Transparent
-                                        )
+                        if (isCommandCenter) {
+                            // 指挥中心风格：切角矩形图标
+                            Box(
+                                modifier = Modifier
+                                    .size(if (isWatch) 32.dp else 40.dp)
+                                    .background(
+                                        brush = Brush.linearGradient(
+                                            colors = listOf(
+                                                accentColor.copy(alpha = 0.2f),
+                                                accentColor.copy(alpha = 0.05f)
+                                            )
+                                        ),
+                                        shape = BlyyShapes.Button
+                                    )
+                                    .border(
+                                        width = AppSpacing.Border.Thin,
+                                        color = accentColor.copy(alpha = 0.4f),
+                                        shape = BlyyShapes.Button
                                     ),
-                                    shape = CircleShape
-                                ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Menu,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(24.dp)
-                            )
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Menu,
+                                    contentDescription = null,
+                                    tint = accentColor,
+                                    modifier = Modifier.size(if (isWatch) 16.dp else 20.dp)
+                                )
+                            }
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(if (isWatch) 32.dp else 40.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                        CircleShape
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Menu,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(if (isWatch) 16.dp else 20.dp)
+                                )
+                            }
                         }
-                        Column {
-                            Text(
-                                text = "玩法菜单",
-                                style = if (isWatch) AppTypography.TitleLarge.copy(fontSize = 18.sp) else AppTypography.TitleLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                        Text(
+                            text = "玩法菜单",
+                            style = if (isWatch) AppTypography.TitleLarge.copy(fontSize = 18.sp) else AppTypography.TitleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                     }
-                    
+
                     IconButton(
                         onClick = onClose,
                         modifier = Modifier
-                            .size(40.dp)
-                            .background(
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                CircleShape
+                            .size(36.dp)
+                            .then(
+                                if (isCommandCenter) {
+                                    Modifier
+                                        .background(
+                                            color = Color.Transparent,
+                                            shape = BlyyShapes.Button
+                                        )
+                                        .border(
+                                            width = AppSpacing.Border.Thin,
+                                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                                            shape = BlyyShapes.Button
+                                        )
+                                } else {
+                                    Modifier
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                            CircleShape
+                                        )
+                                }
                             )
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Close,
                             contentDescription = "关闭菜单",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
 
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+                // 分组菜单项
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
                 ) {
-                    menuItems.forEach { item ->
-                        ModernDrawerItem(
-                            item = item,
-                            isSelected = currentRoute == item.route,
-                            onClick = { onNavigate(item.route) }
-                        )
+                    groupedItems.forEach { (group, items) ->
+                        // 分组标题
+                        item {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = AppSpacing.Md, bottom = AppSpacing.Xs),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isCommandCenter) {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(3.dp)
+                                            .height(14.dp)
+                                            .background(
+                                                brush = Brush.verticalGradient(
+                                                    colors = listOf(accentColor, accentColor.copy(alpha = 0.3f))
+                                                ),
+                                                shape = RoundedCornerShape(2.dp)
+                                            )
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(3.dp)
+                                            .height(14.dp)
+                                            .background(
+                                                MaterialTheme.colorScheme.primary,
+                                                RoundedCornerShape(2.dp)
+                                            )
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                                Text(
+                                    text = group,
+                                    style = AppTypography.LabelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+
+                        // 分组内菜单项
+                        items(count = items.size) { index ->
+                            val item = items[index]
+                            ModernDrawerItem(
+                                item = item,
+                                isSelected = currentRoute == item.route,
+                                isLastInGroup = index == items.size - 1,
+                                onClick = { onNavigate(item.route) }
+                            )
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.weight(1f))
-
+                // 底部应用信息
                 Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = BlyyShapes.PanelSmall,
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = AppSpacing.Sm),
+                    shape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Lg),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
                 ) {
                     Row(
-                        modifier = Modifier.padding(AppSpacing.Md),
+                        modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.Star,
+                            imageVector = Icons.Rounded.CheckCircle,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
+                            tint = accentColor.copy(alpha = 0.6f),
+                            modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = "完成挑战获取积分",
-                            style = AppTypography.LabelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "碧蓝航线语音图鉴",
+                            style = AppTypography.LabelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
                     }
                 }
@@ -1122,6 +1302,7 @@ private fun ModernDrawerSheet(
 private fun ModernDrawerItem(
     item: DrawerMenuItem,
     isSelected: Boolean,
+    isLastInGroup: Boolean,
     onClick: () -> Unit
 ) {
     val scale by animateFloatAsState(
@@ -1133,15 +1314,17 @@ private fun ModernDrawerItem(
         label = "itemScale"
     )
     val isWatch = isWatchScreen()
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
 
     Surface(
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .scale(scale),
-        shape = BlyyShapes.PanelMedium,
+            .scale(scale)
+            .padding(bottom = if (isLastInGroup) AppSpacing.Xs else 0.dp),
+        shape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Lg),
         color = if (isSelected) {
-            item.color.copy(alpha = 0.15f)
+            item.color.copy(alpha = 0.12f)
         } else {
             Color.Transparent
         },
@@ -1150,21 +1333,42 @@ private fun ModernDrawerItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(AppSpacing.Md),
+                .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
         ) {
             Box(
                 modifier = Modifier
-                    .size(if (isWatch) 36.dp else 48.dp)
-                    .background(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                item.color.copy(alpha = if (isSelected) 0.25f else 0.15f),
-                                Color.Transparent
-                            )
-                        ),
-                        shape = CircleShape
+                    .size(if (isWatch) 36.dp else 42.dp)
+                    .then(
+                        if (isCommandCenter) {
+                            Modifier
+                                .background(
+                                    brush = Brush.linearGradient(
+                                        colors = listOf(
+                                            item.color.copy(alpha = if (isSelected) 0.2f else 0.1f),
+                                            item.color.copy(alpha = 0.02f)
+                                        )
+                                    ),
+                                    shape = BlyyShapes.Button
+                                )
+                                .border(
+                                    width = AppSpacing.Border.Thin,
+                                    color = item.color.copy(alpha = if (isSelected) 0.4f else 0.15f),
+                                    shape = BlyyShapes.Button
+                                )
+                        } else {
+                            Modifier
+                                .background(
+                                    brush = Brush.radialGradient(
+                                        colors = listOf(
+                                            item.color.copy(alpha = if (isSelected) 0.25f else 0.15f),
+                                            Color.Transparent
+                                        )
+                                    ),
+                                    shape = CircleShape
+                                )
+                        }
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -1172,13 +1376,13 @@ private fun ModernDrawerItem(
                     imageVector = item.icon,
                     contentDescription = null,
                     tint = item.color,
-                    modifier = Modifier.size(if (isWatch) 18.dp else 24.dp)
+                    modifier = Modifier.size(if (isWatch) 18.dp else 22.dp)
                 )
             }
 
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalArrangement = Arrangement.spacedBy(1.dp)
             ) {
                 Text(
                     text = item.label,
@@ -1189,15 +1393,22 @@ private fun ModernDrawerItem(
                 Text(
                     text = item.description,
                     style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }
 
+            // 选中指示器 — 渐变竖条
             if (isSelected) {
                 Box(
                     modifier = Modifier
-                        .size(8.dp)
-                        .background(item.color, CircleShape)
+                        .width(3.dp)
+                        .height(20.dp)
+                        .background(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(item.color, item.color.copy(alpha = 0.3f))
+                            ),
+                            shape = RoundedCornerShape(2.dp)
+                        )
                 )
             }
         }

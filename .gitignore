@@ -106,5 +106,8 @@ test-reports/
 # Trae IDE
 .trae/
 
+# Agent skill evaluation (本地工具，不参与项目构建)
+agent-skill-eval/
+
 # Kotlin compilation cache (per-machine, never commit)
 .kotlin/

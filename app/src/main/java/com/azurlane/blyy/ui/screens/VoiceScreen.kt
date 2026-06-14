@@ -273,8 +273,8 @@ fun VoiceScreenContent(
                             SkinHeader(skinName)
                         }
 
-                        itemsIndexed(skinVoices) { _, voice ->
-                            val globalIndex = voiceState.voices.indexOf(voice)
+                        itemsIndexed(skinVoices, key = { _, v -> v.audioUrlCn.ifBlank { v.audioUrlJp } }) { _, voice ->
+                            val globalIndex = remember(voice, voiceState.voices) { voiceState.voices.indexOf(voice) }
                             val isCurrent = playerState.currentMediaItem?.mediaId == voice.audioUrlCn || 
                             playerState.currentMediaItem?.mediaId == voice.audioUrlJp
                             val isPlaying = isCurrent && playerState.isPlaying
@@ -1205,18 +1205,27 @@ private fun PlayLaterBottomSheet(
     onClearAll: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val accentColor = MaterialTheme.colorScheme.primary
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        dragHandle = { BottomSheetDefaults.DragHandle() }
+        dragHandle = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                BottomSheetDefaults.DragHandle()
+            }
+        }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 32.dp)
         ) {
+            // 标题栏
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1224,139 +1233,343 @@ private fun PlayLaterBottomSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "稍后播放队列 (${items.size})",
-                    style = AppTypography.TitleLarge
-                )
                 Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
                 ) {
+                    Icon(
+                        imageVector = Icons.Rounded.QueueMusic,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = "稍后播放",
+                        style = AppTypography.TitleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
                     if (items.isNotEmpty()) {
-                        Button(onClick = onStartQueue) {
-                            Icon(Icons.Rounded.PlayArrow, contentDescription = "播放全部")
-                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                            Text("播放全部")
+                        Surface(
+                            shape = if (isCommandCenter) BlyyShapes.Button else RoundedCornerShape(AppSpacing.Corner.Xxl),
+                            color = accentColor.copy(alpha = 0.12f)
+                        ) {
+                            Text(
+                                text = "${items.size}",
+                                style = AppTypography.LabelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = accentColor,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
                         }
-                        TextButton(onClick = onClearAll) {
-                            Text("清空列表", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (items.isNotEmpty()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+                    ) {
+                        FilledTonalButton(
+                            onClick = onStartQueue,
+                            contentPadding = PaddingValues(horizontal = AppSpacing.Md, vertical = AppSpacing.Xs)
+                        ) {
+                            Icon(
+                                Icons.Rounded.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
+                            Text("播放全部", style = AppTypography.LabelLarge)
+                        }
+                        TextButton(
+                            onClick = onClearAll,
+                            contentPadding = PaddingValues(horizontal = AppSpacing.Md, vertical = AppSpacing.Xs)
+                        ) {
+                            Text("清空", color = MaterialTheme.colorScheme.error, style = AppTypography.LabelLarge)
                         }
                     }
                 }
             }
-            
+
+            Spacer(modifier = Modifier.height(AppSpacing.Sm))
+
             if (items.isEmpty()) {
-                Box(
+                // 空状态 — 带图标和引导
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(200.dp),
-                    contentAlignment = Alignment.Center
+                        .height(220.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Text("列表空空如也", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Rounded.QueueMusic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(AppSpacing.Md))
+                    Text(
+                        text = "列表空空如也",
+                        style = AppTypography.TitleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(AppSpacing.Xs))
+                    Text(
+                        text = "长按语音条目可添加到稍后播放",
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(AppSpacing.Lg)
+                    contentPadding = PaddingValues(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)
                 ) {
                     itemsIndexed(items) { index, item ->
                         val isCurrentlyPlaying = item.voiceUrl == currentlyPlayingUrl && isPlayingFromQueue
                         val isNextUp = !isCurrentlyPlaying && index == 0 && isPlayingFromQueue
                         val hasPlayed = item.hasPlayed
-                        
-                        Surface(
+
+                        PlayLaterQueueItem(
+                            index = index,
+                            item = item,
+                            isCurrentlyPlaying = isCurrentlyPlaying,
+                            isNextUp = isNextUp,
+                            hasPlayed = hasPlayed,
+                            onPlayItem = onPlayItem,
+                            onRemoveItem = onRemoveItem
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlayLaterQueueItem(
+    index: Int,
+    item: PlayLaterItem,
+    isCurrentlyPlaying: Boolean,
+    isNextUp: Boolean,
+    hasPlayed: Boolean,
+    onPlayItem: (PlayLaterItem) -> Unit,
+    onRemoveItem: (PlayLaterItem) -> Unit
+) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val accentColor = MaterialTheme.colorScheme.primary
+
+    val itemShape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Lg)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AppSpacing.Xxs),
+        shape = itemShape,
+        color = when {
+            isCurrentlyPlaying -> accentColor.copy(alpha = 0.1f)
+            isNextUp -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f)
+            hasPlayed -> MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.2f)
+            else -> MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.4f)
+        },
+        border = if (isCurrentlyPlaying) BorderStroke(
+            AppSpacing.Border.Thin,
+            accentColor.copy(alpha = 0.3f)
+        ) else null
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm)
+                .alpha(if (hasPlayed && !isCurrentlyPlaying) 0.55f else 1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 序号/播放状态指示
+            Box(
+                modifier = Modifier
+                    .size(28.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                when {
+                    isCurrentlyPlaying -> {
+                        // 正在播放 — 脉冲动画
+                        val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                        val pulseAlpha by infiniteTransition.animateFloat(
+                            initialValue = 0.4f,
+                            targetValue = 1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(800, easing = FastOutSlowInEasing),
+                                repeatMode = RepeatMode.Reverse
+                            ),
+                            label = "pulseAlpha"
+                        )
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = AppSpacing.Xs),
-                            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-                            color = when {
-                                isCurrentlyPlaying -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                                isNextUp -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
-                                hasPlayed -> MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.3f)
-                                else -> MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
-                            }
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .padding(AppSpacing.Lg)
-                                    .alpha(if (hasPlayed && !isCurrentlyPlaying) 0.6f else 1f),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (isCurrentlyPlaying) {
-                                    Icon(
-                                        Icons.Rounded.GraphicEq,
-                                        contentDescription = "正在播放",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                } else if (isNextUp) {
-                                    Icon(
-                                        Icons.Rounded.SkipNext,
-                                        contentDescription = "下一个",
-                                        tint = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                } else {
-                                    IconButton(
-                                        onClick = { onPlayItem(item) },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(
-                                            if (hasPlayed) Icons.Rounded.Replay else Icons.Rounded.PlayCircle,
-                                            contentDescription = if (hasPlayed) "重新播放" else "播放",
-                                            tint = if (hasPlayed) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.width(AppSpacing.Md))
-                                AsyncImage(
-                                    model = item.avatarUrl,
-                                    contentDescription = null,
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .clip(CircleShape),
-                                    contentScale = ContentScale.Crop
+                                .size(28.dp)
+                                .background(
+                                    accentColor.copy(alpha = pulseAlpha * 0.15f),
+                                    CircleShape
                                 )
-                                Spacer(modifier = Modifier.width(AppSpacing.Md))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            text = "${item.shipName} · ${item.scene}",
-                                            style = AppTypography.TitleSmall,
-                                            maxLines = 1
-                                        )
-                                        if (hasPlayed && !isCurrentlyPlaying) {
-                                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                            ) {
-                                                Text(
-                                                    text = "已播放",
-                                                    style = AppTypography.LabelSmall,
-                                                    color = MaterialTheme.colorScheme.outline,
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Text(
-                                        text = item.dialogue,
-                                        style = AppTypography.BodySmall,
-                                        color = if (hasPlayed && !isCurrentlyPlaying) 
-                                            MaterialTheme.colorScheme.outline 
-                                        else 
-                                            MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                IconButton(onClick = { onRemoveItem(item) }) {
-                                    Icon(Icons.Rounded.RemoveCircleOutline, contentDescription = "移除", tint = MaterialTheme.colorScheme.error)
-                                }
+                        )
+                        Icon(
+                            Icons.Rounded.GraphicEq,
+                            contentDescription = "正在播放",
+                            tint = accentColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    isNextUp -> {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.12f)
+                        ) {
+                            Icon(
+                                Icons.Rounded.SkipNext,
+                                contentDescription = "下一个",
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .padding(5.dp)
+                            )
+                        }
+                    }
+                    else -> {
+                        // 序号或播放按钮
+                        if (hasPlayed) {
+                            Text(
+                                text = "${index + 1}",
+                                style = AppTypography.LabelSmall,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+                                textAlign = TextAlign.Center
+                            )
+                        } else {
+                            IconButton(
+                                onClick = { onPlayItem(item) },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    Icons.Rounded.PlayCircle,
+                                    contentDescription = "播放",
+                                    tint = accentColor.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(22.dp)
+                                )
                             }
                         }
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.width(AppSpacing.Sm))
+
+            // 头像
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .then(
+                        if (isCurrentlyPlaying) {
+                            Modifier.border(
+                                width = AppSpacing.Border.Thin,
+                                color = accentColor.copy(alpha = 0.5f),
+                                shape = CircleShape
+                            )
+                        } else Modifier
+                    )
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (item.avatarUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = item.avatarUrl,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Icon(
+                        Icons.Rounded.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(AppSpacing.Md))
+
+            // 文字信息
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+                ) {
+                    Text(
+                        text = item.shipName,
+                        style = AppTypography.TitleSmall,
+                        fontWeight = if (isCurrentlyPlaying) FontWeight.Bold else FontWeight.SemiBold,
+                        color = if (isCurrentlyPlaying) accentColor else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = "·",
+                        style = AppTypography.TitleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                    )
+                    Text(
+                        text = item.scene,
+                        style = AppTypography.TitleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (hasPlayed && !isCurrentlyPlaying) {
+                        Surface(
+                            shape = if (isCommandCenter) BlyyShapes.Button else RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                        ) {
+                            Text(
+                                text = "已播放",
+                                style = AppTypography.LabelSmall,
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = item.dialogue,
+                    style = AppTypography.BodySmall,
+                    color = if (hasPlayed && !isCurrentlyPlaying)
+                        MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // 移除按钮 — 低调设计
+            IconButton(
+                onClick = { onRemoveItem(item) },
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "移除",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }

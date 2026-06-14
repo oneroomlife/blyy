@@ -57,26 +57,16 @@ interface ShipDao {
     @Query("SELECT * FROM ships WHERE name = :name LIMIT 1")
     suspend fun getShipByName(name: String): Ship?
 
-    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(ships: List<Ship>)
 
     @Transaction
     suspend fun upsertShips(ships: List<Ship>) {
         insertAll(ships)
-        ships.forEach { ship ->
-            updateShipMetadata(
-                ship.name,
-                ship.avatarUrl,
-                ship.borderUrl,
-                ship.link,
-                ship.type,
-                ship.rarity,
-                ship.faction,
-                ship.extra,
-                ship.archiveType
-            )
-        }
     }
+
+    @Query("DELETE FROM ships WHERE name NOT IN (:names)")
+    suspend fun deleteOldShips(names: List<String>)
 
     @Query("UPDATE ships SET avatarUrl = :avatar, borderUrl = :border, link = :link, type = :type, rarity = :rarity, faction = :faction, extra = :extra, archiveType = :archiveType WHERE name = :name")
     suspend fun updateShipMetadata(

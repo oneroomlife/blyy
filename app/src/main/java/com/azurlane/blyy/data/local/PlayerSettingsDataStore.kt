@@ -3,6 +3,7 @@ package com.azurlane.blyy.data.local
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
@@ -58,6 +59,28 @@ class PlayerSettingsDataStore @Inject constructor(
         // 小助手配置
         private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
         private val ASSISTANT_DEFAULT_SERVER_KEY = stringPreferencesKey("assistant_default_server")
+
+        // AI 配置
+        private val AI_API_KEY_KEY = stringPreferencesKey("ai_api_key")
+        private val AI_CUSTOM_BASE_URL_KEY = stringPreferencesKey("ai_custom_base_url")
+        private val AI_SYSTEM_PROMPT_KEY = stringPreferencesKey("ai_system_prompt")
+        private val AI_NAME_KEY = stringPreferencesKey("ai_name")
+        private val AI_AVATAR_URL_KEY = stringPreferencesKey("ai_avatar_url")
+        private val AI_VOICE_ENABLED_KEY = booleanPreferencesKey("ai_voice_enabled")
+        private val AI_VOICE_RANDOM_CHANCE_KEY = floatPreferencesKey("ai_voice_random_chance")
+        private val AI_VOICE_KEYWORDS_KEY = stringPreferencesKey("ai_voice_keywords")
+        private val AI_CHAT_HISTORY_KEY = stringPreferencesKey("ai_chat_history")
+        private val AI_MODEL_KEY = stringPreferencesKey("ai_model")
+        private val AI_VOICE_SHIP_NAME_KEY = stringPreferencesKey("ai_voice_ship_name")
+        private val AI_VOICE_SHIP_AVATAR_KEY = stringPreferencesKey("ai_voice_ship_avatar")
+
+        // 历史对话会话管理
+        private val AI_CHAT_SESSIONS_KEY = stringPreferencesKey("ai_chat_sessions")
+        private val AI_CURRENT_SESSION_ID_KEY = stringPreferencesKey("ai_current_session_id")
+        
+        // 用户（指挥官）配置
+        private val USER_NAME_KEY = stringPreferencesKey("user_name")
+        private val USER_AVATAR_URL_KEY = stringPreferencesKey("user_avatar_url")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -286,6 +309,82 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setAssistantDefaultServer(server: String) {
         context.dataStore.edit { it[ASSISTANT_DEFAULT_SERVER_KEY] = server }
     }
+
+    // ── AI 配置 ──
+
+    val aiApiKey: Flow<String> = context.dataStore.data.map { it[AI_API_KEY_KEY] ?: "" }
+    val aiCustomBaseUrl: Flow<String> = context.dataStore.data.map { it[AI_CUSTOM_BASE_URL_KEY] ?: "" }
+    val aiSystemPrompt: Flow<String> = context.dataStore.data.map { it[AI_SYSTEM_PROMPT_KEY] ?: "这里是人格提示词" }
+    val aiName: Flow<String> = context.dataStore.data.map { it[AI_NAME_KEY] ?: "舰娘名称" }
+    val aiAvatarUrl: Flow<String> = context.dataStore.data.map { it[AI_AVATAR_URL_KEY] ?: "" }
+    val aiVoiceEnabled: Flow<Boolean> = context.dataStore.data.map { it[AI_VOICE_ENABLED_KEY] ?: true }
+    val aiVoiceRandomChance: Flow<Float> = context.dataStore.data.map {
+        it[AI_VOICE_RANDOM_CHANCE_KEY] ?: 0.1f
+    }
+    val aiVoiceKeywords: Flow<String> = context.dataStore.data.map { it[AI_VOICE_KEYWORDS_KEY] ?: "你好;早安;晚安;加油;辛苦了" }
+    val aiChatHistory: Flow<String> = context.dataStore.data.map { it[AI_CHAT_HISTORY_KEY] ?: "[]" }
+    val aiModel: Flow<String> = context.dataStore.data.map { it[AI_MODEL_KEY] ?: "" }
+    val aiVoiceShipName: Flow<String> = context.dataStore.data.map { it[AI_VOICE_SHIP_NAME_KEY] ?: "" }
+    val aiVoiceShipAvatar: Flow<String> = context.dataStore.data.map { it[AI_VOICE_SHIP_AVATAR_KEY] ?: "" }
+
+    suspend fun setAiApiKey(key: String) { context.dataStore.edit { it[AI_API_KEY_KEY] = key } }
+    suspend fun setAiCustomBaseUrl(url: String) { context.dataStore.edit { it[AI_CUSTOM_BASE_URL_KEY] = url } }
+    suspend fun setAiSystemPrompt(prompt: String) { context.dataStore.edit { it[AI_SYSTEM_PROMPT_KEY] = prompt } }
+    suspend fun setAiName(name: String) { context.dataStore.edit { it[AI_NAME_KEY] = name } }
+    suspend fun setAiAvatarUrl(url: String) { context.dataStore.edit { it[AI_AVATAR_URL_KEY] = url } }
+    suspend fun setAiVoiceEnabled(enabled: Boolean) { context.dataStore.edit { it[AI_VOICE_ENABLED_KEY] = enabled } }
+    suspend fun setAiVoiceRandomChance(chance: Float) { context.dataStore.edit { it[AI_VOICE_RANDOM_CHANCE_KEY] = chance } }
+    suspend fun setAiVoiceKeywords(keywords: String) { context.dataStore.edit { it[AI_VOICE_KEYWORDS_KEY] = keywords } }
+    suspend fun setAiChatHistory(history: String) { context.dataStore.edit { it[AI_CHAT_HISTORY_KEY] = history } }
+    suspend fun setAiModel(model: String) { context.dataStore.edit { it[AI_MODEL_KEY] = model } }
+    suspend fun setAiVoiceShipName(name: String) { context.dataStore.edit { it[AI_VOICE_SHIP_NAME_KEY] = name } }
+    suspend fun setAiVoiceShipAvatar(avatar: String) { context.dataStore.edit { it[AI_VOICE_SHIP_AVATAR_KEY] = avatar } }
+    suspend fun clearAiChatHistory() { context.dataStore.edit { it[AI_CHAT_HISTORY_KEY] = "[]" } }
+
+    // ── 历史对话会话管理 ──
+
+    /** 所有会话元数据列表 */
+    val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = context.dataStore.data.map { prefs ->
+        val json = prefs[AI_CHAT_SESSIONS_KEY] ?: "[]"
+        try { Json.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (_: Exception) { emptyList() }
+    }
+
+    /** 当前会话 ID */
+    val aiCurrentSessionId: Flow<String> = context.dataStore.data.map { it[AI_CURRENT_SESSION_ID_KEY] ?: "" }
+
+    /** 保存会话列表 */
+    suspend fun setAiChatSessions(sessions: List<com.azurlane.blyy.data.model.ChatSession>) {
+        context.dataStore.edit { it[AI_CHAT_SESSIONS_KEY] = Json.encodeToString(sessions) }
+    }
+
+    /** 设置当前会话 ID */
+    suspend fun setAiCurrentSessionId(id: String) {
+        context.dataStore.edit { it[AI_CURRENT_SESSION_ID_KEY] = id }
+    }
+
+    /** 获取指定会话的消息 */
+    fun aiSessionMessages(sessionId: String): Flow<List<com.azurlane.blyy.data.model.ChatMessage>> = context.dataStore.data.map { prefs ->
+        val key = stringPreferencesKey("ai_session_msgs_$sessionId")
+        val json = prefs[key] ?: "[]"
+        try { Json.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (_: Exception) { emptyList() }
+    }
+
+    /** 保存指定会话的消息 */
+    suspend fun setAiSessionMessages(sessionId: String, messages: List<com.azurlane.blyy.data.model.ChatMessage>) {
+        context.dataStore.edit { it[stringPreferencesKey("ai_session_msgs_$sessionId")] = Json.encodeToString(messages) }
+    }
+
+    /** 删除指定会话的消息数据 */
+    suspend fun deleteAiSessionMessages(sessionId: String) {
+        context.dataStore.edit { it.remove(stringPreferencesKey("ai_session_msgs_$sessionId")) }
+    }
+
+    // ── 用户（指挥官）配置 ──
+    val userName: Flow<String> = context.dataStore.data.map { it[USER_NAME_KEY] ?: "指挥官" }
+    val userAvatarUrl: Flow<String> = context.dataStore.data.map { it[USER_AVATAR_URL_KEY] ?: "" }
+
+    suspend fun setUserName(name: String) { context.dataStore.edit { it[USER_NAME_KEY] = name } }
+    suspend fun setUserAvatarUrl(url: String) { context.dataStore.edit { it[USER_AVATAR_URL_KEY] = url } }
 }
 
 @kotlinx.serialization.Serializable
