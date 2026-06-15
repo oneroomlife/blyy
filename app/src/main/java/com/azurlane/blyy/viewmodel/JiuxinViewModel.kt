@@ -117,43 +117,118 @@ class JiuxinViewModel @Inject constructor(
     private val _currentSessionId = MutableStateFlow("")
     val currentSessionId: StateFlow<String> = _currentSessionId.asStateFlow()
 
-    // ── 语音标签映射 ──
+    // ── 语音标签映射优化 (日常口语对应专业台词标签) ──
     private val defaultVoiceTagMappings = listOf(
-        VoiceTagMapping("你好", listOf("主界面", "问候"), priority = 5),
-        VoiceTagMapping("早安", listOf("主界面", "问候"), priority = 5),
-        VoiceTagMapping("晚安", listOf("主界面", "问候"), priority = 5),
-        VoiceTagMapping("加油", listOf("鼓励", "战斗", "强化"), priority = 3),
-        VoiceTagMapping("辛苦了", listOf("主界面", "摸头"), priority = 4),
-        VoiceTagMapping("战斗", listOf("战斗", "战斗开始", "胜利"), priority = 3),
-        VoiceTagMapping("胜利", listOf("胜利", "MVP"), priority = 4),
-        VoiceTagMapping("失败", listOf("失败", "战斗失败"), priority = 2),
-        VoiceTagMapping("誓约", listOf("誓约", "誓约之约"), priority = 5),
-        VoiceTagMapping("结婚", listOf("誓约", "誓约之约"), priority = 5),
-        VoiceTagMapping("喜欢", listOf("誓约", "好感度", "爱"), priority = 4),
-        VoiceTagMapping("爱", listOf("誓约", "好感度", "爱"), priority = 4),
-        VoiceTagMapping("获得", listOf("获得"), priority = 3),
-        VoiceTagMapping("登录", listOf("登录", "回港"), priority = 3),
-        VoiceTagMapping("回港", listOf("回港", "登录"), priority = 3),
-        VoiceTagMapping("出征", listOf("出征", "战斗开始"), priority = 3),
-        VoiceTagMapping("受伤", listOf("受伤", "战斗"), priority = 2),
-        VoiceTagMapping("生日", listOf("生日", "誓约"), priority = 5),
-        VoiceTagMapping("情人节", listOf("情人节", "誓约"), priority = 5),
-        VoiceTagMapping("圣诞", listOf("圣诞", "节日"), priority = 4),
-        VoiceTagMapping("新年", listOf("新年", "节日"), priority = 4),
-        VoiceTagMapping("触摸", listOf("触摸", "摸头", "特殊触摸"), priority = 3),
-        VoiceTagMapping("摸头", listOf("摸头", "触摸"), priority = 3),
-        VoiceTagMapping("技能", listOf("技能", "战斗"), priority = 2),
-        VoiceTagMapping("建造", listOf("建造", "获得"), priority = 2),
-        VoiceTagMapping("探索", listOf("探索", "出征"), priority = 2),
-        VoiceTagMapping("委托", listOf("委托", "回港"), priority = 2),
-        VoiceTagMapping("强化", listOf("强化", "鼓励"), priority = 3),
-        VoiceTagMapping("心情", listOf("主界面", "触摸"), priority = 2),
-        VoiceTagMapping("谢谢", listOf("鼓励", "主界面"), priority = 3),
-        VoiceTagMapping("再见", listOf("回港", "登录"), priority = 2),
-        VoiceTagMapping("开心", listOf("主界面", "MVP", "胜利"), priority = 3),
-        VoiceTagMapping("难过", listOf("受伤", "失败"), priority = 2),
-        VoiceTagMapping("想念", listOf("誓约", "好感度"), priority = 4)
+        // 1. 登录界面 & 登录台词 (映射: 登录台词, 登录界面)
+        VoiceTagMapping("你好", listOf("主界面", "登录台词", "登录界面"), priority = 5),
+        VoiceTagMapping("早安", listOf("主界面", "登录台词"), priority = 5),
+        VoiceTagMapping("午安", listOf("主界面", "登录台词"), priority = 5),
+        VoiceTagMapping("晚安", listOf("主界面", "登录台词"), priority = 5),
+        VoiceTagMapping("进游戏", listOf("登录界面", "登录台词"), priority = 7),
+        VoiceTagMapping("启动", listOf("登录界面", "登录台词"), priority = 6),
+        VoiceTagMapping("开服", listOf("登录界面"), priority = 8),
+        VoiceTagMapping("登录台词", listOf("登录台词", "登录界面"), priority = 9),
+        VoiceTagMapping("登录界面", listOf("登录界面", "登录台词"), priority = 9),
+
+        // 2. 舰船型号 & 自我介绍 (映射: 舰船型号, 自我介绍)
+        VoiceTagMapping("自我介绍", listOf("自我介绍", "舰船型号"), priority = 9),
+        VoiceTagMapping("你是谁", listOf("自我介绍", "舰船型号"), priority = 7),
+        VoiceTagMapping("叫什么名字", listOf("自我介绍", "舰船型号"), priority = 7),
+        VoiceTagMapping("介绍一下", listOf("自我介绍", "舰船型号"), priority = 8),
+        VoiceTagMapping("舰船型号", listOf("舰船型号", "自我介绍"), priority = 9),
+        VoiceTagMapping("什么船", listOf("舰船型号"), priority = 7),
+        VoiceTagMapping("什么舰种", listOf("舰船型号"), priority = 7),
+
+        // 3. 获取台词 & 查看详情 (映射: 获取台词, 查看详情)
+        VoiceTagMapping("获取台词", listOf("获取台词", "获得"), priority = 9),
+        VoiceTagMapping("出了", listOf("获取台词", "获得"), priority = 7),
+        VoiceTagMapping("捞到了", listOf("获取台词", "获得"), priority = 8),
+        VoiceTagMapping("查看详情", listOf("查看详情", "获取台词"), priority = 9),
+        VoiceTagMapping("详情", listOf("查看详情", "获取台词"), priority = 6),
+        VoiceTagMapping("资料", listOf("查看详情", "获取台词"), priority = 7),
+        VoiceTagMapping("属性", listOf("查看详情"), priority = 7),
+
+        // 4. 主界面 (映射: 主界面)
+        VoiceTagMapping("主界面", listOf("主界面"), priority = 9),
+        VoiceTagMapping("主页", listOf("主界面"), priority = 7),
+        VoiceTagMapping("看板娘", listOf("主界面"), priority = 8),
+        VoiceTagMapping("在干嘛", listOf("主界面"), priority = 6),
+
+        // 5. 触摸、特殊触摸、摸头 (映射: 触摸台词, 特殊触摸, 摸头台词)
+        VoiceTagMapping("触摸台词", listOf("触摸台词"), priority = 9),
+        VoiceTagMapping("碰你", listOf("触摸台词"), priority = 6),
+        VoiceTagMapping("特殊触摸", listOf("特殊触摸"), priority = 9),
+        VoiceTagMapping("别碰那里", listOf("特殊触摸"), priority = 8),
+        VoiceTagMapping("色狼", listOf("特殊触摸"), priority = 8),
+        VoiceTagMapping("变态", listOf("特殊触摸"), priority = 8),
+        VoiceTagMapping("摸头台词", listOf("摸头台词", "触摸台词"), priority = 9),
+        VoiceTagMapping("摸摸头", listOf("摸头台词", "触摸台词"), priority = 8),
+        VoiceTagMapping("乖", listOf("摸头台词", "触摸台词"), priority = 7),
+
+        // 6. 任务与邮件 (映射: 任务提醒, 任务完成, 鄌件提酲)
+        VoiceTagMapping("任务提醒", listOf("任务提醒", "任务完成"), priority = 9),
+        VoiceTagMapping("任务", listOf("任务提醒", "任务完成"), priority = 6),
+        VoiceTagMapping("有任务吗", listOf("任务提醒"), priority = 7),
+        VoiceTagMapping("任务完成", listOf("任务完成", "任务提醒"), priority = 9),
+        VoiceTagMapping("做完了", listOf("任务完成", "任务提醒"), priority = 8),
+        VoiceTagMapping("领奖励", listOf("任务完成", "任务提醒"), priority = 7),
+        VoiceTagMapping("报酬", listOf("任务完成"), priority = 7),
+        VoiceTagMapping("鄌件提酲", listOf("鄌件提酲", "邮件提醒"), priority = 9), // 兼容 typo 标签
+        VoiceTagMapping("邮件提醒", listOf("邮件提醒", "鄌件提酲"), priority = 9),
+        VoiceTagMapping("有信吗", listOf("邮件提醒", "鄌件提酲"), priority = 7),
+        VoiceTagMapping("收邮件", listOf("邮件提醒", "鄌件提酲"), priority = 8),
+
+        // 7. 回港 (映射: 回港台词)
+        VoiceTagMapping("回港台词", listOf("回港台词", "登录台词"), priority = 9),
+        VoiceTagMapping("我回来了", listOf("回港台词", "登录台词"), priority = 8),
+        VoiceTagMapping("到家了", listOf("回港台词", "登录台词"), priority = 8),
+        VoiceTagMapping("辛苦了", listOf("回港台词", "主界面"), priority = 7),
+
+        // 8. 好感度与誓约 (映射: 好感度-友好, 好感度-喜欢, 好感度-爱, 誓约台词)
+        VoiceTagMapping("好感度-友好", listOf("好感度-友好", "主界面"), priority = 9),
+        VoiceTagMapping("友好", listOf("好感度-友好"), priority = 7),
+        VoiceTagMapping("朋友", listOf("好感度-友好"), priority = 6),
+        VoiceTagMapping("好感度-喜欢", listOf("好感度-喜欢", "好感度-爱"), priority = 9),
+        VoiceTagMapping("喜欢", listOf("好感度-喜欢", "好感度-爱"), priority = 6),
+        VoiceTagMapping("好感度-爱", listOf("好感度-爱", "誓约台词"), priority = 9, preferredSkinName = "誓约"),
+        VoiceTagMapping("爱", listOf("好感度-爱", "誓约台词"), priority = 5, preferredSkinName = "誓约"),
+        VoiceTagMapping("最喜欢了", listOf("好感度-爱", "誓约台词"), priority = 8, preferredSkinName = "誓约"),
+        VoiceTagMapping("誓约台词", listOf("誓约台词", "好感度-爱"), priority = 9, preferredSkinName = "誓约"),
+        VoiceTagMapping("结婚", listOf("誓约台词", "好感度-爱"), priority = 8, preferredSkinName = "誓约"),
+        VoiceTagMapping("戒指", listOf("誓约台词", "好感度-爱"), priority = 8, preferredSkinName = "誓约"),
+        VoiceTagMapping("嫁给我", listOf("誓约台词", "好感度-爱"), priority = 8, preferredSkinName = "誓约"),
+
+        // 9. 强化与改造 (映射: 强化成功, 改造完成)
+        VoiceTagMapping("强化", listOf("强化成功", "主界面"), priority = 8),
+        VoiceTagMapping("升级", listOf("强化成功", "主界面"), priority = 7),
+        VoiceTagMapping("改造", listOf("改造完成", "强化成功"), priority = 9),
+        VoiceTagMapping("变强了", listOf("强化成功", "改造完成"), priority = 7),
+
+        // 10. 战斗相关 (映射: 战斗台词, 技能触发, 胜利台词, 失败台词, 低血量)
+        VoiceTagMapping("出击", listOf("战斗台词", "主界面"), priority = 9),
+        VoiceTagMapping("开火", listOf("战斗台词", "技能触发"), priority = 7),
+        VoiceTagMapping("技能", listOf("技能触发", "战斗台词"), priority = 9),
+        VoiceTagMapping("胜利", listOf("胜利台词", "回港台词"), priority = 9),
+        VoiceTagMapping("赢了", listOf("胜利台词", "回港台词"), priority = 8),
+        VoiceTagMapping("失败", listOf("失败台词", "回港台词"), priority = 9),
+        VoiceTagMapping("没血了", listOf("低血量", "主界面"), priority = 8),
+        VoiceTagMapping("快不行了", listOf("低血量"), priority = 8),
+
+        // 11. 委派与建造 (映射: 委派完成, 建造完成)
+        VoiceTagMapping("委派", listOf("委派完成", "任务完成"), priority = 8),
+        VoiceTagMapping("远征", listOf("委派完成", "任务完成"), priority = 8),
+        VoiceTagMapping("建造", listOf("建造完成", "获取台词"), priority = 8),
+        VoiceTagMapping("造好了", listOf("建造完成"), priority = 8),
+
+        // 12. 状态与好感度保底 (映射: 旗舰台词, 失望, 陌生)
+        VoiceTagMapping("旗舰", listOf("旗舰台词", "主界面"), priority = 8),
+        VoiceTagMapping("失望", listOf("好感度-失望"), priority = 9),
+        VoiceTagMapping("讨厌你", listOf("好感度-失望"), priority = 8),
+        VoiceTagMapping("不认识", listOf("好感度-陌生"), priority = 8)
     )
+
+
+
 
     init {
         // 加载会话列表和当前会话
@@ -362,8 +437,6 @@ class JiuxinViewModel @Inject constructor(
                         })
                     })
                     put("max_tokens", JsonPrimitive(5))
-                    put("enable_thinking", JsonPrimitive(false))
-                    put("thinking", buildJsonObject { put("type", JsonPrimitive("disabled")) })
                 }
 
                 val requestBody = json.encodeToString(testRequestJson)
@@ -500,7 +573,7 @@ class JiuxinViewModel @Inject constructor(
                 val matchedMapping = findBestTagMatch(text, tagMappings)
 
                 if (matchedMapping != null) {
-                    triggerVoiceByTags(selectedShip, shipAvatar, matchedMapping.sceneTags)
+                    triggerVoiceByTags(selectedShip, shipAvatar, matchedMapping.sceneTags, matchedMapping.preferredSkinName)
                 } else if (chance > 0f && kotlin.random.Random.nextDouble() < chance) {
                     triggerVoiceRandom(selectedShip, shipAvatar)
                 }
@@ -525,17 +598,23 @@ class JiuxinViewModel @Inject constructor(
     }
 
     // ── 智能语音标签匹配 ──
-    private fun findBestTagMatch(text: String, mappings: List<VoiceTagMapping>): VoiceTagMapping? =
-        mappings.filter { text.contains(it.keyword, ignoreCase = true) }.maxByOrNull { it.priority }
 
-    private fun triggerVoiceByTags(shipName: String, shipAvatar: String, sceneTags: List<String>) {
+    /**
+     * 在用户文本中查找最佳匹配的语音标签映射
+     * 优先匹配更长的关键词（避免"爱"误匹配"可爱"等），
+     * 长度相同时取优先级更高的
+     */
+    private fun findBestTagMatch(text: String, mappings: List<VoiceTagMapping>): VoiceTagMapping? =
+        mappings
+            .filter { text.contains(it.keyword, ignoreCase = true) }
+            .maxWithOrNull(compareBy({ it.keyword.length }, { it.priority }))
+
+    private fun triggerVoiceByTags(shipName: String, shipAvatar: String, sceneTags: List<String>, preferredSkinName: String = "") {
         viewModelScope.launch {
             try {
                 val (voices, _, _) = getVoicesUseCase(shipName)
                 if (voices.isNotEmpty()) {
-                    val taggedVoice = sceneTags.firstNotNullOfOrNull { tag ->
-                        voices.firstOrNull { it.scene.contains(tag, ignoreCase = true) }
-                    } ?: voices.random()
+                    val taggedVoice = findBestVoice(voices, sceneTags, preferredSkinName)
                     val audioUrl = taggedVoice.getActiveAudioUrl(VoiceLanguage.CN)
                     sendVoiceMessage(shipName, audioUrl, taggedVoice.dialogue, shipAvatar)
                 }
@@ -545,12 +624,59 @@ class JiuxinViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 根据场景标签和偏好皮肤查找最佳语音
+     * 解决“同一关键词可对应触发不同皮肤的同一标签语音”问题。
+     */
+    private fun findBestVoice(
+        voices: List<com.azurlane.blyy.data.model.VoiceLine>,
+        sceneTags: List<String>,
+        preferredSkinName: String = ""
+    ): com.azurlane.blyy.data.model.VoiceLine {
+        val defaultSkinNames = setOf("默认装扮", "默认", "通常", "原装")
+
+        // 1. 策略：如果指定了偏好皮肤（如：好感度-爱强制要求“誓约”皮肤台词）
+        if (preferredSkinName.isNotBlank()) {
+            sceneTags.firstNotNullOfOrNull { tag ->
+                voices.filter {
+                    it.skinName.contains(preferredSkinName, ignoreCase = true) &&
+                    it.scene.contains(tag, ignoreCase = true)
+                }.randomOrNull() // 随机抽取该皮肤下的对应标签台词
+            }?.let { return it }
+        }
+
+        // 2. 策略：跨皮肤随机池
+        // 依次检查场景标签，收集所有皮肤中匹配该标签的台词，实现“同一标签、不同皮肤”的惊喜感
+        sceneTags.forEach { tag ->
+            val pool = voices.filter { it.scene.contains(tag, ignoreCase = true) }
+            if (pool.isNotEmpty()) {
+                // 优先考虑：默认皮肤或无皮肤台词（权重稍大），但包含所有其他换装皮肤
+                val defaultPool = pool.filter { it.skinName in defaultSkinNames || it.skinName.isEmpty() }
+                // 80% 概率触发默认/通常语音，20% 概率触发已拥有的其他皮肤语音
+                return if (defaultPool.isNotEmpty() && kotlin.random.Random.nextFloat() < 0.8f) {
+                    defaultPool.random()
+                } else {
+                    pool.random()
+                }
+            }
+        }
+
+        // 3. 保底：优先从默认皮肤中随机选一条
+        val defaultVoice = voices.filter { it.skinName in defaultSkinNames }.randomOrNull()
+        return defaultVoice ?: voices.random()
+    }
+
+
+
+
     private fun triggerVoiceRandom(shipName: String, shipAvatar: String) {
         viewModelScope.launch {
             try {
                 val (voices, _, _) = getVoicesUseCase(shipName)
                 if (voices.isNotEmpty()) {
-                    val voice = voices.random()
+                    val defaultSkinNames = setOf("默认装扮", "默认", "通常")
+                    val defaultVoices = voices.filter { it.skinName in defaultSkinNames }
+                    val voice = if (defaultVoices.isNotEmpty()) defaultVoices.random() else voices.random()
                     val audioUrl = voice.getActiveAudioUrl(VoiceLanguage.CN)
                     sendVoiceMessage(shipName, audioUrl, voice.dialogue, shipAvatar)
                 }
@@ -697,8 +823,6 @@ class JiuxinViewModel @Inject constructor(
             put("messages", messages)
             put("max_tokens", JsonPrimitive(1024))
             put("temperature", JsonPrimitive(0.7))
-            put("enable_thinking", JsonPrimitive(false))
-            put("thinking", buildJsonObject { put("type", JsonPrimitive("disabled")) })
         }
 
         val requestBody = json.encodeToString(requestJson)
@@ -758,10 +882,13 @@ class JiuxinViewModel @Inject constructor(
 
     /**
      * 规范化 URL：处理协议相对 URL (//xxx)、缺少协议等情况
+     * 注意：content:// 和 file:// 开头的本地 URI 不做任何处理
      */
     private fun normalizeUrl(url: String): String {
         val trimmed = url.trim()
         if (trimmed.isBlank()) return ""
+        // 本地 content:// URI（相册选择等）和 file:// URI 不做处理
+        if (trimmed.startsWith("content://") || trimmed.startsWith("file://")) return trimmed
         if (trimmed.startsWith("//")) return "https:$trimmed"
         if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && trimmed.contains(".")) {
             return "https://$trimmed"

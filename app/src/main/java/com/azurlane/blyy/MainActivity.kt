@@ -381,14 +381,17 @@ fun AppContent() {
             UpdateAvailableDialog(
                 updateInfo = currentUpdateInfo,
                 onUpdate = {
-                    try {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl))
-                        context.startActivity(intent)
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Failed to open update URL", e)
-                    }
-                    updateInfo = null
-                },
+                        updateInfo = null
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl)).apply {
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to open update URL", e)
+                            Toast.makeText(context, "无法打开更新链接，请手动前往官网", Toast.LENGTH_LONG).show()
+                        }
+                    },
                 onDismiss = {
                     scope.launch {
                         try {
@@ -1510,17 +1513,23 @@ private fun UpdateAvailableDialog(
             }
         },
         confirmButton = {
-            Surface(
+            Button(
                 onClick = onUpdate,
-                shape = RoundedCornerShape(8.dp),
-                color = accentColor
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = accentColor),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
             ) {
-                Text(
-                    text = "立即更新",
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                    style = AppTypography.LabelMedium,
-                    color = Color.White
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Rounded.Download, null, modifier = Modifier.size(18.dp))
+                    Text(
+                        text = "立即更新",
+                        style = AppTypography.LabelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         },
         dismissButton = {

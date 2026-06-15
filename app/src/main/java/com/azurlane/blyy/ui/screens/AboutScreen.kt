@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -399,11 +401,19 @@ private fun CheckUpdateSection(
                                 }
                             }
                             if (state.downloadUrl.isNotEmpty()) {
+                                val downloadHaptic = LocalHapticFeedback.current
                                 BlyyPrimaryButton(
                                     text = "下载更新",
                                     onClick = {
-                                        val intent = Intent(Intent.ACTION_VIEW, state.downloadUrl.toUri())
-                                        context.startActivity(intent)
+                                        downloadHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, state.downloadUrl.toUri()).apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "跳转失败，请手动前往浏览器", Toast.LENGTH_SHORT).show()
+                                        }
                                     },
                                     icon = Icons.Rounded.Download,
                                     modifier = Modifier.fillMaxWidth()

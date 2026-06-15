@@ -404,6 +404,7 @@ private fun UserConfigDialog(
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 // 头像选择
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val previewAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
                     Box(
                         modifier = Modifier
                             .size(64.dp)
@@ -418,9 +419,13 @@ private fun UserConfigDialog(
                                 model = avatarUrl,
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                                contentScale = ContentScale.Crop,
+                                onState = { previewAvatarState.value = it }
                             )
-                        } else {
+                        }
+                        val showPreviewFallback = avatarUrl.isBlank() ||
+                            previewAvatarState.value is AsyncImagePainter.State.Error
+                        if (showPreviewFallback) {
                             Icon(Icons.Rounded.Person, null, modifier = Modifier.size(32.dp), tint = JuusColors.Primary.copy(alpha = 0.5f))
                         }
                     }
@@ -776,6 +781,7 @@ private fun MessageBubble(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 // 用户头像
+                val userAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
                 Box(
                     modifier = Modifier.size(36.dp).clip(CircleShape)
                         .background(bubbleColor.copy(alpha = 0.15f))
@@ -789,9 +795,13 @@ private fun MessageBubble(
                         AsyncImage(
                             model = userAvatarUrl, contentDescription = null,
                             modifier = Modifier.fillMaxSize().clip(CircleShape),
-                            contentScale = ContentScale.Crop
+                            contentScale = ContentScale.Crop,
+                            onState = { userAvatarState.value = it }
                         )
-                    } else {
+                    }
+                    val showUserFallback = userAvatarUrl.isBlank() ||
+                        userAvatarState.value is AsyncImagePainter.State.Error
+                    if (showUserFallback) {
                         Icon(
                             Icons.Rounded.Person,
                             contentDescription = null,

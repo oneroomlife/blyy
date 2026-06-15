@@ -302,7 +302,18 @@ fun JiuxinConfigScreen(
                             BlyyPanel(accentColor = MaterialTheme.colorScheme.tertiary) {
                                 Column(modifier = Modifier.padding(AppSpacing.Md).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
                                     Text("智能标签匹配", style = AppTypography.LabelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
-                                    Text("关键词会自动映射到舰娘语音场景：\n「你好/早安/晚安」→ 主界面/问候\n「战斗/胜利/失败」→ 战斗场景\n「誓约/结婚/喜欢」→ 誓约语音\n「触摸/摸头」→ 触摸语音\n未匹配时按概率随机触发", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("关键词自动映射到舰娘语音场景：\n" +
+                                        "「你好/早安/晚安」→ 主界面/问候/登录台词\n" +
+                                        "「登录/登录界面」→ 登录台词/登录界面\n" +
+                                        "「舰船型号/自我介绍」→ 舰船型号/自我介绍\n" +
+                                        "「获取台词/查看详情」→ 获取台词/查看详情\n" +
+                                        "「触摸/摸头/特殊触摸」→ 触摸台词/摸头台词\n" +
+                                        "「任务/邮件」→ 任务提醒/邮件提醒\n" +
+                                        "「回港」→ 回港台词\n" +
+                                        "「友好/喜欢/爱」→ 好感度语音\n" +
+                                        "「誓约/结婚」→ 誓约台词（优先誓约皮肤）\n" +
+                                        "「战斗/胜利/失败」→ 战斗场景\n" +
+                                        "未匹配时按概率随机触发", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }

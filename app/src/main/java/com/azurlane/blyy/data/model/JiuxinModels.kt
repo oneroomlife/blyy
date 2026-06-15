@@ -5,11 +5,16 @@ import kotlinx.serialization.Serializable
 /**
  * 语音触发标签映射
  * 将关键词映射到舰娘语音场景(scene)标签
+ * @param keyword 触发关键词
+ * @param sceneTags 对应的语音场景标签列表（按优先级排序）
+ * @param priority 匹配优先级，数字越大越优先
+ * @param preferredSkinName 偏好皮肤名，为空则使用默认皮肤
  */
 data class VoiceTagMapping(
     val keyword: String,
     val sceneTags: List<String>,
-    val priority: Int = 0
+    val priority: Int = 0,
+    val preferredSkinName: String = ""
 )
 
 /**
