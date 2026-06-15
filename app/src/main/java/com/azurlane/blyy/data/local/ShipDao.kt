@@ -57,12 +57,19 @@ interface ShipDao {
     @Query("SELECT * FROM ships WHERE name = :name LIMIT 1")
     suspend fun getShipByName(name: String): Ship?
 
+    @Query("SELECT name FROM ships WHERE isFavorite = 1")
+    suspend fun getFavoriteNames(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(ships: List<Ship>)
 
     @Transaction
     suspend fun upsertShips(ships: List<Ship>) {
-        insertAll(ships)
+        val favorites = getFavoriteNames().toSet()
+        val shipsToUpsert = ships.map { 
+            if (it.name in favorites) it.copy(isFavorite = true) else it 
+        }
+        insertAll(shipsToUpsert)
     }
 
     @Query("DELETE FROM ships WHERE name NOT IN (:names)")
