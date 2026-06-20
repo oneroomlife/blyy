@@ -77,14 +77,10 @@ class AppUpdateChecker @Inject constructor(
 
             val (latestVersion, changelog, downloadUrl) = result
             Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion")
-
-            if (latestVersion == currentVersion) {
-                Log.d(TAG, "App version is identical")
-                return null
-            }
+            Log.d(TAG, "Changelog length: ${changelog.length}, Download URL: $downloadUrl")
 
             if (!isNewerVersion(latestVersion)) {
-                Log.d(TAG, "App is up to date (or current is dev)")
+                Log.d(TAG, "App is up to date")
                 return null
             }
 

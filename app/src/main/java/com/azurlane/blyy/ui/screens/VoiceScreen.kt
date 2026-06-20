@@ -78,6 +78,7 @@ import com.azurlane.blyy.viewmodel.VoiceIntent
 import com.azurlane.blyy.viewmodel.VoiceViewModel
 import com.azurlane.blyy.viewmodel.VoiceViewState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.intellij.lang.annotations.Language
@@ -136,8 +137,15 @@ fun VoiceScreenContent(
     val scope = rememberCoroutineScope()
     
     val groupedVoices by remember(voiceState.voices) {
-        derivedStateOf { 
-            voiceState.voices.groupBy { it.skinName } 
+        derivedStateOf {
+            voiceState.voices.groupBy { it.skinName }
+        }
+    }
+
+    // Precompute voice -> global index map to avoid O(n) indexOf per item (was O(n²) total)
+    val voiceIndexMap by remember(voiceState.voices) {
+        derivedStateOf {
+            voiceState.voices.withIndex().associate { (index, voice) -> voice to index }
         }
     }
     
@@ -274,7 +282,7 @@ fun VoiceScreenContent(
                         }
 
                         itemsIndexed(skinVoices, key = { _, v -> v.audioUrlCn.ifBlank { v.audioUrlJp } }) { _, voice ->
-                            val globalIndex = remember(voice, voiceState.voices) { voiceState.voices.indexOf(voice) }
+                            val globalIndex = voiceIndexMap[voice] ?: -1
                             val isCurrent = playerState.currentMediaItem?.mediaId == voice.audioUrlCn || 
                             playerState.currentMediaItem?.mediaId == voice.audioUrlJp
                             val isPlaying = isCurrent && playerState.isPlaying
@@ -443,13 +451,13 @@ private fun AnimatedBackground(avatarUrl: String) {
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val shader = remember { RuntimeShader(FLUID_SHADER_VOICE) }
+        // Throttle to ~30fps to reduce CPU/GPU load while keeping fluid motion
         val time by produceState(0f) {
             val startTime = System.nanoTime()
             while (true) {
-                withInfiniteAnimationFrameMillis {
-                    val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-                    value = elapsed
-                }
+                val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
+                value = elapsed
+                delay(33)
             }
         }
         Box(modifier = Modifier.fillMaxSize()) {

@@ -38,6 +38,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
@@ -62,16 +63,36 @@ import com.azurlane.blyy.viewmodel.HomeIntent
 import com.azurlane.blyy.viewmodel.HomeViewState
 import kotlinx.coroutines.delay
 import org.intellij.lang.annotations.Language
+import kotlin.math.sin
 
 @Language("AGSL")
 const val FLUID_SHADER = """
     uniform float2 iResolution;
     uniform float iTime;
+    uniform float iOathIntensity;
 
     half4 main(in float2 fragCoord) {
         float2 uv = fragCoord / iResolution.xy;
-        float3 color = 0.5 + 0.5 * cos(iTime * 0.5 + uv.xyx + float3(0, 2, 4));
-        return half4(color * 0.08 + 0.04, 0.05); 
+        
+        // 深海蓝绿基调流体
+        float3 baseColor = 0.5 + 0.5 * cos(iTime * 0.3 + uv.xyx + float3(0, 2, 4));
+        baseColor = baseColor * 0.08 + 0.04;
+        
+        // 誓约粉色光晕层 — 从底部中心向上扩散
+        float2 oathCenter = float2(0.5, 1.2);
+        float oathDist = length(uv - oathCenter);
+        float3 oathColor = float3(1.0, 0.41, 0.71) * 0.12 * exp(-oathDist * 2.5);
+        oathColor *= (0.7 + 0.3 * sin(iTime * 0.8));
+        
+        // 誓约金色光点层 — 右上角散射
+        float2 goldCenter = float2(0.85, 0.15);
+        float goldDist = length(uv - goldCenter);
+        float3 goldColor = float3(1.0, 0.84, 0.0) * 0.06 * exp(-goldDist * 3.0);
+        goldColor *= (0.6 + 0.4 * sin(iTime * 0.5 + 1.0));
+        
+        // 合成
+        float3 finalColor = baseColor + oathColor * iOathIntensity + goldColor * iOathIntensity;
+        return half4(finalColor, 0.06 + 0.04 * iOathIntensity);
     }
 """
 
@@ -110,29 +131,58 @@ fun HomeScreen(
     }
     
     Box(modifier = Modifier.fillMaxSize()) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && isCommandCenter) {
-            val shader = remember { RuntimeShader(FLUID_SHADER) }
-            val time by produceState(0f) {
-                while (true) {
-                    value = System.currentTimeMillis() / 1000f
-                    withFrameNanos { }
+        // ── 背景层 ──
+        if (isCommandCenter) {
+            // 指挥中心风格：AGSL 流体着色器 + 誓约氛围层
+            val hasOathShips = state.favoriteShips.isNotEmpty()
+            val oathIntensity = if (hasOathShips) 1f else 0f
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val shader = remember { RuntimeShader(FLUID_SHADER) }
+                // Throttle to ~30fps to reduce CPU/GPU load while keeping fluid motion
+                val time by produceState(0f) {
+                    while (true) {
+                        value = System.currentTimeMillis() / 1000f
+                        delay(33)
+                    }
+                }
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    shader.setFloatUniform("iResolution", size.width, size.height)
+                    shader.setFloatUniform("iTime", time)
+                    shader.setFloatUniform("iOathIntensity", oathIntensity)
+                    drawRect(brush = ShaderBrush(shader))
                 }
             }
 
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                shader.setFloatUniform("iResolution", size.width, size.height)
-                shader.setFloatUniform("iTime", time)
-                drawRect(brush = ShaderBrush(shader))
+            // 誓约舰娘专属背景层：粉色光晕 + 漂浮粒子 + 渐变
+            if (hasOathShips) {
+                OathAmbientBackground()
             }
+        } else {
+            // 经典风格：誓约氛围渐变背景
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (state.favoriteShips.isNotEmpty()) {
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.surfaceContainer,
+                                    AppColors.Favorite.Pink.copy(alpha = 0.04f),
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                )
+                            )
+                        } else {
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.surfaceContainer,
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                )
+                            )
+                        }
+                    )
+            )
         }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    if (isCommandCenter) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer
-                )
-        )
 
         AdaptiveHomeScreenTopBar(
             title = "我的后宅",
@@ -301,6 +351,204 @@ private fun ClassicHomeTopBar(
         )
     }
 }
+
+/**
+ * 誓约舰娘专属氛围背景
+ * 三层结构：粉色光晕底层 + 漂浮粒子中层 + 渐变纹理顶层
+ */
+@Composable
+private fun OathAmbientBackground() {
+    val infiniteTransition = rememberInfiniteTransition(label = "OathAmbient")
+
+    // 光晕呼吸动画
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.06f,
+        targetValue = 0.14f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(4000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "OathGlow"
+    )
+
+    // 次级光晕呼吸（相位偏移）
+    val secondaryGlowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.03f,
+        targetValue = 0.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(3500, easing = FastOutSlowInEasing, delayMillis = 1200),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "OathGlow2"
+    )
+
+    // 金色光晕呼吸
+    val goldGlowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.02f,
+        targetValue = 0.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(5000, easing = FastOutSlowInEasing, delayMillis = 800),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "GoldGlow"
+    )
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // ── 第1层：底部粉色径向光晕（誓约主色调）──
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .drawBehind {
+                    // 中心底部大光晕
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                AppColors.Favorite.Pink.copy(alpha = glowAlpha),
+                                AppColors.Favorite.PinkLight.copy(alpha = glowAlpha * 0.4f),
+                                Color.Transparent
+                            ),
+                            center = Offset(size.width * 0.5f, size.height * 1.1f),
+                            radius = size.height * 0.8f
+                        )
+                    )
+                    // 左下角暖粉光晕
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                AppColors.Favorite.PinkDark.copy(alpha = secondaryGlowAlpha),
+                                Color.Transparent
+                            ),
+                            center = Offset(size.width * -0.1f, size.height * 1.15f),
+                            radius = size.width * 0.6f
+                        )
+                    )
+                    // 右上角金色光晕
+                    drawRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                AppColors.Favorite.Gold.copy(alpha = goldGlowAlpha),
+                                Color.Transparent
+                            ),
+                            center = Offset(size.width * 1.1f, size.height * -0.1f),
+                            radius = size.width * 0.5f
+                        )
+                    )
+                }
+        )
+
+        // ── 第2层：漂浮光粒子 ──
+        OathFloatingParticles()
+
+        // ── 第3层：顶部到底部的极淡渐变纹理 ──
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            AppColors.Favorite.Pink.copy(alpha = 0.015f),
+                            AppColors.Favorite.PinkLight.copy(alpha = 0.025f),
+                            AppColors.Favorite.Pink.copy(alpha = 0.015f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
+    }
+}
+
+/**
+ * 誓约漂浮光粒子 — 模拟花瓣/光尘飘散效果
+ */
+@Composable
+private fun OathFloatingParticles() {
+    val infiniteTransition = rememberInfiniteTransition(label = "OathParticles")
+
+    // 粒子数据：预定义位置和动画参数，避免每帧随机
+    val particles = remember {
+        listOf(
+            ParticleData(xRatio = 0.12f, yStart = -0.05f, speed = 0.018f, size = 3f, phase = 0f),
+            ParticleData(xRatio = 0.28f, yStart = -0.15f, speed = 0.014f, size = 2.5f, phase = 1.2f),
+            ParticleData(xRatio = 0.45f, yStart = -0.08f, speed = 0.02f, size = 3.5f, phase = 2.4f),
+            ParticleData(xRatio = 0.62f, yStart = -0.12f, speed = 0.016f, size = 2f, phase = 0.8f),
+            ParticleData(xRatio = 0.78f, yStart = -0.03f, speed = 0.022f, size = 3f, phase = 1.8f),
+            ParticleData(xRatio = 0.88f, yStart = -0.1f, speed = 0.015f, size = 2.5f, phase = 3.0f),
+            ParticleData(xRatio = 0.35f, yStart = -0.2f, speed = 0.012f, size = 2f, phase = 0.5f),
+            ParticleData(xRatio = 0.55f, yStart = -0.18f, speed = 0.019f, size = 3f, phase = 2.0f),
+            ParticleData(xRatio = 0.08f, yStart = -0.25f, speed = 0.013f, size = 2.5f, phase = 1.5f),
+            ParticleData(xRatio = 0.92f, yStart = -0.22f, speed = 0.017f, size = 2f, phase = 2.8f),
+            ParticleData(xRatio = 0.2f, yStart = -0.3f, speed = 0.011f, size = 1.8f, phase = 3.5f),
+            ParticleData(xRatio = 0.7f, yStart = -0.28f, speed = 0.02f, size = 2.8f, phase = 0.3f),
+        )
+    }
+
+    // 全局时间驱动
+    val time by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(60000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "ParticleTime"
+    )
+
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val w = size.width
+        val h = size.height
+
+        particles.forEach { p ->
+            // Y轴：从上方飘落到下方，循环
+            val rawY = (p.yStart + time * p.speed * 60f) % 1.3f
+            val y = rawY * h
+
+            // X轴：正弦横向漂移
+            val x = (p.xRatio + 0.03f * sin(time * 30f + p.phase)) * w
+
+            // 透明度：在顶部和底部淡入淡出
+            val edgeFade = when {
+                rawY < 0.1f -> rawY / 0.1f
+                rawY > 1.0f -> (1.3f - rawY) / 0.3f
+                else -> 1f
+            }
+            val alpha = edgeFade * 0.35f
+
+            // 绘制柔和光点（径向渐变圆）
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        AppColors.Favorite.PinkLight.copy(alpha = alpha),
+                        AppColors.Favorite.Pink.copy(alpha = alpha * 0.3f),
+                        Color.Transparent
+                    ),
+                    center = Offset(x, y),
+                    radius = p.size * 6f
+                ),
+                radius = p.size * 6f,
+                center = Offset(x, y)
+            )
+
+            // 中心亮点
+            drawCircle(
+                color = AppColors.Favorite.PinkLight.copy(alpha = alpha * 0.8f),
+                radius = p.size * 1.5f,
+                center = Offset(x, y)
+            )
+        }
+    }
+}
+
+/**
+ * 粒子数据类
+ */
+private data class ParticleData(
+    val xRatio: Float,   // X 位置比例 (0~1)
+    val yStart: Float,   // Y 起始位置比例
+    val speed: Float,    // 下落速度
+    val size: Float,     // 粒子大小
+    val phase: Float     // 动画相位偏移
+)
 
 @Composable
 fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {

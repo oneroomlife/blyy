@@ -5,19 +5,23 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "NetworkHelper"
 
 @Singleton
-class NetworkHelper @Inject constructor() {
-    
+class NetworkHelper @Inject constructor(
+    private val okHttpClient: OkHttpClient
+) {
+
     private val userAgents = listOf(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -25,30 +29,28 @@ class NetworkHelper @Inject constructor() {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"
     )
-    
-    private var lastRequestTime = 0L
+
+    private val lastRequestTime = AtomicLong(0L)
     private val minRequestInterval = 500L
-    
+    private val rateLimitMutex = Mutex()
+
     private val _isRateLimited = MutableStateFlow(false)
     val isRateLimited: StateFlow<Boolean> = _isRateLimited.asStateFlow()
-    
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
-    
+
     private fun getRandomUserAgent(): String {
         return userAgents.random()
     }
-    
+
     private suspend fun enforceRateLimit() {
-        val now = System.currentTimeMillis()
-        val elapsed = now - lastRequestTime
-        if (elapsed < minRequestInterval) {
-            delay(minRequestInterval - elapsed)
+        rateLimitMutex.withLock {
+            val now = System.currentTimeMillis()
+            val last = lastRequestTime.get()
+            val elapsed = now - last
+            if (elapsed < minRequestInterval) {
+                delay(minRequestInterval - elapsed)
+            }
+            lastRequestTime.set(System.currentTimeMillis())
         }
-        lastRequestTime = System.currentTimeMillis()
     }
     
     suspend fun fetchDocument(

@@ -503,28 +503,18 @@ private fun BoxScope.OathSpecialEffect() {
             )
     )
     
-    // 闪光粒子 — 合并为单个 drawBehind 减少布局层级
-    val sparkleAlpha0 by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween<Float>(1800, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Restart
-        ), label = "Sparkle0"
-    )
-    val sparkleAlpha1 by infiniteTransition.animateFloat(
+    // 闪光粒子 — 合并为单个动画 + 相位偏移，减少并行动画数量
+    val sparklePhase by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 1f,
         animationSpec = infiniteRepeatable(
             animation = tween<Float>(2000, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart
-        ), label = "Sparkle1"
+        ), label = "Sparkle"
     )
-    val sparkleAlpha2 by infiniteTransition.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween<Float>(2200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Restart
-        ), label = "Sparkle2"
-    )
+    // Derive 3 sparkle alphas from a single animation with phase offsets
+    val sparkleAlpha0 = sparklePhase
+    val sparkleAlpha1 = (sparklePhase + 0.33f) % 1f
+    val sparkleAlpha2 = (sparklePhase + 0.66f) % 1f
     
     Box(
         modifier = Modifier

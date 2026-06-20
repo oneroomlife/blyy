@@ -103,6 +103,8 @@ fun JiuxinConfigScreen(
     val connectionState by viewModel.connectionTestState.collectAsStateWithLifecycle()
     val selectedModel by viewModel.selectedModel.collectAsStateWithLifecycle()
     val availableModels by viewModel.availableModels.collectAsStateWithLifecycle()
+    val stickersEnabled by viewModel.stickersEnabled.collectAsStateWithLifecycle()
+    val stickerChance by viewModel.stickerChance.collectAsStateWithLifecycle()
 
     var showApiKey by remember { mutableStateOf(false) }
     var showAvatarPicker by remember { mutableStateOf(false) }
@@ -256,14 +258,37 @@ fun JiuxinConfigScreen(
                 }
 
                 // ── 语音设置 ──
-                BlyySectionPanel(title = "舰娘语音", icon = Icons.Rounded.SmartToy, accentColor = MaterialTheme.colorScheme.tertiary) {
+                BlyySectionPanel(title = "聊天增强", icon = Icons.Rounded.SmartToy, accentColor = MaterialTheme.colorScheme.tertiary) {
                     Column(modifier = Modifier.fillMaxWidth().padding(AppSpacing.Lg), verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("聊天中发送语音", style = AppTypography.TitleSmall, fontWeight = FontWeight.Medium)
+                                Text("发送语音", style = AppTypography.TitleSmall, fontWeight = FontWeight.Medium)
                                 Text("智能标签匹配或随机发送舰娘语音", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Switch(checked = voiceEnabled, onCheckedChange = viewModel::saveVoiceEnabled)
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("发送表情包", style = AppTypography.TitleSmall, fontWeight = FontWeight.Medium)
+                                Text("基于 AI 回复内容自动匹配表情包", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Switch(checked = stickersEnabled, onCheckedChange = viewModel::saveStickersEnabled)
+                        }
+
+                        if (stickersEnabled) {
+                            Text("表情包发送概率: ${(stickerChance * 100).toInt()}%", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Slider(
+                                value = stickerChance,
+                                onValueChange = viewModel::saveStickerChance,
+                                valueRange = 0f..1f,
+                                steps = 19
+                            )
+                            Text(
+                                "控制 AI 每次回复时发送表情包的概率，滑动调节即可实时生效",
+                                style = AppTypography.BodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
                         }
 
                         Row(

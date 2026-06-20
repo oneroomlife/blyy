@@ -189,17 +189,22 @@ class PlayerViewModel @Inject constructor(
     private fun startProgressUpdateLoop() {
         stopProgressUpdateLoop()
         progressJob = viewModelScope.launch {
+            var lastPosition = -1L
             while (isActive) {
                 browser?.let { player ->
                     val position = player.currentPosition
-                    _uiState.update { 
-                        it.copy(
-                            currentPosition = position,
-                            savedPosition = position
-                        ) 
+                    // Only emit when position actually changed to reduce recompositions
+                    if (position != lastPosition) {
+                        lastPosition = position
+                        _uiState.update {
+                            it.copy(
+                                currentPosition = position,
+                                savedPosition = position
+                            )
+                        }
                     }
                 }
-                delay(250)
+                delay(500)
             }
         }
     }

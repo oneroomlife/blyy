@@ -111,3 +111,8 @@ agent-skill-eval/
 
 # Kotlin compilation cache (per-machine, never commit)
 .kotlin/
+
+# Local development scratch files (not part of the build, broken references)
+fallback.kt
+wiki_gif.bin
+sticker_fallback.json

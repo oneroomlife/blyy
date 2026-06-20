@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlinx.coroutines.Job
 
 data class VoiceViewState(
     val isLoading: Boolean = false,
@@ -66,6 +67,7 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     private val _isPlaying = MutableStateFlow(false)
     private val _syncedFigureUrl = MutableStateFlow<String?>(null)
     private val _voiceLanguage = MutableStateFlow(VoiceLanguage.CN)
+    private var figureSyncJob: Job? = null
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -261,9 +263,10 @@ class VoiceViewModel @OptIn(UnstableApi::class)
             _avatarUrl.value = avatarUrl
             _isLoading.value = true
             _error.value = null
-            
-            // Sync figure from settings
-            viewModelScope.launch {
+
+            // Cancel previous figure sync collector to prevent leak
+            figureSyncJob?.cancel()
+            figureSyncJob = launch {
                 settingsDataStore.getSavedFigure(shipName).collect {
                     _syncedFigureUrl.value = it
                 }

@@ -38,11 +38,16 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     lint {
         baseline = file("lint-baseline.xml")
     }
+}
+
+ksp {
+    arg("room.generateKotlin", "false")
 }
 
 dependencies {
@@ -83,6 +88,7 @@ dependencies {
 
     /** ---------------- 图片 & 媒体 ---------------- */
     implementation(libs.coil.compose)
+    implementation(libs.coil.gif)
 
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)

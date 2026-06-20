@@ -41,6 +41,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.Refresh
@@ -104,6 +105,7 @@ import com.azurlane.blyy.viewmodel.GameScore
 fun GuessByImageScreen(
     viewModel: GuessShipViewModel = hiltViewModel(),
     onBack: () -> Unit,
+    onHistory: () -> Unit = {},
     playerViewModel: PlayerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -136,15 +138,12 @@ fun GuessByImageScreen(
         onBack = {
             viewModel.showSettlement()
         },
+        onHistory = onHistory,
         onInputChange = viewModel::onInputChanged,
         onSubmit = { viewModel.checkAnswer() },
         onNext = {
-            if (state.lastResult == GuessResult.SKIPPED) {
-                viewModel.skipToNextQuestion()
-            } else {
-                viewModel.clearResult()
-                viewModel.loadNextQuestion()
-            }
+            // 统一调用 ViewModel 的 goToNextQuestion，由 VM 内部读取最新状态计数
+            viewModel.goToNextQuestion()
         },
         onReplayVoice = {
             val url = state.currentVoice?.audioUrl
@@ -163,6 +162,7 @@ fun GuessByImageScreen(
 private fun ModernGuessImageContent(
     state: GuessGameUiState,
     onBack: () -> Unit,
+    onHistory: () -> Unit,
     onInputChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onNext: () -> Unit,
@@ -180,7 +180,16 @@ private fun ModernGuessImageContent(
                 title = "看图识舰娘",
                 subtitle = "观察图片，猜出舰娘",
                 onBackClick = onBack,
-                actions = { ScoreChip(totalScore = state.score.totalScore) }
+                actions = {
+                    IconButton(onClick = onHistory) {
+                        Icon(
+                            Icons.Rounded.History,
+                            contentDescription = "历史记录",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    ScoreChip(totalScore = state.score.totalScore)
+                }
             )
 
             Column(

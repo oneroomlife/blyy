@@ -2,10 +2,18 @@ package com.azurlane.blyy.data.model
 
 import androidx.compose.runtime.Immutable
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Immutable
-@Entity(tableName = "ships")
+@Entity(
+    tableName = "ships",
+    indices = [
+        Index(value = ["isFavorite"]),
+        Index(value = ["archiveType"]),
+        Index(value = ["isFavorite", "archiveType"])
+    ]
+)
 data class Ship(
     @PrimaryKey val name: String,
     val avatarUrl: String,

@@ -54,12 +54,25 @@ class GalleryViewModel @Inject constructor(
     val filteredShips = _uiState.map { s ->
         s.ships.filter { ship ->
             val matchSearch = ship.name.contains(s.searchQuery, ignoreCase = true)
-            val matchFaction = s.selectedFaction == "全部" || ship.faction.contains(s.selectedFaction)
+            val matchFaction = matchFaction(ship, s.selectedFaction)
             val matchType = matchShipType(ship.type, s.selectedType)
             val matchRarity = s.selectedRarity == "全部" || ship.rarity == s.selectedRarity
             matchSearch && matchFaction && matchType && matchRarity
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * 阵营匹配：兼容历史数据。
+     * - "余烬"：匹配 faction 含"余烬"，或 extra 含 "META" 标签的舰船（META-??? 归类到余烬）
+     * - 其余阵营：faction 包含匹配
+     */
+    private fun matchFaction(ship: Ship, selectedFaction: String): Boolean {
+        if (selectedFaction == "全部") return true
+        if (ship.faction.contains(selectedFaction)) return true
+        // 余烬阵营兜底：META 舰船（extra 含 META 标签）归入余烬
+        if (selectedFaction == "META" && ship.extra.contains("META", ignoreCase = true)) return true
+        return false
+    }
     
     private fun matchShipType(shipType: String, selectedType: String): Boolean {
         if (selectedType == "全部") return true

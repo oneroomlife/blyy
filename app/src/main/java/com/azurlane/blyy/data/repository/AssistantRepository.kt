@@ -11,7 +11,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -25,12 +24,9 @@ private const val TAG = "AssistantRepository"
  * 不依赖 Cookie，无需鉴权即可查询公开数据。
  */
 @Singleton
-class AssistantRepository @Inject constructor() {
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
+class AssistantRepository @Inject constructor(
+    private val client: OkHttpClient
+) {
 
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 

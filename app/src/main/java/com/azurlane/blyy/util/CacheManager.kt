@@ -9,6 +9,14 @@ object CacheManager {
     private const val TAG = "CacheManager"
     private const val DEFAULT_MAX_SIZE = 100
     private const val DEFAULT_EXPIRE_TIME_MS = 30 * 60 * 1000L
+    // Skip caching ByteArray entries larger than 512KB to avoid OOM
+    private const val MAX_CACHEABLE_BYTES = 512 * 1024
+
+    // Per-namespace max entry counts. Image bytes are heavy, so cap tightly.
+    private val namespaceMaxSizes = mapOf(
+        CacheNamespaces.IMAGE_DATA to 20,
+        CacheNamespaces.HTML_DOCUMENT to 30
+    )
 
     private data class CacheEntry<T>(
         val data: T,
@@ -29,14 +37,22 @@ object CacheManager {
     private val caches = mutableMapOf<String, LRUCache<String, CacheEntry<*>>>()
     private val lock = Any()
 
-    private fun <T> getOrCreateCache(namespace: String, maxSize: Int = DEFAULT_MAX_SIZE): LRUCache<String, CacheEntry<T>> {
+    private fun maxEntriesFor(namespace: String): Int =
+        namespaceMaxSizes[namespace] ?: DEFAULT_MAX_SIZE
+
+    private fun <T> getOrCreateCache(namespace: String): LRUCache<String, CacheEntry<T>> {
         synchronized(lock) {
             @Suppress("UNCHECKED_CAST")
-            return caches.getOrPut(namespace) { LRUCache<String, CacheEntry<*>>(maxSize) } as LRUCache<String, CacheEntry<T>>
+            return caches.getOrPut(namespace) { LRUCache<String, CacheEntry<*>>(maxEntriesFor(namespace)) } as LRUCache<String, CacheEntry<T>>
         }
     }
 
     fun <T> put(namespace: String, key: String, data: T, expiresInMs: Long = DEFAULT_EXPIRE_TIME_MS) {
+        // Avoid caching oversized byte arrays which would risk OOM
+        if (data is ByteArray && data.size > MAX_CACHEABLE_BYTES) {
+            Log.d(TAG, "Skip caching oversized ByteArray (${data.size} bytes): $namespace/$key")
+            return
+        }
         synchronized(lock) {
             val cache = getOrCreateCache<T>(namespace)
             cache[key] = CacheEntry(data, System.currentTimeMillis(), expiresInMs)

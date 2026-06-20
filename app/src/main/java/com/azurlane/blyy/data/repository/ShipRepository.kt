@@ -51,8 +51,13 @@ class ShipRepository @Inject constructor(
                         var rarity = el.attr("data-param2")
                         if (rarity.contains("海上传奇")) rarity = "海上传奇"
                         if (rarity.contains("决战方案")) rarity = "决战方案"
-                        val faction = el.attr("data-param3")
-                        val extra = el.attr("data-param4")
+                        var faction = el.attr("data-param3").trim()
+                        val extra = el.attr("data-param4").trim()
+                        // META 舰船（余烬阵营）：data-param4 含 "META" 标签时统一归类到"余烬"阵营，
+                        // 确保阵营筛选与卡片展示一致
+                        if (extra.contains("META", ignoreCase = true)) {
+                            faction = "META"
+                        }
 
                         Ship(name, avatar, border, relativeLink, type, rarity, faction, extra, archiveType.name)
                     } catch (e: Exception) { null }

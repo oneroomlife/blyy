@@ -40,6 +40,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -103,6 +104,7 @@ import com.azurlane.blyy.viewmodel.VoiceDifficulty
 fun GuessByVoiceScreen(
     viewModel: GuessShipViewModel = hiltViewModel(),
     onBack: () -> Unit,
+    onHistory: () -> Unit = {},
     playerViewModel: PlayerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -159,18 +161,14 @@ fun GuessByVoiceScreen(
         onBack = {
             viewModel.showSettlement()
         },
+        onHistory = onHistory,
         onInputChange = viewModel::onInputChanged,
         onSubmit = { viewModel.checkAnswer() },
         onNext = {
             currentToast?.cancel()
             currentToast = null
-            
-            if (state.lastResult == GuessResult.SKIPPED) {
-                viewModel.skipToNextQuestion()
-            } else {
-                viewModel.clearResult()
-                viewModel.loadNextQuestion()
-            }
+            // 统一调用 ViewModel 的 goToNextQuestion，由 VM 内部读取最新状态计数
+            viewModel.goToNextQuestion()
         },
         onReplay = {
             viewModel.playRandomVoiceForCurrentShip { url, dialogue ->
@@ -197,6 +195,7 @@ fun GuessByVoiceScreen(
 private fun ModernGuessVoiceContent(
     state: GuessGameUiState,
     onBack: () -> Unit,
+    onHistory: () -> Unit,
     onInputChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onNext: () -> Unit,
@@ -215,7 +214,16 @@ private fun ModernGuessVoiceContent(
                 title = "听音识舰娘",
                 subtitle = "聆听语音，猜出舰娘",
                 onBackClick = onBack,
-                actions = { VoiceScoreChip(totalScore = state.score.totalScore) }
+                actions = {
+                    IconButton(onClick = onHistory) {
+                        Icon(
+                            Icons.Rounded.History,
+                            contentDescription = "历史记录",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    VoiceScoreChip(totalScore = state.score.totalScore)
+                }
             )
 
             Column(

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
+import androidx.compose.material.icons.rounded.BrokenImage
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
@@ -89,8 +91,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.valentinilk.shimmer.shimmer
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import com.azurlane.blyy.R
 import com.azurlane.blyy.data.model.ChatMessage
 import com.azurlane.blyy.data.model.ChatMessageType
 import com.azurlane.blyy.data.model.ChatSession
@@ -245,6 +251,7 @@ fun JiuxinChatScreen(
                                 }
                             }
                         },
+                        onStickerClick = { /* 以后可以做点击查看大图或保存表情包 */ },
                         onUserAvatarLongClick = { showUserConfigDialog = true }
                     )
                 }
@@ -738,6 +745,7 @@ private fun MessageBubble(
     isDark: Boolean,
     isPlaying: Boolean,
     onVoiceClick: () -> Unit,
+    onStickerClick: () -> Unit,
     onUserAvatarLongClick: () -> Unit
 ) {
     val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
@@ -938,6 +946,107 @@ private fun MessageBubble(
                                 text = message.dialogue.ifBlank { "语音消息" },
                                 style = AppTypography.BodyMedium.copy(color = textColor, lineHeight = 20.sp)
                             )
+                        }
+                    }
+                    Text(
+                        text = formatTime(message.timestamp),
+                        style = AppTypography.LabelSmall.copy(fontSize = 10.sp),
+                        color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
+                        modifier = Modifier.padding(start = 2.dp, top = 2.dp)
+                    )
+                }
+            }
+        }
+
+        ChatMessageType.STICKER.name -> {
+            // ── 表情包消息 ──
+            val bubbleBg = if (isDark) JuusColors.Dark.AiBubble else JuusColors.AiBubble
+            val nameColor = if (isDark) JuusColors.Dark.AiName else JuusColors.AiName
+            val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.Start,
+                verticalAlignment = Alignment.Top
+            ) {
+                val stickerAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
+                Box(
+                    modifier = Modifier.size(36.dp).clip(CircleShape)
+                        .background(bubbleBg)
+                        .border(1.dp, avatarBorder, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (message.avatarUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(message.avatarUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
+                            modifier = Modifier.size(36.dp).clip(CircleShape),
+                            contentScale = ContentScale.Crop,
+                            onState = { stickerAvatarState.value = it }
+                        )
+                    }
+                    val showStickerAvatarFallback = message.avatarUrl.isBlank() ||
+                        stickerAvatarState.value is AsyncImagePainter.State.Error ||
+                        stickerAvatarState.value is AsyncImagePainter.State.Loading
+                    if (showStickerAvatarFallback) {
+                        Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
+                    }
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column {
+                    Text(
+                        text = message.shipName,
+                        style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Medium, color = nameColor),
+                        modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .widthIn(max = 160.dp)
+                            .heightIn(min = 60.dp, max = 180.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isDark) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.03f))
+                            .clickable(onClick = onStickerClick)
+                    ) {
+                        var isLoading by remember { mutableStateOf(true) }
+                        var isError by remember { mutableStateOf(false) }
+
+                        AsyncImage(
+                            model = ImageRequest.Builder(LocalContext.current)
+                                .data(message.stickerUrl)
+                                .crossfade(true)
+                                .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                                .addHeader("Referer", "https://wiki.biligame.com/")
+                                .memoryCachePolicy(CachePolicy.ENABLED)
+                                .diskCachePolicy(CachePolicy.ENABLED)
+                                .build(),
+                            contentDescription = "表情包",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (isLoading) Modifier.shimmer() else Modifier),
+                            contentScale = ContentScale.FillWidth,
+                            onState = { state ->
+                                isLoading = state is AsyncImagePainter.State.Loading
+                                isError = state is AsyncImagePainter.State.Error
+                            }
+                        )
+
+                        if (isError) {
+                            // 加载失败时显示表情包名称文字，而非空白或错误图标
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp, horizontal = 12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = message.content.ifBlank { "[表情包]" },
+                                    style = AppTypography.BodySmall.copy(
+                                        color = nameColor.copy(alpha = 0.7f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                )
+                            }
                         }
                     }
                     Text(

@@ -6,6 +6,8 @@ import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.ShipCharacterInfo
 import com.azurlane.blyy.data.model.ShipGallery
 import com.azurlane.blyy.data.model.VoiceLine
+import com.azurlane.blyy.data.local.GuessHistoryDao
+import com.azurlane.blyy.data.model.GuessHistory
 import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.util.CacheManager
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.random.Random
+import java.util.UUID
 import javax.inject.Inject
 
 enum class GuessMode {
@@ -106,13 +109,16 @@ data class GuessGameUiState(
     val score: GameScore = GameScore(),
     val showSettlement: Boolean = false,
     val currentQuestionScore: Int = 10,
-    val noMoreHints: Boolean = false
+    val noMoreHints: Boolean = false,
+    /** 当前题目是否已计入总分（防止双重计数） */
+    val currentQuestionCounted: Boolean = false
 )
 
 @HiltViewModel
 class GuessShipViewModel @Inject constructor(
     private val repository: ShipRepository,
-    private val getVoicesUseCase: GetVoicesUseCase
+    private val getVoicesUseCase: GetVoicesUseCase,
+    private val historyDao: GuessHistoryDao
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(GuessGameUiState())
@@ -122,6 +128,11 @@ class GuessShipViewModel @Inject constructor(
     private val usedShipIndices = mutableSetOf<Int>()
     private var isRefreshingShips = false
     private val playedVoiceKeys = mutableSetOf<String>()
+
+    /** 当前游戏会话 ID（每局唯一，防止重复录入历史记录） */
+    private var gameSessionId: String = UUID.randomUUID().toString()
+    /** 标记当前局是否已保存历史记录，防止 showSettlement 被多次调用导致重复录入 */
+    private var hasSavedHistory: Boolean = false
 
     init {
         viewModelScope.launch {
@@ -141,6 +152,8 @@ class GuessShipViewModel @Inject constructor(
     }
 
     fun startImageGame() {
+        gameSessionId = UUID.randomUUID().toString()
+        hasSavedHistory = false
         _uiState.update {
             it.copy(
                 isActive = true,
@@ -164,6 +177,8 @@ class GuessShipViewModel @Inject constructor(
     }
 
     fun startVoiceGame() {
+        gameSessionId = UUID.randomUUID().toString()
+        hasSavedHistory = false
         _uiState.update {
             it.copy(
                 isActive = true,
@@ -310,7 +325,8 @@ class GuessShipViewModel @Inject constructor(
                         cropRegion = cropRegion,
                         showAnswer = false,
                         currentQuestionScore = questionScore,
-                        noMoreHints = _uiState.value.difficulty == ImageDifficulty.HARD
+                        noMoreHints = _uiState.value.difficulty == ImageDifficulty.HARD,
+                        currentQuestionCounted = false
                     )
                 }
             } catch (e: Exception) {
@@ -451,7 +467,8 @@ class GuessShipViewModel @Inject constructor(
                         cropRegion = null,
                         showAnswer = false,
                         currentQuestionScore = questionScore,
-                        noMoreHints = _uiState.value.voiceDifficulty == VoiceDifficulty.HARD
+                        noMoreHints = _uiState.value.voiceDifficulty == VoiceDifficulty.HARD,
+                        currentQuestionCounted = false
                     )
                 }
             } catch (e: Exception) {
@@ -575,48 +592,116 @@ class GuessShipViewModel @Inject constructor(
     private fun onAnswerCorrect(ship: Ship) {
         val currentQScore = _uiState.value.currentQuestionScore
         val currentGameState = _uiState.value.score
-        val hintsUsedThisQuestion = _uiState.value.hints.size
-        
+
         when (_uiState.value.mode) {
             GuessMode.IMAGE -> prepareRewardVoice(ship)
             GuessMode.VOICE -> prepareRewardImage(ship)
         }
-        
-        _uiState.update { 
+
+        // 仅更新得分相关字段，totalQuestions 在 goToNextQuestion/showSettlement 中统一计数
+        _uiState.update {
             it.copy(
-                lastResult = GuessResult.CORRECT, 
+                lastResult = GuessResult.CORRECT,
                 errorMessage = null,
                 score = currentGameState.copy(
-                    totalQuestions = currentGameState.totalQuestions + 1,
                     correctAnswers = currentGameState.correctAnswers + 1,
-                    totalScore = currentGameState.totalScore + currentQScore,
-                    hintsUsedTotal = currentGameState.hintsUsedTotal + hintsUsedThisQuestion,
-                    totalPossibleScore = currentGameState.totalPossibleScore + 10
+                    totalScore = currentGameState.totalScore + currentQScore
                 )
             )
         }
     }
 
-    fun skipToNextQuestion() {
-        val currentGameState = _uiState.value.score
-        val wasSkipped = _uiState.value.lastResult == GuessResult.SKIPPED
-        val hintsUsedThisQuestion = _uiState.value.hints.size
-        
-        _uiState.update {
-            it.copy(
-                score = currentGameState.copy(
-                    totalQuestions = currentGameState.totalQuestions + 1,
-                    skippedQuestions = currentGameState.skippedQuestions + (if (wasSkipped) 1 else 0),
-                    hintsUsedTotal = currentGameState.hintsUsedTotal + hintsUsedThisQuestion,
-                    totalPossibleScore = currentGameState.totalPossibleScore + 10
-                )
-            )
-        }
-        
+    /**
+     * 统一的"下一题"入口（替代原 skipToNextQuestion）。
+     *
+     * 在 ViewModel 内部读取最新状态（避免 Compose 闭包捕获陈旧状态），
+     * 先将当前题目计入总分（如果尚未计入），再加载下一题。
+     *
+     * 此方法修复了原 onNext 闭包因 state.lastResult 陈旧导致的双重计数问题：
+     * - 答对时 onAnswerCorrect 只更新 correctAnswers/totalScore，不再 +1 totalQuestions
+     * - 答错/跳过/未作答均在此方法统一计数，由 [currentQuestionCounted] 标志保证每题只计一次
+     */
+    fun goToNextQuestion() {
+        countCurrentQuestionIfNeeded()
+        clearResult()
         loadNextQuestion()
     }
 
+    /**
+     * 将当前题目计入总分（如果尚未计入）。
+     *
+     * 计数规则（每题只计一次，由 [GuessGameUiState.currentQuestionCounted] 标志保证）：
+     * - CORRECT：totalQuestions +1（correctAnswers/totalScore 已在 onAnswerCorrect 中更新）
+     * - WRONG：totalQuestions +1
+     * - SKIPPED：totalQuestions +1, skippedQuestions +1
+     * - null（未作答直接下一题）：totalQuestions +1, skippedQuestions +1
+     *
+     * 同时累计 hintsUsedTotal 和 totalPossibleScore（每题固定 +10）。
+     */
+    private fun countCurrentQuestionIfNeeded() {
+        val state = _uiState.value
+        // 已计入或无当前题目 → 跳过
+        if (state.currentQuestionCounted || state.currentShip == null) return
+
+        val lastResult = state.lastResult
+        val isSkipped = lastResult == GuessResult.SKIPPED || lastResult == null
+        val hintsUsedThisQuestion = state.hints.size
+
+        _uiState.update {
+            it.copy(
+                currentQuestionCounted = true,
+                score = it.score.copy(
+                    totalQuestions = it.score.totalQuestions + 1,
+                    skippedQuestions = it.score.skippedQuestions + (if (isSkipped) 1 else 0),
+                    hintsUsedTotal = it.score.hintsUsedTotal + hintsUsedThisQuestion,
+                    totalPossibleScore = it.score.totalPossibleScore + 10
+                )
+            )
+        }
+    }
+
     fun showSettlement() {
+        // 先将当前未计数的题目计入总分（例如答对后直接退出，未点"下一题"）
+        countCurrentQuestionIfNeeded()
+
+        // 保存游戏记录到历史记录（防重复：内存标志 + 数据库唯一索引双重保障）
+        val state = _uiState.value
+        val score = state.score
+        if (score.totalQuestions > 0 && !hasSavedHistory) {
+            hasSavedHistory = true // 立即标记，防止并发或重复调用
+
+            val mode = when (state.mode) {
+                GuessMode.IMAGE -> "IMAGE"
+                GuessMode.VOICE -> "VOICE"
+            }
+            val difficulty = when (state.mode) {
+                GuessMode.IMAGE -> if (state.difficulty == ImageDifficulty.HARD) "HARD" else "EASY"
+                GuessMode.VOICE -> if (state.voiceDifficulty == VoiceDifficulty.HARD) "HARD" else "EASY"
+            }
+            val currentSessionId = gameSessionId
+            viewModelScope.launch {
+                // 预检查：数据库端再次确认无重复（应对进程重启后内存标志丢失的场景）
+                val exists = historyDao.existsBySession(currentSessionId, mode)
+                if (!exists) {
+                    historyDao.insert(
+                        GuessHistory(
+                            mode = mode,
+                            difficulty = difficulty,
+                            totalQuestions = score.totalQuestions,
+                            correctAnswers = score.correctAnswers,
+                            totalScore = score.totalScore,
+                            hintsUsedTotal = score.hintsUsedTotal,
+                            skippedQuestions = score.skippedQuestions,
+                            totalPossibleScore = score.totalPossibleScore,
+                            timestamp = System.currentTimeMillis(),
+                            accuracy = score.accuracy,
+                            averageScore = score.averageScore,
+                            sessionId = currentSessionId
+                        )
+                    )
+                }
+            }
+        }
         _uiState.update { it.copy(showSettlement = true) }
     }
 

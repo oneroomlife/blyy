@@ -14,6 +14,7 @@ import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.viewmodel.PlayMode
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -60,6 +61,9 @@ class PlayerSettingsDataStore @Inject constructor(
         private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
         private val ASSISTANT_DEFAULT_SERVER_KEY = stringPreferencesKey("assistant_default_server")
 
+        // 排行榜自定义昵称：当无法通过 UID/服务器查询到玩家信息时，使用该昵称上传排行榜
+        private val LEADERBOARD_NICKNAME_KEY = stringPreferencesKey("leaderboard_nickname")
+
         // AI 配置
         private val AI_API_KEY_KEY = stringPreferencesKey("ai_api_key")
         private val AI_CUSTOM_BASE_URL_KEY = stringPreferencesKey("ai_custom_base_url")
@@ -73,6 +77,8 @@ class PlayerSettingsDataStore @Inject constructor(
         private val AI_MODEL_KEY = stringPreferencesKey("ai_model")
         private val AI_VOICE_SHIP_NAME_KEY = stringPreferencesKey("ai_voice_ship_name")
         private val AI_VOICE_SHIP_AVATAR_KEY = stringPreferencesKey("ai_voice_ship_avatar")
+        private val AI_STICKERS_ENABLED_KEY = booleanPreferencesKey("ai_stickers_enabled")
+        private val AI_STICKER_CHANCE_KEY = floatPreferencesKey("ai_sticker_chance")
 
         // 历史对话会话管理
         private val AI_CHAT_SESSIONS_KEY = stringPreferencesKey("ai_chat_sessions")
@@ -81,6 +87,10 @@ class PlayerSettingsDataStore @Inject constructor(
         // 用户（指挥官）配置
         private val USER_NAME_KEY = stringPreferencesKey("user_name")
         private val USER_AVATAR_URL_KEY = stringPreferencesKey("user_avatar_url")
+
+        // 排行榜本地缓存（JSON + 时间戳），用于避免每次进入页面都重新加载
+        private val LEADERBOARD_CACHE_JSON_KEY = stringPreferencesKey("leaderboard_cache_json")
+        private val LEADERBOARD_CACHE_TIMESTAMP_KEY = androidx.datastore.preferences.core.longPreferencesKey("leaderboard_cache_ts")
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -310,6 +320,15 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { it[ASSISTANT_DEFAULT_SERVER_KEY] = server }
     }
 
+    // ── 排行榜自定义昵称 ──
+
+    /** 排行榜自定义昵称（无法通过助手查询到玩家信息时使用） */
+    val leaderboardNickname: Flow<String> = context.dataStore.data.map { it[LEADERBOARD_NICKNAME_KEY] ?: "" }
+
+    suspend fun setLeaderboardNickname(nickname: String) {
+        context.dataStore.edit { it[LEADERBOARD_NICKNAME_KEY] = nickname.trim() }
+    }
+
     // ── AI 配置 ──
 
     val aiApiKey: Flow<String> = context.dataStore.data.map { it[AI_API_KEY_KEY] ?: "" }
@@ -326,6 +345,8 @@ class PlayerSettingsDataStore @Inject constructor(
     val aiModel: Flow<String> = context.dataStore.data.map { it[AI_MODEL_KEY] ?: "" }
     val aiVoiceShipName: Flow<String> = context.dataStore.data.map { it[AI_VOICE_SHIP_NAME_KEY] ?: "" }
     val aiVoiceShipAvatar: Flow<String> = context.dataStore.data.map { it[AI_VOICE_SHIP_AVATAR_KEY] ?: "" }
+    val aiStickersEnabled: Flow<Boolean> = context.dataStore.data.map { it[AI_STICKERS_ENABLED_KEY] ?: true }
+    val aiStickerChance: Flow<Float> = context.dataStore.data.map { it[AI_STICKER_CHANCE_KEY] ?: 0.8f }
 
     suspend fun setAiApiKey(key: String) { context.dataStore.edit { it[AI_API_KEY_KEY] = key } }
     suspend fun setAiCustomBaseUrl(url: String) { context.dataStore.edit { it[AI_CUSTOM_BASE_URL_KEY] = url } }
@@ -339,6 +360,8 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setAiModel(model: String) { context.dataStore.edit { it[AI_MODEL_KEY] = model } }
     suspend fun setAiVoiceShipName(name: String) { context.dataStore.edit { it[AI_VOICE_SHIP_NAME_KEY] = name } }
     suspend fun setAiVoiceShipAvatar(avatar: String) { context.dataStore.edit { it[AI_VOICE_SHIP_AVATAR_KEY] = avatar } }
+    suspend fun setAiStickersEnabled(enabled: Boolean) { context.dataStore.edit { it[AI_STICKERS_ENABLED_KEY] = enabled } }
+    suspend fun setAiStickerChance(chance: Float) { context.dataStore.edit { it[AI_STICKER_CHANCE_KEY] = chance.coerceIn(0f, 1f) } }
     suspend fun clearAiChatHistory() { context.dataStore.edit { it[AI_CHAT_HISTORY_KEY] = "[]" } }
 
     // ── 历史对话会话管理 ──
@@ -385,6 +408,35 @@ class PlayerSettingsDataStore @Inject constructor(
 
     suspend fun setUserName(name: String) { context.dataStore.edit { it[USER_NAME_KEY] = name } }
     suspend fun setUserAvatarUrl(url: String) { context.dataStore.edit { it[USER_AVATAR_URL_KEY] = url } }
+
+    // ── 排行榜本地缓存 ──
+
+    /**
+     * 读取排行榜本地缓存。
+     * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
+     */
+    suspend fun getLeaderboardCache(): Pair<String, Long>? {
+        val prefs = context.dataStore.data.first()
+        val json = prefs[LEADERBOARD_CACHE_JSON_KEY] ?: return null
+        val ts = prefs[LEADERBOARD_CACHE_TIMESTAMP_KEY] ?: 0L
+        return json to ts
+    }
+
+    /** 写入排行榜本地缓存（JSON + 当前时间戳） */
+    suspend fun setLeaderboardCache(json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[LEADERBOARD_CACHE_JSON_KEY] = json
+            prefs[LEADERBOARD_CACHE_TIMESTAMP_KEY] = System.currentTimeMillis()
+        }
+    }
+
+    /** 清空排行榜本地缓存 */
+    suspend fun clearLeaderboardCache() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(LEADERBOARD_CACHE_JSON_KEY)
+            prefs.remove(LEADERBOARD_CACHE_TIMESTAMP_KEY)
+        }
+    }
 }
 
 @kotlinx.serialization.Serializable

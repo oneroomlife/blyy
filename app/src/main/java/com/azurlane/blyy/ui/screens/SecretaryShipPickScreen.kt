@@ -100,7 +100,7 @@ private fun SecretaryShipPickScreen(
     var selectedRarity by remember { mutableStateOf("全部") }
     var showFilterSheet by remember { mutableStateOf(false) }
     
-    val allFactions = listOf("全部", "白鹰", "皇家", "重樱", "铁血", "东煌", "撒丁帝国", "北方联合", "自由鸢尾", "维希教廷", "郁金王国", "余烬", "其他", "飓风")
+    val allFactions = listOf("全部", "白鹰", "皇家", "重樱", "铁血", "东煌", "撒丁帝国", "北方联合", "自由鸢尾", "维希教廷", "郁金王国", "META", "其他", "飓风")
     val allTypes = listOf("全部", "前排先锋", "后排主力", "驱逐", "轻巡", "重巡", "超巡", "战巡", "战列", "航战", "航母", "轻航", "重炮", "维修", "潜艇", "潜母", "运输", "风帆")
     val allRarities = listOf("全部", "海上传奇", "决战方案", "超稀有", "最高方案", "精锐", "稀有", "普通")
     

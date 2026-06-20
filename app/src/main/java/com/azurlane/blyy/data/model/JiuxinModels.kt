@@ -24,6 +24,7 @@ enum class ChatMessageType {
     USER,       // 用户发送的文本消息
     AI,         // 啾信回复的文本消息
     VOICE,      // 舰娘语音消息
+    STICKER,    // 表情包消息
     SYSTEM      // 系统提示消息
 }
 
@@ -38,8 +39,19 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val shipName: String = "",
     val voiceUrl: String = "",
+    val stickerUrl: String = "", // 新增表情包URL字段
     val dialogue: String = "",
     val avatarUrl: String = ""
+)
+
+/**
+ * 表情包资源模型
+ */
+@Serializable
+data class StickerResource(
+    val url: String,
+    val tags: List<String>,
+    val name: String = ""
 )
 
 /**

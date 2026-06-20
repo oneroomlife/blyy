@@ -5,12 +5,12 @@ import com.azurlane.blyy.data.model.Ship
 import kotlinx.coroutines.flow.Flow
 
 @Dao
-interface ShipDao {
+abstract class ShipDao {
     @Query("SELECT * FROM ships ORDER BY name ASC")
-    fun getAllShips(): Flow<List<Ship>>
+    abstract fun getAllShips(): Flow<List<Ship>>
 
     @Query("SELECT * FROM ships WHERE isFavorite = 1 ORDER BY name ASC")
-    fun getFavoriteShips(): Flow<List<Ship>>
+    abstract fun getFavoriteShips(): Flow<List<Ship>>
 
     @Query("""
         SELECT * FROM ships 
@@ -31,7 +31,7 @@ interface ShipDao {
             END ASC, 
             name ASC
     """)
-    fun getShipsByArchiveType(archiveType: String): Flow<List<Ship>>
+    abstract fun getShipsByArchiveType(archiveType: String): Flow<List<Ship>>
 
     @Query("""
         SELECT * FROM ships 
@@ -52,19 +52,19 @@ interface ShipDao {
             END ASC, 
             name ASC
     """)
-    fun getFavoriteShipsByArchiveType(archiveType: String): Flow<List<Ship>>
+    abstract fun getFavoriteShipsByArchiveType(archiveType: String): Flow<List<Ship>>
 
     @Query("SELECT * FROM ships WHERE name = :name LIMIT 1")
-    suspend fun getShipByName(name: String): Ship?
+    abstract suspend fun getShipByName(name: String): Ship?
 
     @Query("SELECT name FROM ships WHERE isFavorite = 1")
-    suspend fun getFavoriteNames(): List<String>
+    abstract suspend fun getFavoriteNames(): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertAll(ships: List<Ship>)
+    abstract suspend fun insertAll(ships: List<Ship>)
 
     @Transaction
-    suspend fun upsertShips(ships: List<Ship>) {
+    open suspend fun upsertShips(ships: List<Ship>) {
         val favorites = getFavoriteNames().toSet()
         val shipsToUpsert = ships.map { 
             if (it.name in favorites) it.copy(isFavorite = true) else it 
@@ -73,10 +73,10 @@ interface ShipDao {
     }
 
     @Query("DELETE FROM ships WHERE name NOT IN (:names)")
-    suspend fun deleteOldShips(names: List<String>)
+    abstract suspend fun deleteOldShips(names: List<String>)
 
     @Query("UPDATE ships SET avatarUrl = :avatar, borderUrl = :border, link = :link, type = :type, rarity = :rarity, faction = :faction, extra = :extra, archiveType = :archiveType WHERE name = :name")
-    suspend fun updateShipMetadata(
+    abstract suspend fun updateShipMetadata(
         name: String,
         avatar: String,
         border: String?,
@@ -89,5 +89,5 @@ interface ShipDao {
     )
 
     @Query("UPDATE ships SET isFavorite = :isFav WHERE name = :name")
-    suspend fun updateFavorite(name: String, isFav: Boolean)
+    abstract suspend fun updateFavorite(name: String, isFav: Boolean)
 }

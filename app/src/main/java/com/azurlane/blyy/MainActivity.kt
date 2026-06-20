@@ -49,7 +49,9 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ViewInAr
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Leaderboard
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
@@ -120,6 +122,7 @@ import com.azurlane.blyy.service.PlaybackService
 import com.azurlane.blyy.ui.screens.GalleryScreen
 import com.azurlane.blyy.ui.screens.GuessByImageScreen
 import com.azurlane.blyy.ui.screens.GuessByVoiceScreen
+import com.azurlane.blyy.ui.screens.GuessHistoryScreen
 import com.azurlane.blyy.ui.screens.HomeScreen
 import com.azurlane.blyy.ui.screens.ShipGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
@@ -133,6 +136,7 @@ import com.azurlane.blyy.ui.screens.SecretaryShipRandomScreen
 import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinChatScreen
+import com.azurlane.blyy.ui.screens.LeaderboardScreen
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
 import com.azurlane.blyy.viewmodel.SecretaryShipViewModel
@@ -325,6 +329,8 @@ fun AppContent() {
             currentDestination?.route?.startsWith("gallery/") != true &&
             currentDestination?.route?.startsWith("guess_image") != true &&
             currentDestination?.route?.startsWith("guess_voice") != true &&
+            currentDestination?.route?.startsWith("guess_history") != true &&
+            currentDestination?.route != "leaderboard" &&
             currentDestination?.route != Screen.About.route &&
             currentDestination?.route?.startsWith("secretary") != true &&
             currentDestination?.route != "settings" &&
@@ -381,17 +387,14 @@ fun AppContent() {
             UpdateAvailableDialog(
                 updateInfo = currentUpdateInfo,
                 onUpdate = {
-                        updateInfo = null
-                        try {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl)).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            Log.e("MainActivity", "Failed to open update URL", e)
-                            Toast.makeText(context, "无法打开更新链接，请手动前往官网", Toast.LENGTH_LONG).show()
-                        }
-                    },
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl))
+                        context.startActivity(intent)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Failed to open update URL", e)
+                    }
+                    updateInfo = null
+                },
                 onDismiss = {
                     scope.launch {
                         try {
@@ -588,14 +591,29 @@ fun AppContent() {
                         val viewModel: GuessShipViewModel = hiltViewModel()
                         GuessByImageScreen(
                             viewModel = viewModel,
-                            onBack = { navController.popBackStack() }
+                            onBack = { navController.popBackStack() },
+                            onHistory = { navController.navigate("guess_history") }
                         )
                     }
                     composable("guess_voice") {
                         val viewModel: GuessShipViewModel = hiltViewModel()
                         GuessByVoiceScreen(
                             viewModel = viewModel,
-                            onBack = { navController.popBackStack() }
+                            onBack = { navController.popBackStack() },
+                            onHistory = { navController.navigate("guess_history") }
+                        )
+                    }
+                    composable("guess_history") {
+                        GuessHistoryScreen(
+                            onBack = { navController.popBackStack() },
+                            onLeaderboard = { navController.navigate("leaderboard") },
+                            onNavigateToAssistantConfig = { navController.navigate("assistant_config") }
+                        )
+                    }
+                    composable("leaderboard") {
+                        LeaderboardScreen(
+                            onBack = { navController.popBackStack() },
+                            onNavigateToAssistantConfig = { navController.navigate("assistant_config") }
                         )
                     }
                     composable(Screen.About.route) {
@@ -1033,6 +1051,22 @@ private fun ModernDrawerSheet(
             icon = Icons.Rounded.MusicNote,
             description = "通过语音辨认舰娘",
             color = MaterialTheme.colorScheme.secondary,
+            group = "挑战"
+        ),
+        DrawerMenuItem(
+            route = "guess_history",
+            label = "历史记录",
+            icon = Icons.Rounded.History,
+            description = "查看游戏战绩与统计",
+            color = MaterialTheme.colorScheme.tertiary,
+            group = "挑战"
+        ),
+        DrawerMenuItem(
+            route = "leaderboard",
+            label = "积分排行榜",
+            icon = Icons.Rounded.Leaderboard,
+            description = "查看全服成绩排名",
+            color = MaterialTheme.colorScheme.primary,
             group = "挑战"
         ),
         DrawerMenuItem(
@@ -1513,23 +1547,17 @@ private fun UpdateAvailableDialog(
             }
         },
         confirmButton = {
-            Button(
+            Surface(
                 onClick = onUpdate,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = accentColor),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+                shape = RoundedCornerShape(8.dp),
+                color = accentColor
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(Icons.Rounded.Download, null, modifier = Modifier.size(18.dp))
-                    Text(
-                        text = "立即更新",
-                        style = AppTypography.LabelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                Text(
+                    text = "立即更新",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                    style = AppTypography.LabelMedium,
+                    color = Color.White
+                )
             }
         },
         dismissButton = {
