@@ -56,6 +56,8 @@ object AppModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
             .retryOnConnectionFailure(true)
             .build()
     }

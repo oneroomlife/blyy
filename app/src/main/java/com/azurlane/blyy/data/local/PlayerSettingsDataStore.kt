@@ -1,5 +1,6 @@
 package com.azurlane.blyy.data.local
 
+import android.os.Build
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -49,6 +50,7 @@ class PlayerSettingsDataStore @Inject constructor(
         // 外观设置
         private val UI_STYLE_KEY = stringPreferencesKey("ui_style")
         private val FORCE_DARK_THEME_KEY = booleanPreferencesKey("force_dark_theme")
+        private val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
 
         // Live2D 证书信任（仅限 l2d.su 域名）
         private val LIVE2D_SSL_TRUSTED_KEY = booleanPreferencesKey("live2d_ssl_trusted")
@@ -91,6 +93,13 @@ class PlayerSettingsDataStore @Inject constructor(
         // 排行榜本地缓存（JSON + 时间戳），用于避免每次进入页面都重新加载
         private val LEADERBOARD_CACHE_JSON_KEY = stringPreferencesKey("leaderboard_cache_json")
         private val LEADERBOARD_CACHE_TIMESTAMP_KEY = androidx.datastore.preferences.core.longPreferencesKey("leaderboard_cache_ts")
+
+        // 档案缓存时间戳（DOCK/STUDENT 各一份），用于多级缓存过期策略
+        private val ARCHIVE_CACHE_TIMESTAMP_DOCK_KEY = androidx.datastore.preferences.core.longPreferencesKey("archive_cache_ts_dock")
+        private val ARCHIVE_CACHE_TIMESTAMP_STUDENT_KEY = androidx.datastore.preferences.core.longPreferencesKey("archive_cache_ts_student")
+
+        /** 档案缓存过期时间：5 分钟（毫秒） */
+        const val ARCHIVE_CACHE_EXPIRY_MS = 5 * 60 * 1000L
     }
 
     val playMode: Flow<PlayMode> = context.dataStore.data
@@ -141,6 +150,11 @@ class PlayerSettingsDataStore @Inject constructor(
 
     /** 默认 false — 跟随系统深浅色设置 */
     val forceDarkTheme: Flow<Boolean> = context.dataStore.data.map { it[FORCE_DARK_THEME_KEY] ?: false }
+
+    /** Material You 动态取色 — Android 12+ 默认开启 */
+    val dynamicColorEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+        prefs[DYNAMIC_COLOR_KEY] ?: (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+    }
 
     /** Live2D 域名证书信任标记，仅对 l2d.su 生效 */
     val live2dSslTrusted: Flow<Boolean> = context.dataStore.data.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
@@ -201,6 +215,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setForceDarkTheme(force: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[FORCE_DARK_THEME_KEY] = force
+        }
+    }
+
+    suspend fun setDynamicColorEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[DYNAMIC_COLOR_KEY] = enabled
         }
     }
 
@@ -436,6 +456,28 @@ class PlayerSettingsDataStore @Inject constructor(
             prefs.remove(LEADERBOARD_CACHE_JSON_KEY)
             prefs.remove(LEADERBOARD_CACHE_TIMESTAMP_KEY)
         }
+    }
+
+    // ── 档案缓存时间戳 ──
+
+    /** 获取档案缓存时间戳，返回 0 表示无缓存 */
+    suspend fun getArchiveCacheTimestamp(archiveType: String): Long {
+        val prefs = context.dataStore.data.first()
+        val key = if (archiveType == "STUDENT") ARCHIVE_CACHE_TIMESTAMP_STUDENT_KEY else ARCHIVE_CACHE_TIMESTAMP_DOCK_KEY
+        return prefs[key] ?: 0L
+    }
+
+    /** 写入档案缓存时间戳 */
+    suspend fun setArchiveCacheTimestamp(archiveType: String) {
+        val key = if (archiveType == "STUDENT") ARCHIVE_CACHE_TIMESTAMP_STUDENT_KEY else ARCHIVE_CACHE_TIMESTAMP_DOCK_KEY
+        context.dataStore.edit { it[key] = System.currentTimeMillis() }
+    }
+
+    /** 检查档案缓存是否过期（超过 5 分钟视为过期） */
+    suspend fun isArchiveCacheExpired(archiveType: String): Boolean {
+        val timestamp = getArchiveCacheTimestamp(archiveType)
+        if (timestamp == 0L) return true
+        return System.currentTimeMillis() - timestamp > ARCHIVE_CACHE_EXPIRY_MS
     }
 }
 

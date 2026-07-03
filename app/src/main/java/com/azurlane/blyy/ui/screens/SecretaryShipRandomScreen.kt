@@ -259,8 +259,7 @@ private fun RevealedShipCard(
         }
         Text(
             ship.name,
-            style = AppTypography.TitleLarge,
-            fontWeight = FontWeight.Bold,
+            style = AppTypography.TitleLargeBold,
             color = MaterialTheme.colorScheme.onSurface
         )
         Text(

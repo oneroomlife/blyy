@@ -1,9 +1,12 @@
 package com.azurlane.blyy.ui.theme
 
 import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.infiniteRepeatable
@@ -24,7 +27,16 @@ object AppAnimation {
     
     object Easings {
         val Standard = FastOutSlowInEasing
-        
+
+        /** Material LinearOutSlowIn — 元素进入时减速 */
+        val DecelerateIn = LinearOutSlowInEasing
+
+        /** Material FastOutLinearIn — 元素退出时加速 */
+        val AccelerateOut = FastOutLinearInEasing
+
+        /** EaseInOutSine — 平滑的正弦进出，用于呼吸/光晕等循环动画 */
+        val EaseInOutSine = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
+
         val Emphasized = Easing { f ->
             val x = f * 1.1f
             x * x * (3.5f - 2f * x)

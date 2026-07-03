@@ -66,6 +66,9 @@ import coil.compose.AsyncImage
 import com.azurlane.blyy.data.local.PlayLaterItem
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
+import com.azurlane.blyy.ui.components.BlyyBottomSheet
+import com.azurlane.blyy.ui.components.BlyyErrorState
+import com.azurlane.blyy.ui.components.BlyyLoadingState
 import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.LocalUiStyle
@@ -84,6 +87,7 @@ import kotlinx.coroutines.withContext
 import org.intellij.lang.annotations.Language
 import java.io.File
 import java.io.FileOutputStream
+import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -107,6 +111,7 @@ fun VoiceScreen(
 ) {
     val voiceState by voiceViewModel.state.collectAsState()
     val playerState by playerViewModel.uiState.collectAsState()
+    val playbackError by voiceViewModel.playbackError.collectAsState()
 
     VoiceScreenContent(
         voiceState = voiceState,
@@ -115,7 +120,9 @@ fun VoiceScreen(
         playerViewModel = playerViewModel,
         onBack = onBack,
         sharedTransitionScope = sharedTransitionScope,
-        animatedContentScope = animatedContentScope
+        animatedContentScope = animatedContentScope,
+        playbackError = playbackError,
+        onClearPlaybackError = { voiceViewModel.clearPlaybackError() }
     )
 }
 
@@ -130,11 +137,21 @@ fun VoiceScreenContent(
     playerViewModel: PlayerViewModel,
     onBack: () -> Unit,
     sharedTransitionScope: SharedTransitionScope,
-    animatedContentScope: AnimatedContentScope
+    animatedContentScope: AnimatedContentScope,
+    playbackError: String?,
+    onClearPlaybackError: () -> Unit
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(playbackError) {
+        playbackError?.let {
+            snackbarHostState.showSnackbar(it)
+            onClearPlaybackError()
+        }
+    }
     
     val groupedVoices by remember(voiceState.voices) {
         derivedStateOf {
@@ -149,9 +166,7 @@ fun VoiceScreenContent(
         }
     }
     
-    val favorites by remember(playerState.favorites) {
-        derivedStateOf { playerState.favorites }
-    }
+    val favorites = playerState.favorites
     
     fun downloadVoice(voice: VoiceLine) {
         scope.launch {
@@ -165,7 +180,16 @@ fun VoiceScreenContent(
                     val file = File(downloadsDir, "BLYY/$fileName")
                     file.parentFile?.mkdirs()
                     
-                    url.openStream().use { input ->
+                    val referer = when {
+                        url.host.contains("gamekee") -> "https://www.gamekee.com/"
+                        url.host.contains("biligame") || url.host.contains("hdslb") -> "https://wiki.biligame.com/"
+                        else -> "https://www.google.com/"
+                    }
+                    (url.openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 20000
+                        readTimeout = 20000
+                        setRequestProperty("Referer", referer)
+                    }.inputStream.use { input ->
                         FileOutputStream(file).use { output ->
                             input.copyTo(output)
                         }
@@ -238,13 +262,48 @@ fun VoiceScreenContent(
             }
         ) { innerPadding ->
             
-            if (voiceState.error != null) {
-                ErrorStateView(
-                    error = voiceState.error,
-                    onRetry = { onVoiceIntent(VoiceIntent.LoadVoices(voiceState.shipName, voiceState.avatarUrl)) }
-                )
+            if (voiceState.error != null && voiceState.voices.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    BlyyErrorState(
+                        message = voiceState.error,
+                        onRetry = {
+                            if (voiceState.studentLink.isNotEmpty()) {
+                                onVoiceIntent(
+                                    VoiceIntent.LoadStudentVoices(
+                                        voiceState.shipName,
+                                        voiceState.avatarUrl,
+                                        voiceState.studentLink
+                                    )
+                                )
+                            } else {
+                                onVoiceIntent(VoiceIntent.LoadVoices(voiceState.shipName, voiceState.avatarUrl))
+                            }
+                        }
+                    )
+                }
             } else if (voiceState.isLoading && voiceState.voices.isEmpty()) {
-                LoadingStateView()
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+                    ) {
+                        BlyyLoadingState()
+                        // 重试状态提示
+                        if (voiceState.isRetrying) {
+                            Text(
+                                text = "正在重试加载... (${voiceState.retryCount}/3)",
+                                style = AppTypography.BodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else if (voiceState.isCacheHit) {
+                            Text(
+                                text = "从缓存加载",
+                                style = AppTypography.LabelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier
@@ -281,7 +340,7 @@ fun VoiceScreenContent(
                             SkinHeader(skinName)
                         }
 
-                        itemsIndexed(skinVoices, key = { _, v -> v.audioUrlCn.ifBlank { v.audioUrlJp } }) { _, voice ->
+                        itemsIndexed(skinVoices, key = { index, v -> "${index}_${v.audioUrlCn.ifBlank { v.audioUrlJp }}" }) { _, voice ->
                             val globalIndex = voiceIndexMap[voice] ?: -1
                             val isCurrent = playerState.currentMediaItem?.mediaId == voice.audioUrlCn || 
                             playerState.currentMediaItem?.mediaId == voice.audioUrlJp
@@ -1212,21 +1271,11 @@ private fun PlayLaterBottomSheet(
     onRemoveItem: (PlayLaterItem) -> Unit,
     onClearAll: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState()
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
     val accentColor = MaterialTheme.colorScheme.primary
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        dragHandle = {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                BottomSheetDefaults.DragHandle()
-            }
-        }
+    BlyyBottomSheet(
+        onDismissRequest = onDismiss
     ) {
         Column(
             modifier = Modifier
@@ -1253,8 +1302,7 @@ private fun PlayLaterBottomSheet(
                     )
                     Text(
                         text = "稍后播放",
-                        style = AppTypography.TitleLarge,
-                        fontWeight = FontWeight.Bold
+                        style = AppTypography.TitleLargeBold
                     )
                     if (items.isNotEmpty()) {
                         Surface(
@@ -1263,8 +1311,7 @@ private fun PlayLaterBottomSheet(
                         ) {
                             Text(
                                 text = "${items.size}",
-                                style = AppTypography.LabelMedium,
-                                fontWeight = FontWeight.Bold,
+                                style = AppTypography.LabelMediumBold,
                                 color = accentColor,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
@@ -1342,7 +1389,7 @@ private fun PlayLaterBottomSheet(
                     modifier = Modifier.fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)
                 ) {
-                    itemsIndexed(items) { index, item ->
+                    itemsIndexed(items, key = { _, item -> item.voiceUrl }) { index, item ->
                         val isCurrentlyPlaying = item.voiceUrl == currentlyPlayingUrl && isPlayingFromQueue
                         val isNextUp = !isCurrentlyPlaying && index == 0 && isPlayingFromQueue
                         val hasPlayed = item.hasPlayed
@@ -1543,7 +1590,7 @@ private fun PlayLaterQueueItem(
                     )
                     if (hasPlayed && !isCurrentlyPlaying) {
                         Surface(
-                            shape = if (isCommandCenter) BlyyShapes.Button else RoundedCornerShape(4.dp),
+                            shape = if (isCommandCenter) BlyyShapes.Button else RoundedCornerShape(AppSpacing.Corner.Xs),
                             color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
                         ) {
                             Text(
@@ -1782,50 +1829,6 @@ private fun VoiceTopBar(title: String, onBack: () -> Unit, scrollBehavior: TopAp
 }
 
 
-@Composable
-private fun ErrorStateView(error: String, onRetry: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(
-            Icons.Rounded.ErrorOutline,
-            contentDescription = null,
-            modifier = Modifier.size(AppSpacing.Icon.Massive),
-            tint = MaterialTheme.colorScheme.error
-        )
-        Spacer(Modifier.height(AppSpacing.Lg))
-        Text(
-            text = error,
-            style = AppTypography.BodyLarge,
-            color = MaterialTheme.colorScheme.error,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = AppSpacing.Xxl)
-        )
-        Spacer(Modifier.height(AppSpacing.Xxl))
-        Button(
-            onClick = onRetry,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer, 
-                contentColor = MaterialTheme.colorScheme.onErrorContainer
-            ),
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg)
-        ) {
-            Text("重试")
-        }
-    }
-}
-
-
-@Composable
-private fun LoadingStateView() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
-}
-
-
 private fun formatVoiceTime(millis: Long): String {
     val totalSeconds = millis / 1000
     val minutes = totalSeconds / 60
@@ -1961,7 +1964,7 @@ private fun DraggableFigure(
                 ) {
                     Text(
                         text = "配置中",
-                        style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Bold),
+                        style = AppTypography.LabelSmallBold,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                         modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs)
                     )
@@ -1991,10 +1994,9 @@ private fun SpeechBubble(text: String, isDark: Boolean) {
             Text(
                 text = text,
                 modifier = Modifier.padding(horizontal = hPadding, vertical = vPadding),
-                style = AppTypography.BodySmall.copy(
+                style = AppTypography.BodySmallMedium.copy(
                     fontSize = if (text.length > 80) 11.sp else 13.sp,
-                    lineHeight = if (text.length > 80) 15.sp else 18.sp,
-                    fontWeight = FontWeight.Medium
+                    lineHeight = if (text.length > 80) 15.sp else 18.sp
                 ),
                 color = textColor,
                 textAlign = TextAlign.Center

@@ -15,7 +15,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "1.4.1"
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -85,6 +85,12 @@ dependencies {
     implementation(libs.jsoup)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    /** ZSTD 本地解压：static.l2d.su 无视 Accept-Encoding 头强制返回 ZSTD 流，必须在客户端本地解压。
+     *  ⚠️ 必须使用 @aar 后缀：标准 JAR 仅含桌面 Linux .so（/linux/aarch64/...），
+     *  Android 运行时找不到 arm64-v8a .so 会抛 UnsatisfiedLinkError 闪退。
+     *  AAR 包含全部 4 个 Android ABI（arm64-v8a/armeabi-v7a/x86/x86_64）的 native 库。
+     *  version catalog 不支持 type 字段，故用字符串声明绕过。 */
+    implementation("com.github.luben:zstd-jni:${libs.versions.zstdJni.get()}@aar")
 
     /** ---------------- 图片 & 媒体 ---------------- */
     implementation(libs.coil.compose)

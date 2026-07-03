@@ -76,12 +76,14 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyySectionPanel
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 
@@ -110,6 +112,11 @@ fun JiuxinConfigScreen(
     var showAvatarPicker by remember { mutableStateOf(false) }
     var showVoiceShipPicker by remember { mutableStateOf(false) }
     var isModelExpanded by remember { mutableStateOf(false) }
+
+    // 暗色模式判断：用于适配硬编码颜色，确保 WCAG AA 对比度
+    val isDark = LocalIsDark.current
+    // 连接成功状态色：暗色模式下使用更亮的绿色，确保在深色面板背景上对比度 ≥ 4.5:1
+    val successColor = if (isDark) Color(0xFF7FE09B) else Color(0xFF2E7D32)
 
     LaunchedEffect(Unit) {
         viewModel.fetchModels()
@@ -210,10 +217,10 @@ fun JiuxinConfigScreen(
 
                         when (val state = connectionState) {
                             is ConnectionTestState.Success -> {
-                                BlyyPanel(accentColor = Color(0xFF4CAF50)) {
+                                BlyyPanel(accentColor = successColor) {
                                     Row(modifier = Modifier.padding(AppSpacing.Md).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-                                        Icon(Icons.Rounded.Check, null, tint = Color(0xFF4CAF50), modifier = Modifier.size(20.dp))
-                                        Text("连接成功", color = Color(0xFF4CAF50), style = AppTypography.BodyMedium)
+                                        Icon(Icons.Rounded.Check, null, tint = successColor, modifier = Modifier.size(20.dp))
+                                        Text("连接成功", color = successColor, style = AppTypography.BodyMedium)
                                     }
                                 }
                             }
@@ -372,12 +379,11 @@ fun JiuxinConfigScreen(
 private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDismiss: () -> Unit, onAvatarSelected: (String) -> Unit) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
     val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.GetContent()) { uri: Uri? -> uri?.let { try { context.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }; onAvatarSelected(it.toString()) } }
     var avatarTab by remember { mutableStateOf(0) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(topStart = AppSpacing.Corner.Xl, topEnd = AppSpacing.Corner.Xl)) {
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().height(520.dp)) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(text = "选择头像", style = AppTypography.TitleMedium, fontWeight = FontWeight.Bold)
@@ -426,14 +432,8 @@ private fun VoiceShipPickerSheet(
 ) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = AppSpacing.Corner.Xl, topEnd = AppSpacing.Corner.Xl)
-    ) {
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().height(480.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),

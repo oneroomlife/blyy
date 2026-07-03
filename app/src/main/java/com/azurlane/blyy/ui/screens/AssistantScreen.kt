@@ -45,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.data.model.BuildRecordData
@@ -398,7 +399,7 @@ private fun BuildRecordResult(records: BuildRecordData) {
             }
 
             // 建造记录列表 — 交替行背景
-            itemsIndexed(records.buildRecords.data) { index, record ->
+            itemsIndexed(records.buildRecords.data, key = { index, record -> "${record.roleName}-${record.taskName}-$index" }) { index, record ->
                 val isEvenRow = index % 2 == 0
                 Row(
                     modifier = Modifier
@@ -415,7 +416,8 @@ private fun BuildRecordResult(records: BuildRecordData) {
                     Text(
                         text = record.roleName,
                         style = AppTypography.BodyMedium,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = record.taskName,
@@ -540,12 +542,14 @@ private fun ResultRow(label: String, value: String) {
         Text(
             text = label,
             style = AppTypography.LabelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 0.3.sp
         )
         Text(
             text = value,
-            style = AppTypography.BodyMedium,
-            fontWeight = FontWeight.Medium
+            style = AppTypography.BodyMedium.copy(lineHeight = 20.sp),
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.onSurface
         )
     }
 }
@@ -558,6 +562,15 @@ private fun IconBadgeRow(
     value: String,
     badgeColor: Color
 ) {
+    val isDark = LocalIsDark.current
+    // 暗色模式下将颜色向白色混合（提亮），确保在深色面板背景上对比度 ≥ 4.5:1（WCAG AA）
+    // 浅色模式下将颜色向黑色混合（加深），确保在浅色背景上可读
+    val valueColor = if (isDark) {
+        androidx.compose.ui.graphics.lerp(badgeColor, Color.White, 0.25f)
+    } else {
+        androidx.compose.ui.graphics.lerp(badgeColor, Color.Black, 0.15f)
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -568,7 +581,7 @@ private fun IconBadgeRow(
                 modifier = Modifier
                     .size(24.dp)
                     .background(
-                        badgeColor.copy(alpha = 0.15f),
+                        badgeColor.copy(alpha = if (isDark) 0.25f else 0.15f),
                         CircleShape
                     ),
                 contentAlignment = Alignment.Center
@@ -577,7 +590,7 @@ private fun IconBadgeRow(
                     imageVector = icon,
                     contentDescription = null,
                     modifier = Modifier.size(14.dp),
-                    tint = badgeColor
+                    tint = valueColor
                 )
             }
             Spacer(modifier = Modifier.width(AppSpacing.Sm))
@@ -591,7 +604,7 @@ private fun IconBadgeRow(
             text = value,
             style = AppTypography.BodyMedium,
             fontWeight = FontWeight.SemiBold,
-            color = badgeColor
+            color = valueColor
         )
     }
 }

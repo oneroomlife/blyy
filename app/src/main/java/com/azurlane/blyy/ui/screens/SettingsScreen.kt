@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.AutoMode
+import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.PersonSearch
 import androidx.compose.material.icons.rounded.Sailing
@@ -67,6 +68,7 @@ fun SettingsScreen(
 ) {
     val uiStyle by viewModel.uiStyle.collectAsStateWithLifecycle()
     val forceDark by viewModel.forceDarkTheme.collectAsStateWithLifecycle()
+    val dynamicColor by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
@@ -121,6 +123,17 @@ fun SettingsScreen(
                         description = if (forceDark) "已强制深色，忽略系统设置" else "跟随系统浅色/深色设置",
                         checked = forceDark,
                         onCheckedChange = viewModel::setForceDarkTheme
+                    )
+                    BlyySettingsRow(
+                        icon = Icons.Rounded.Palette,
+                        title = "Material You 动态取色",
+                        description = if (dynamicColor) {
+                            "跟随壁纸取色，品牌主色保持不变"
+                        } else {
+                            "使用固定品牌配色"
+                        },
+                        checked = dynamicColor,
+                        onCheckedChange = viewModel::setDynamicColorEnabled
                     )
                 }
 

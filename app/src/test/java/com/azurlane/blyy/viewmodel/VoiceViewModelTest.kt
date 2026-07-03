@@ -48,7 +48,7 @@ class VoiceViewModelTest {
         whenever(settingsDataStore.voiceLanguage).thenReturn(flowOf(VoiceLanguage.CN))
         whenever(settingsDataStore.favorites).thenReturn(flowOf(emptySet()))
 
-        viewModel = VoiceViewModel(getVoicesUseCase, playbackServiceConnection, settingsDataStore)
+        viewModel = VoiceViewModel(getVoicesUseCase, playbackServiceConnection, settingsDataStore, mock())
         
         playerListenerCaptor = ArgumentCaptor.forClass(Player.Listener::class.java)
         verify(mockController).addListener(playerListenerCaptor.capture())

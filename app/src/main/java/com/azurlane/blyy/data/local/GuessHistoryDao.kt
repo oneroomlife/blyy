@@ -45,6 +45,63 @@ abstract class GuessHistoryDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     abstract suspend fun insert(history: GuessHistory): Long
 
+    /**
+     * 按 sessionId + mode 更新记录（用于"继续作答后再次退出"场景）
+     * 仅更新成绩相关字段，保留原 id 和 sessionId
+     * 返回受影响行数（0 表示无匹配记录，需走 insert 路径）
+     */
+    @Query(
+        """
+        UPDATE guess_history
+        SET totalQuestions = :totalQuestions,
+            correctAnswers = :correctAnswers,
+            totalScore = :totalScore,
+            hintsUsedTotal = :hintsUsedTotal,
+            skippedQuestions = :skippedQuestions,
+            totalPossibleScore = :totalPossibleScore,
+            timestamp = :timestamp,
+            accuracy = :accuracy,
+            averageScore = :averageScore
+        WHERE sessionId = :sessionId AND mode = :mode
+        """
+    )
+    abstract suspend fun updateBySession(
+        sessionId: String,
+        mode: String,
+        totalQuestions: Int,
+        correctAnswers: Int,
+        totalScore: Int,
+        hintsUsedTotal: Int,
+        skippedQuestions: Int,
+        totalPossibleScore: Int,
+        timestamp: Long,
+        accuracy: Float,
+        averageScore: Float
+    ): Int
+
+    /**
+     * Upsert：先尝试 update，若未命中（返回 0）则 insert
+     * 保证"继续作答后再次退出"时同一 sessionId 的记录被更新而非重复插入
+     */
+    suspend fun upsertBySession(history: GuessHistory) {
+        val updated = updateBySession(
+            sessionId = history.sessionId,
+            mode = history.mode,
+            totalQuestions = history.totalQuestions,
+            correctAnswers = history.correctAnswers,
+            totalScore = history.totalScore,
+            hintsUsedTotal = history.hintsUsedTotal,
+            skippedQuestions = history.skippedQuestions,
+            totalPossibleScore = history.totalPossibleScore,
+            timestamp = history.timestamp,
+            accuracy = history.accuracy,
+            averageScore = history.averageScore
+        )
+        if (updated == 0) {
+            insert(history)
+        }
+    }
+
     /** 删除一条记录 */
     @Delete
     abstract suspend fun delete(history: GuessHistory)

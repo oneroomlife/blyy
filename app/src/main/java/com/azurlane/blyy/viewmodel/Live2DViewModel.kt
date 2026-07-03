@@ -32,10 +32,30 @@ data class Live2DLoadState(
     val pageFinishedTimeMs: Long = 0L,
     val errorTimeMs: Long = 0L,
     val consoleErrors: List<String> = emptyList(),
-    val webGLStatus: String = "unknown"
+    val webGLStatus: String = "unknown",
+    val reloadToken: Int = 0,
+    val webViewGeneration: Int = 0,
+    val isRecreateRequired: Boolean = false,
+    val requestLogs: List<Live2DRequestLogEntry> = emptyList()
 )
 
 enum class Live2DLoadPhase { Loading, Ready, Error, SslWarning }
+
+/**
+ * Live2D 请求生命周期日志条目。
+ * 用于结构化记录每一次请求/回调的关键事件，确保错误排查的可追溯性。
+ *
+ * @param timestamp 事件发生的时间戳（System.currentTimeMillis）
+ * @param phase 事件阶段标识，如 "pre-flight" / "page-started" / "http-error" / "retry"
+ * @param message 人类可读的事件描述
+ * @param details 结构化键值对细节（如 url / statusCode / elapsedMs / cookies）
+ */
+data class Live2DRequestLogEntry(
+    val timestamp: Long,
+    val phase: String,
+    val message: String,
+    val details: Map<String, String> = emptyMap()
+)
 
 @HiltViewModel
 class Live2DViewModel @Inject constructor(
@@ -56,10 +76,41 @@ class Live2DViewModel @Inject constructor(
         _loadState.value = update(_loadState.value)
     }
 
+    fun triggerReload(recreate: Boolean = false) {
+        _loadState.value = _loadState.value.copy(
+            reloadToken = _loadState.value.reloadToken + 1,
+            webViewGeneration = if (recreate) _loadState.value.webViewGeneration + 1 else _loadState.value.webViewGeneration,
+            isRecreateRequired = false,
+            phase = Live2DLoadPhase.Loading,
+            progress = 6 // INITIAL_PROGRESS
+        )
+    }
+
+    fun markRecreateRequired() {
+        _loadState.value = _loadState.value.copy(isRecreateRequired = true)
+    }
+
     fun addConsoleError(error: String) {
         _loadState.value = _loadState.value.copy(
             consoleErrors = _loadState.value.consoleErrors + error
         )
+    }
+
+    /**
+     * 追加一条请求生命周期日志，用于错误排查的可追溯性。
+     * 日志会在 [generateErrorReport] 中输出，方便用户复制反馈。
+     */
+    fun addRequestLog(phase: String, message: String, details: Map<String, String> = emptyMap()) {
+        val entry = Live2DRequestLogEntry(
+            timestamp = System.currentTimeMillis(),
+            phase = phase,
+            message = message,
+            details = details
+        )
+        // 限制日志条数，避免无限增长
+        val current = _loadState.value.requestLogs
+        val updated = if (current.size >= 60) current.takeLast(59) + entry else current + entry
+        _loadState.value = _loadState.value.copy(requestLogs = updated)
     }
 
     /** 生成完整的错误诊断报告，便于复制给技术人员分析 */
@@ -120,6 +171,16 @@ class Live2DViewModel @Inject constructor(
         if (state.consoleErrors.isNotEmpty()) {
             sb.appendLine("--- 控制台错误 ---")
             state.consoleErrors.forEach { sb.appendLine(it) }
+            sb.appendLine()
+        }
+
+        // 请求生命周期日志（可追溯性核心）
+        if (state.requestLogs.isNotEmpty()) {
+            sb.appendLine("--- 请求生命周期日志 ---")
+            state.requestLogs.forEach { entry ->
+                sb.appendLine("[${dateFormat.format(Date(entry.timestamp))}] ${entry.phase}: ${entry.message}")
+                entry.details.forEach { (k, v) -> sb.appendLine("    $k=$v") }
+            }
             sb.appendLine()
         }
 

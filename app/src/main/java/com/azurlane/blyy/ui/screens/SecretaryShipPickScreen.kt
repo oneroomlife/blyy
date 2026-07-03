@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.theme.AppColors
@@ -317,13 +318,7 @@ private fun FilterBottomSheet(
     allTypes: List<String>,
     allRarities: List<String>
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

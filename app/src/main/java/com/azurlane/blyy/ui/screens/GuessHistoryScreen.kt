@@ -40,6 +40,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.azurlane.blyy.data.model.GuessHistory
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyEmptyState
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
@@ -104,7 +106,13 @@ fun GuessHistoryScreen(
                         CircularProgressIndicator()
                     }
                 } else if (state.isEmpty) {
-                    EmptyHistoryView()
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        BlyyEmptyState(
+                            icon = Icons.Rounded.History,
+                            title = "暂无历史记录",
+                            description = "完成一局游戏后，战绩将显示在这里"
+                        )
+                    }
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -395,8 +403,7 @@ private fun HistoryRecordCard(
             Column(horizontalAlignment = Alignment.End) {
                 Text(
                     text = "${record.totalScore}",
-                    style = AppTypography.TitleLarge,
-                    fontWeight = FontWeight.Bold,
+                    style = AppTypography.TitleLargeBold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
@@ -464,37 +471,6 @@ private fun HistoryRecordCard(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun EmptyHistoryView() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
-        ) {
-            Icon(
-                Icons.Rounded.History,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
-            )
-            Text(
-                text = "暂无历史记录",
-                style = AppTypography.TitleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = "完成一局游戏后，战绩将显示在这里",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
@@ -730,34 +706,14 @@ private fun ConfigPromptDialog(
     onDismiss: () -> Unit,
     onNavigateToConfig: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                Icons.Rounded.Settings,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-        },
-        title = { Text("未配置 UID 和服务器") },
-        text = {
-            Text(
-                "上传排行榜需要先在「助手配置」中填写游戏内 UID 和服务器，" +
-                    "用于查询玩家昵称并标识你的成绩。\n\n是否前往配置？",
-                style = AppTypography.BodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        },
-        confirmButton = {
-            Button(onClick = onNavigateToConfig) {
-                Text("去配置")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
+    BlyyConfirmDialog(
+        title = "未配置 UID 和服务器",
+        message = "上传排行榜需要先在「助手配置」中填写游戏内 UID 和服务器，" +
+            "用于查询玩家昵称并标识你的成绩。\n\n是否前往配置？",
+        confirmText = "去配置",
+        dismissText = "取消",
+        onConfirm = onNavigateToConfig,
+        onDismiss = onDismiss
     )
 }
 

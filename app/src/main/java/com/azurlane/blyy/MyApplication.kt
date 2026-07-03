@@ -26,12 +26,24 @@ class MyApplication : Application(), ImageLoaderFactory {
             .retryOnConnectionFailure(true) // 开启自动重试
             .addInterceptor { chain ->
                 val originalRequest = chain.request()
-                // B站图片的域名通常是 patchwiki.biligame.com 或 hdslb.com
+                val host = originalRequest.url.host
+
+                // 根据图片域名动态设置 Referer，突破不同站点的防盗链
+                val referer = when {
+                    // gamekee CDN — 需要 gamekee 的 Referer
+                    host.contains("gamekee.com") || host.contains("gamekee") ->
+                        "https://www.gamekee.com/"
+                    // B站图片 — 需要 biligame 的 Referer
+                    host.contains("biligame.com") || host.contains("hdslb.com") ->
+                        "https://wiki.biligame.com/"
+                    // 其他域名 — 使用通用 Referer
+                    else -> "https://www.google.com/"
+                }
+
                 val newRequest = originalRequest.newBuilder()
                     // 伪装浏览器
                     .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    // 突破防盗链核心：告诉服务器我们是从 Wiki 网页来的
-                    .header("Referer", "https://wiki.biligame.com/")
+                    .header("Referer", referer)
                     .build()
                 chain.proceed(newRequest)
             }

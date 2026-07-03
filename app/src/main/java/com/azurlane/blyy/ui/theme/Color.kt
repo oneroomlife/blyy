@@ -13,7 +13,8 @@ object AppColors {
 
     val PrimaryDark: Color = Color(0xFF48CAE4)
     val PrimaryContainerDark: Color = Color(0xFF0077B6)
-    val OnPrimaryDark: Color = Color(0xFF03045E)
+    /** WCAG AA — 深青底字，对比 PrimaryDark ≥ 4.5:1 */
+    val OnPrimaryDark: Color = Color(0xFF002B44)
     val OnPrimaryContainerDark: Color = Color(0xFFCAF0F8)
 
     // ==================== 辅助色 — 金色高亮 ====================
@@ -37,10 +38,10 @@ object AppColors {
     val OnTertiaryDark: Color = Color(0xFFECFEFF)
     val OnTertiaryContainerDark: Color = Color(0xFFDBEAFE)
 
-    // ==================== 背景色 — 深海指挥室 ====================
-    val BackgroundLight: Color = Color(0xFFE8F4FC)
+    // ==================== 背景色 — 深海指挥室（Background 比 Surface 低一阶，增强层次） ====================
+    val BackgroundLight: Color = Color(0xFFD4E8F5)
     val OnBackgroundLight: Color = Color(0xFF0A1628)
-    val SurfaceLight: Color = Color(0xFFE8F4FC)
+    val SurfaceLight: Color = Color(0xFFF5FAFF)
     val OnSurfaceLight: Color = Color(0xFF0A1628)
 
     val BackgroundGradientStartLight: Color = Color(0xFFD6EBF7)
@@ -100,10 +101,6 @@ object AppColors {
     val GlassSurfaceDark: Color = Color(0xCC0F2038)
     val GlassBorderDark: Color = Color(0x5048CAE4)
     val GlassHighlightDark: Color = Color(0x10FFFFFF)
-
-    val GlassSurface: Color = GlassSurfaceDark
-    val GlassBorder: Color = GlassBorderDark
-    val GlassHighlight: Color = GlassHighlightDark
 
     // ==================== 稀有度颜色 ====================
     object Rarity {
@@ -190,6 +187,61 @@ object AppColors {
                 Color(0xFF48CAE4)
             )
         )
+
+        /** 面板边框渐变 — 青蓝到金色，营造 HUD 描边质感 */
+        val PanelBorder = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF48CAE4).copy(alpha = 0.6f),
+                Color(0xFFFFD166).copy(alpha = 0.25f),
+                Color(0xFF48CAE4).copy(alpha = 0.4f)
+            )
+        )
+
+        /** 卡片边框渐变 — 柔和的青蓝描边 */
+        val CardBorder = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF48CAE4).copy(alpha = 0.4f),
+                Color(0xFF48CAE4).copy(alpha = 0.15f)
+            )
+        )
+
+        /** 金色强调渐变 — 用于高亮按钮/标题装饰 */
+        val GoldAccent = Brush.linearGradient(
+            colors = listOf(Color(0xFFFFE599), Color(0xFFE8A838), Color(0xFFFFD166))
+        )
+
+        /** 顶部高光 — 营造面板立体感 */
+        val HighlightTop = Brush.verticalGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.12f),
+                Color.Transparent
+            )
+        )
+
+        /** 底部阴影 — 营造面板下沉感 */
+        val ShadowBottom = Brush.verticalGradient(
+            colors = listOf(
+                Color.Transparent,
+                Color.Black.copy(alpha = 0.15f)
+            )
+        )
+
+        /** 毛玻璃边框渐变 — 配合 GlassSurface 使用 */
+        val GlassBorderLight = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF0096C7).copy(alpha = 0.3f),
+                Color(0xFFFFD166).copy(alpha = 0.15f),
+                Color(0xFF0096C7).copy(alpha = 0.2f)
+            )
+        )
+
+        val GlassBorderDark = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF48CAE4).copy(alpha = 0.35f),
+                Color(0xFFFFD166).copy(alpha = 0.2f),
+                Color(0xFF48CAE4).copy(alpha = 0.25f)
+            )
+        )
     }
 
     // ==================== 功能色 ====================
@@ -266,12 +318,6 @@ object AppColors {
         val DividerDark: Color = Color(0x1F48CAE4)
         val GridDark: Color = Color(0x0D48CAE4)
         val TopGlowDark: Color = Color(0x2548CAE4)
-
-        val ShimmerStart: Color = ShimmerStartDark
-        val ShimmerEnd: Color = ShimmerEndDark
-        val OverlayLight_: Color = Color(0x52000000)
-        val OverlayDark_: Color = Color(0x73000000)
-        val Divider: Color = DividerDark
     }
 
     object Text {
@@ -357,17 +403,43 @@ object ClassicColors {
     val GlassBorderLight: Color = Color(0x407C3AED)
 }
 
-val Primary80 = AppColors.PrimaryDark
-val Secondary80 = AppColors.SecondaryDark
-val Tertiary80 = AppColors.TertiaryDark
-val Primary40 = AppColors.PrimaryLight
-val Secondary40 = AppColors.SecondaryLight
-val Tertiary40 = AppColors.TertiaryLight
-val LegendaryColor = AppColors.Rarity.Legendary
-val SuperRareColor = AppColors.Rarity.SuperRare
-val EliteColor = AppColors.Rarity.Elite
-val RareColor = AppColors.Rarity.Rare
-val CommonColor = AppColors.Rarity.Common
-val BackgroundTop = AppColors.BackgroundGradientStartDark
-val BackgroundMid = AppColors.BackgroundGradientMidDark
-val BackgroundBottom = AppColors.BackgroundGradientEndDark
+/**
+ * 排行榜奖牌色 — 前三名专用，统一管理避免各 Screen 硬编码。
+ */
+object MedalColors {
+    val Gold: Color = Color(0xFFFFD700)
+    val GoldDark: Color = Color(0xFFB87333)
+    val Silver: Color = Color(0xFFC0C0C0)
+    val SilverDark: Color = Color(0xFF9A9A9A)
+    val Bronze: Color = Color(0xFFCD7F32)
+    val BronzeDark: Color = Color(0xFF8B5A2B)
+
+    fun medalColor(rank: Int, isDark: Boolean): Color = when (rank) {
+        1 -> if (isDark) GoldDark else Gold
+        2 -> if (isDark) SilverDark else Silver
+        3 -> if (isDark) BronzeDark else Bronze
+        else -> Color.Transparent
+    }
+}
+
+/**
+ * 啾信聊天色 — 统一管理聊天气泡颜色，替代各 Screen 硬编码的 JuusColors。
+ * 颜色基于碧蓝航线青蓝主色派生，保持与整体主题一致。
+ */
+object ChatColors {
+    // 自己的消息气泡（青蓝系）
+    val BubbleSelfLight: Color = Color(0xFF0096C7)
+    val BubbleSelfDark: Color = Color(0xFF0077B6)
+    val OnBubbleSelfLight: Color = Color(0xFFFFFFFF)
+    val OnBubbleSelfDark: Color = Color(0xFFCAF0F8)
+
+    // 对方的消息气泡（浅色容器）
+    val BubbleOtherLight: Color = Color(0xFFE0EFF8)
+    val BubbleOtherDark: Color = Color(0xFF1A3050)
+    val OnBubbleOtherLight: Color = Color(0xFF0A1628)
+    val OnBubbleOtherDark: Color = Color(0xFFE2EAF4)
+
+    // 时间戳/已读等辅助文字
+    val TimestampLight: Color = Color(0xFF7A9AB0)
+    val TimestampDark: Color = Color(0xFF5A7A90)
+}

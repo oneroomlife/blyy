@@ -24,7 +24,7 @@ fun ShipCardShimmer() {
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(AppSpacing.Card.AspectRatio)
-                .clip(BlyyShapes.Card)
+                .clip(adaptiveCardShape())
                 .background(
                     brush = androidx.compose.ui.graphics.Brush.linearGradient(
                         colors = listOf(

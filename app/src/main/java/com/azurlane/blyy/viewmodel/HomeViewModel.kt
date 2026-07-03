@@ -53,7 +53,7 @@ class HomeViewModel @Inject constructor(
         when (intent) {
             is HomeIntent.ToggleFavorite -> {
                 viewModelScope.launch {
-                    toggleFavoriteUseCase(intent.ship.name, intent.ship.isFavorite)
+                    toggleFavoriteUseCase(intent.ship.name, intent.ship.archiveType, intent.ship.isFavorite)
                 }
             }
             is HomeIntent.Refresh -> refreshData()

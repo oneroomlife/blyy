@@ -146,6 +146,31 @@ object AppTypography {
         lineHeight = 16.sp,
         letterSpacing = 0.5.sp
     )
+
+    // ==================== 说明文字 Caption ====================
+    val CaptionLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.4.sp
+    )
+
+    val CaptionMedium = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        letterSpacing = 0.5.sp
+    )
+
+    val CaptionSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 10.sp,
+        lineHeight = 12.sp,
+        letterSpacing = 0.5.sp
+    )
     
     // ==================== 自定义样式 ====================
     // 卡片名称样式
@@ -156,7 +181,7 @@ object AppTypography {
         lineHeight = 20.sp,
         letterSpacing = 0.sp
     )
-    
+
     // 卡片标签样式
     val CardLabel = TextStyle(
         fontFamily = FontFamily.Default,
@@ -165,7 +190,7 @@ object AppTypography {
         lineHeight = 14.sp,
         letterSpacing = 0.3.sp
     )
-    
+
     // 空状态标题
     val EmptyTitle = TextStyle(
         fontFamily = FontFamily.Default,
@@ -174,7 +199,7 @@ object AppTypography {
         lineHeight = 32.sp,
         letterSpacing = 0.5.sp
     )
-    
+
     // 空状态描述
     val EmptyDescription = TextStyle(
         fontFamily = FontFamily.Default,
@@ -183,7 +208,7 @@ object AppTypography {
         lineHeight = 26.sp,
         letterSpacing = 0.25.sp
     )
-    
+
     // 按钮文字
     val ButtonText = TextStyle(
         fontFamily = FontFamily.Default,
@@ -192,7 +217,7 @@ object AppTypography {
         lineHeight = 20.sp,
         letterSpacing = 0.1.sp
     )
-    
+
     // 导航栏标签
     val NavigationLabel = TextStyle(
         fontFamily = FontFamily.Default,
@@ -201,6 +226,32 @@ object AppTypography {
         lineHeight = 16.sp,
         letterSpacing = 0.5.sp
     )
+
+    // ==================== 字重变体（避免调用方 .copy(fontWeight = ...)） ====================
+    /** TitleMedium 的 Bold 变体 — 用于强调标题 */
+    val TitleMediumBold = TitleMedium.copy(fontWeight = FontWeight.Bold)
+    /** TitleLarge 的 Bold 变体 — 用于大标题强调（如加载失败提示） */
+    val TitleLargeBold = TitleLarge.copy(fontWeight = FontWeight.Bold)
+    /** TitleSmall 的 Medium 变体 — 用于设置项/卡片副标题 */
+    val TitleSmallMedium = TitleSmall.copy(fontWeight = FontWeight.Medium)
+    /** TitleSmall 的 Bold 变体 — 用于小标题强调（如答题分数/倒计时） */
+    val TitleSmallBold = TitleSmall.copy(fontWeight = FontWeight.Bold)
+    /** HeadlineSmall 的 Bold 变体 — 用于答题结果/大字强调 */
+    val HeadlineSmallBold = HeadlineSmall.copy(fontWeight = FontWeight.Bold)
+    /** DisplayMedium 的 Bold 变体 — 用于全屏大字强调（如翻牌动画） */
+    val DisplayMediumBold = DisplayMedium.copy(fontWeight = FontWeight.Bold)
+    /** LabelLarge 的 Bold 变体 — 用于计数徽章/强调标签 */
+    val LabelLargeBold = LabelLarge.copy(fontWeight = FontWeight.Bold)
+    /** LabelMedium 的 Bold 变体 — 用于强调小标签 */
+    val LabelMediumBold = LabelMedium.copy(fontWeight = FontWeight.Bold)
+    /** LabelSmall 的 Bold 变体 — 用于徽章/状态标签 */
+    val LabelSmallBold = LabelSmall.copy(fontWeight = FontWeight.Bold)
+    /** LabelSmall 的 Medium 变体 — 用于聊天气泡名称/时间戳 */
+    val LabelSmallMedium = LabelSmall.copy(fontWeight = FontWeight.Medium)
+    /** BodyMedium 的 Medium 变体 — 用于输入框/中等强调正文 */
+    val BodyMediumMedium = BodyMedium.copy(fontWeight = FontWeight.Medium)
+    /** BodySmall 的 Medium 变体 — 用于气泡文字/辅助说明 */
+    val BodySmallMedium = BodySmall.copy(fontWeight = FontWeight.Medium)
 }
 
 // Material3 Typography — 经典风格

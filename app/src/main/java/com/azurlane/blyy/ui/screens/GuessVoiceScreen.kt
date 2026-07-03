@@ -87,10 +87,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import androidx.media3.common.util.UnstableApi
 import com.azurlane.blyy.viewmodel.GuessGameUiState
 import com.azurlane.blyy.viewmodel.GuessResult
@@ -144,15 +146,36 @@ fun GuessByVoiceScreen(
         }
     }
 
+    // 退出二次确认对话框状态：仅在结算弹窗中点击"退出"时触发
+    var showExitConfirm by remember { mutableStateOf(false) }
+
     if (state.showSettlement) {
         ModernVoiceSettlementDialog(
             score = state.score,
             onDismiss = { viewModel.hideSettlement() },
             onExit = {
+                // 不直接退出，先弹出二次确认对话框，防止误操作导致历史记录提前生成
+                showExitConfirm = true
+            },
+            onContinue = { viewModel.hideSettlement() }
+        )
+    }
+
+    // 退出二次确认对话框：用户确认后才保存历史记录并退出
+    if (showExitConfirm) {
+        BlyyConfirmDialog(
+            title = "确认退出",
+            message = "退出后本次作答结果将保存到历史记录，且无法继续作答。确认退出吗？",
+            confirmText = "确认退出",
+            dismissText = "继续作答",
+            onConfirm = {
+                showExitConfirm = false
+                // 确认退出：保存历史记录（首次 insert / 继续后 update）后退出
+                viewModel.confirmExitAndSave()
                 viewModel.hideSettlement()
                 onBack()
             },
-            onContinue = { viewModel.hideSettlement() }
+            onDismiss = { showExitConfirm = false }
         )
     }
 
@@ -206,7 +229,7 @@ private fun ModernGuessVoiceContent(
     onDifficultyChange: (VoiceDifficulty) -> Unit
 ) {
     val scrollState = rememberScrollState()
-    val isDark = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val isDark = LocalIsDark.current
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -1086,11 +1109,4 @@ private fun VoiceStatItemContent(label: String, value: String, subValue: String)
             Text(subValue, style = AppTypography.LabelSmall, color = MaterialTheme.colorScheme.secondary)
         }
     }
-}
-
-private fun Color.luminance(): Float {
-    val r = this.red
-    val g = this.green
-    val b = this.blue
-    return 0.299f * r + 0.587f * g + 0.114f * b
 }

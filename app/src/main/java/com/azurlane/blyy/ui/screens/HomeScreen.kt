@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -114,18 +115,24 @@ fun HomeScreen(
     val isCommandCenter = uiStyle.isCommandCenter()
     
     fun openWiki(ship: Ship) {
-        val processedName = ship.name
-            .replace(".改", "")
-            .replace("改", "")
-            .replace("Kai", "")
-        
-        val wikiNameMapping = mapOf(
-            "DEAD" to "DEAD_MASTER",
-            "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
-        )
-        
-        val wikiName = wikiNameMapping[processedName] ?: processedName
-        val url = "https://wiki.biligame.com/blhx/${java.net.URLEncoder.encode(wikiName, "UTF-8")}"
+        val url = if (ship.archiveType == com.azurlane.blyy.viewmodel.ArchiveType.STUDENT.name) {
+            // 学生档案（蔚蓝档案）：link 已存储 gamekee 学生详情页完整 URL
+            ship.link.ifBlank { "https://www.gamekee.com/ba/" }
+        } else {
+            // 舰娘档案（碧蓝航线）：构建 biligame wiki URL
+            val processedName = ship.name
+                .replace(".改", "")
+                .replace("改", "")
+                .replace("Kai", "")
+
+            val wikiNameMapping = mapOf(
+                "DEAD" to "DEAD_MASTER",
+                "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
+            )
+
+            val wikiName = wikiNameMapping[processedName] ?: processedName
+            "https://wiki.biligame.com/blhx/${java.net.URLEncoder.encode(wikiName, "UTF-8")}"
+        }
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         context.startActivity(intent)
     }
@@ -195,6 +202,10 @@ fun HomeScreen(
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
+                val gridState = rememberLazyGridState()
+                val allowDecorAnimation by remember {
+                    derivedStateOf { !gridState.isScrollInProgress }
+                }
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (state.isLoading && state.favoriteShips.isEmpty()) {
                         LazyVerticalGrid(
@@ -217,11 +228,13 @@ fun HomeScreen(
                             contentPadding = PaddingValues(AppSpacing.Screen.Horizontal),
                             horizontalArrangement = Arrangement.spacedBy(AppSpacing.Gap.CardGrid),
                             verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.CardGrid),
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize(),
+                            state = gridState
                         ) {
                             items(items = state.favoriteShips, key = { it.name }) { ship ->
                                 ShipCard(
                                     ship = ship,
+                                    decorativeAnimation = allowDecorAnimation,
                                     onClick = { onShipClick(ship) },
                                     onLongClick = {
                                         onIntent(HomeIntent.ToggleFavorite(ship))
@@ -346,7 +359,6 @@ private fun ClassicHomeTopBar(
         Text(
             text = title,
             style = AppTypography.TitleLarge,
-            fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface
         )
     }

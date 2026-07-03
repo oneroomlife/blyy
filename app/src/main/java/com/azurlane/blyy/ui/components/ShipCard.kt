@@ -39,7 +39,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.ui.components.adaptiveCardShape
 
@@ -52,7 +54,9 @@ fun ShipCard(
     onLongClick: () -> Unit,
     onWikiClick: (() -> Unit)? = null,
     onOathClick: (() -> Unit)? = null,
-    onGalleryClick: (() -> Unit)? = null
+    onGalleryClick: (() -> Unit)? = null,
+    /** 列表滚动等场景关闭无限动画，保障 60fps */
+    decorativeAnimation: Boolean = true
 ) {
     val hapticFeedback = LocalHapticFeedback.current
     
@@ -72,7 +76,7 @@ fun ShipCard(
     )
     
     val elevation by animateDpAsState(
-        targetValue = if (isPressed) 2.dp else 8.dp,
+        targetValue = if (isPressed) AppElevation.Level1 else AppElevation.Level2,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessHigh
@@ -135,8 +139,10 @@ fun ShipCard(
                 contentDescription = ship.name
             )
 
-            if (isHighRarity) {
+            if (isHighRarity && decorativeAnimation) {
                 RarityGlow(rarityColor = rarityColor, rarityGradient = rarityGradient)
+            } else if (isHighRarity) {
+                RarityAccentBar(rarityColor = rarityColor)
             }
 
             Box(
@@ -156,7 +162,7 @@ fun ShipCard(
                     )
             )
 
-            if (isHighRarity) {
+            if (isHighRarity && decorativeAnimation) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -262,8 +268,12 @@ fun ShipCard(
             }
 
             if (ship.isFavorite) {
-                OathSpecialEffect()
-                FavoriteBadge()
+                if (decorativeAnimation) {
+                    OathSpecialEffect()
+                } else {
+                    OathStaticBorder()
+                }
+                FavoriteBadge(animated = decorativeAnimation)
             }
         }
         
@@ -370,17 +380,41 @@ private fun ShipImage(
     borderUrl: String?,
     contentDescription: String
 ) {
-    AsyncImage(
-        model = avatarUrl,
-        contentDescription = contentDescription,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop,
-        error = rememberVectorPainter(Icons.Default.BrokenImage)
-    )
+    val context = LocalContext.current
+    val request = remember(avatarUrl) {
+        ImageRequest.Builder(context)
+            .data(avatarUrl)
+            .crossfade(true)
+            .build()
+    }
+    // 使用 AsyncImage 替代 SubcomposeAsyncImage，避免子组合开销，提升网格滚动性能
+    // 加载中状态通过背景色体现，错误状态通过 error painter 体现
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 加载中背景色（图片加载完成后会被覆盖）
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+        )
+        AsyncImage(
+            model = request,
+            contentDescription = contentDescription,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop,
+            placeholder = rememberVectorPainter(Icons.Default.BrokenImage),
+            error = rememberVectorPainter(Icons.Default.BrokenImage)
+        )
+    }
 
     if (!borderUrl.isNullOrEmpty()) {
+        val borderRequest = remember(borderUrl) {
+            ImageRequest.Builder(context)
+                .data(borderUrl)
+                .crossfade(true)
+                .build()
+        }
         AsyncImage(
-            model = borderUrl,
+            model = borderRequest,
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.FillBounds
@@ -544,7 +578,66 @@ private fun BoxScope.OathSpecialEffect() {
 }
 
 @Composable
-private fun BoxScope.FavoriteBadge() {
+private fun RarityAccentBar(rarityColor: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawBehind {
+                drawRect(
+                    color = rarityColor.copy(alpha = 0.85f),
+                    topLeft = Offset.Zero,
+                    size = androidx.compose.ui.geometry.Size(3.dp.toPx(), size.height)
+                )
+            }
+    )
+}
+
+@Composable
+private fun OathStaticBorder() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .border(
+                width = 2.dp,
+                color = AppColors.Favorite.Pink.copy(alpha = 0.65f),
+                shape = adaptiveCardShape()
+            )
+    )
+}
+
+@Composable
+private fun BoxScope.FavoriteBadge(animated: Boolean = true) {
+    if (animated) {
+        FavoriteBadgeAnimated()
+    } else {
+        FavoriteBadgeStatic()
+    }
+}
+
+@Composable
+private fun BoxScope.FavoriteBadgeStatic() {
+    Surface(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(AppSpacing.Sm)
+            .size(28.dp),
+        shape = CircleShape,
+        color = AppColors.Favorite.Pink,
+        shadowElevation = AppElevation.Level2
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Icon(
+                imageVector = Icons.Rounded.Favorite,
+                contentDescription = "誓约",
+                tint = Color.White,
+                modifier = Modifier.size(AppSpacing.Icon.Sm)
+            )
+        }
+    }
+}
+
+@Composable
+private fun BoxScope.FavoriteBadgeAnimated() {
     val infiniteTransition = rememberInfiniteTransition(label = "Favorite")
     
     val glowAlpha by infiniteTransition.animateFloat(

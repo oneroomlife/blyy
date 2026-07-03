@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item type="id" name="live2d_layout_listener_tag" />
+    <item type="id" name="live2d_forbidden_retry_tag" />
 </resources>

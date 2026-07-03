@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
 import kotlin.random.Random
 import java.util.UUID
 import javax.inject.Inject
@@ -660,53 +661,76 @@ class GuessShipViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 显示结算弹窗（不保存历史记录）。
+     *
+     * 仅完成当前题目的计数，并展示结算 UI。
+     * 历史记录的保存推迟到用户在结算弹窗中"确认退出"时执行（见 [confirmExitAndSave]），
+     * 确保用户点击"继续游戏"后不会产生历史记录，且继续作答的成绩能在最终退出时被正确更新。
+     */
     fun showSettlement() {
         // 先将当前未计数的题目计入总分（例如答对后直接退出，未点"下一题"）
         countCurrentQuestionIfNeeded()
-
-        // 保存游戏记录到历史记录（防重复：内存标志 + 数据库唯一索引双重保障）
-        val state = _uiState.value
-        val score = state.score
-        if (score.totalQuestions > 0 && !hasSavedHistory) {
-            hasSavedHistory = true // 立即标记，防止并发或重复调用
-
-            val mode = when (state.mode) {
-                GuessMode.IMAGE -> "IMAGE"
-                GuessMode.VOICE -> "VOICE"
-            }
-            val difficulty = when (state.mode) {
-                GuessMode.IMAGE -> if (state.difficulty == ImageDifficulty.HARD) "HARD" else "EASY"
-                GuessMode.VOICE -> if (state.voiceDifficulty == VoiceDifficulty.HARD) "HARD" else "EASY"
-            }
-            val currentSessionId = gameSessionId
-            viewModelScope.launch {
-                // 预检查：数据库端再次确认无重复（应对进程重启后内存标志丢失的场景）
-                val exists = historyDao.existsBySession(currentSessionId, mode)
-                if (!exists) {
-                    historyDao.insert(
-                        GuessHistory(
-                            mode = mode,
-                            difficulty = difficulty,
-                            totalQuestions = score.totalQuestions,
-                            correctAnswers = score.correctAnswers,
-                            totalScore = score.totalScore,
-                            hintsUsedTotal = score.hintsUsedTotal,
-                            skippedQuestions = score.skippedQuestions,
-                            totalPossibleScore = score.totalPossibleScore,
-                            timestamp = System.currentTimeMillis(),
-                            accuracy = score.accuracy,
-                            averageScore = score.averageScore,
-                            sessionId = currentSessionId
-                        )
-                    )
-                }
-            }
-        }
         _uiState.update { it.copy(showSettlement = true) }
     }
 
     fun hideSettlement() {
         _uiState.update { it.copy(showSettlement = false) }
+    }
+
+    /**
+     * 用户在结算弹窗中"确认退出"时调用：保存（或更新）历史记录。
+     *
+     * 保存策略：
+     * - 首次退出：通过 [GuessHistoryDao.upsertBySession] 走 insert 路径
+     * - 继续作答后再次退出：同一 sessionId 走 update 路径，更新成绩而非重复插入
+     *
+     * 边界条件处理：
+     * - 使用 [NonCancellable] 上下文，确保即使用户快速返回或页面刷新导致
+     *   ViewModel 即将销毁，保存操作也能完整执行，避免数据丢失
+     * - 仅当 totalQuestions > 0 时保存，避免空对局产生无意义记录
+     * - 网络异常不影响本地保存（历史记录仅写入本地 Room 数据库，无网络依赖）
+     *
+     * @return 本次会话的 sessionId（供调用方做后续处理，如上传排行榜）
+     */
+    fun confirmExitAndSave() {
+        val state = _uiState.value
+        val score = state.score
+        if (score.totalQuestions == 0) return
+
+        val mode = when (state.mode) {
+            GuessMode.IMAGE -> "IMAGE"
+            GuessMode.VOICE -> "VOICE"
+        }
+        val difficulty = when (state.mode) {
+            GuessMode.IMAGE -> if (state.difficulty == ImageDifficulty.HARD) "HARD" else "EASY"
+            GuessMode.VOICE -> if (state.voiceDifficulty == VoiceDifficulty.HARD) "HARD" else "EASY"
+        }
+        val currentSessionId = gameSessionId
+        val record = GuessHistory(
+            mode = mode,
+            difficulty = difficulty,
+            totalQuestions = score.totalQuestions,
+            correctAnswers = score.correctAnswers,
+            totalScore = score.totalScore,
+            hintsUsedTotal = score.hintsUsedTotal,
+            skippedQuestions = score.skippedQuestions,
+            totalPossibleScore = score.totalPossibleScore,
+            timestamp = System.currentTimeMillis(),
+            accuracy = score.accuracy,
+            averageScore = score.averageScore,
+            sessionId = currentSessionId
+        )
+        // NonCancellable：保证保存操作在 ViewModel 销毁前完成（页面刷新/快速返回场景）
+        viewModelScope.launch(NonCancellable) {
+            try {
+                historyDao.upsertBySession(record)
+                hasSavedHistory = true
+            } catch (_: Exception) {
+                // 本地数据库写入失败时静默处理，避免阻塞退出流程
+                // 数据丢失风险已通过 sessionId 唯一索引 + upsert 机制最小化
+            }
+        }
     }
 
     private suspend fun getGalleryForShip(ship: Ship): ShipGallery {

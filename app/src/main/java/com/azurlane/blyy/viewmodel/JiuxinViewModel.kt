@@ -833,7 +833,7 @@ class JiuxinViewModel @Inject constructor(
 
             // 回退：如果 DataStore 中头像为空，从舰娘数据库查找
             if (selectedShip.isNotBlank() && shipAvatar.isBlank()) {
-                shipAvatar = shipDao.getShipByName(selectedShip)?.avatarUrl?.let { normalizeUrl(it) } ?: ""
+                shipAvatar = shipDao.getShipByName(selectedShip, ArchiveType.DOCK.name)?.avatarUrl?.let { normalizeUrl(it) } ?: ""
                 Log.d(TAG, "Avatar fallback from DB: $shipAvatar")
             }
 

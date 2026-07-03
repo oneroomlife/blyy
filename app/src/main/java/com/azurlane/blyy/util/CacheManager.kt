@@ -15,7 +15,8 @@ object CacheManager {
     // Per-namespace max entry counts. Image bytes are heavy, so cap tightly.
     private val namespaceMaxSizes = mapOf(
         CacheNamespaces.IMAGE_DATA to 20,
-        CacheNamespaces.HTML_DOCUMENT to 30
+        CacheNamespaces.HTML_DOCUMENT to 30,
+        CacheNamespaces.WEBVIEW_RENDERED_HTML to 15
     )
 
     private data class CacheEntry<T>(
@@ -148,4 +149,5 @@ object CacheNamespaces {
     const val HTML_DOCUMENT = "html_document"
     const val IMAGE_DATA = "image_data"
     const val SHIP_LIST = "ship_list"
+    const val WEBVIEW_RENDERED_HTML = "webview_rendered_html"
 }

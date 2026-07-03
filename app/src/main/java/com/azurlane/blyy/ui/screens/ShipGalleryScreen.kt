@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyEmptyState
+import com.azurlane.blyy.ui.components.BlyyErrorState
 import com.azurlane.blyy.ui.components.ZoomableImage
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.viewmodel.ShipGalleryState
@@ -130,9 +132,22 @@ fun ShipGalleryScreen(
                 CircularProgressIndicator()
             }
         } else if (state.error != null) {
-            ErrorState(error = state.error, onBack = onBack)
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                BlyyErrorState(
+                    message = state.error,
+                    onRetry = onBack
+                )
+            }
         } else if (illustrations.isEmpty()) {
-            EmptyState(onBack = onBack)
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                BlyyEmptyState(
+                    icon = Icons.Rounded.BrokenImage,
+                    title = "暂无立绘数据",
+                    description = "无法获取该舰娘的立绘资源，请稍后重试",
+                    actionLabel = "返回",
+                    onAction = onBack
+                )
+            }
         } else {
             Box(modifier = Modifier.fillMaxSize()) {
                 HorizontalPager(
@@ -142,8 +157,8 @@ fun ShipGalleryScreen(
                     val (skinName, imageUrl) = illustrations[page]
                     
                     Box(modifier = Modifier.fillMaxSize()) {
-                        ZoomableImage(
-                            model = ImageRequest.Builder(context)
+                        val galleryRequest = remember(imageUrl) {
+                            ImageRequest.Builder(context)
                                 .data(imageUrl)
                                 .crossfade(true)
                                 .listener(
@@ -154,7 +169,10 @@ fun ShipGalleryScreen(
                                         Log.d(TAG, "Successfully loaded image: $imageUrl")
                                     }
                                 )
-                                .build(),
+                                .build()
+                        }
+                        ZoomableImage(
+                            model = galleryRequest,
                             contentDescription = skinName,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Fit,
@@ -350,9 +368,9 @@ private fun FigureDisplayPanel(
             onClick = onSwitchClick,
             shape = RoundedCornerShape(AppSpacing.Corner.Md),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (isCurrentSelected) 
-                    MaterialTheme.colorScheme.primaryContainer 
-                else 
+                containerColor = if (isCurrentSelected)
+                    MaterialTheme.colorScheme.primaryContainer
+                else
                     MaterialTheme.colorScheme.primary
             ),
             modifier = Modifier
@@ -439,66 +457,6 @@ private fun ChibiFlipImage(
         error = rememberVectorPainter(Icons.Rounded.Person),
         placeholder = rememberVectorPainter(Icons.Rounded.Person)
     )
-}
-
-@Composable
-private fun ErrorState(error: String, onBack: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.BrokenImage,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.error
-            )
-            Spacer(modifier = Modifier.height(AppSpacing.Lg))
-            Text(
-                text = error,
-                style = AppTypography.BodyLarge,
-                color = MaterialTheme.colorScheme.error
-            )
-            Spacer(modifier = Modifier.height(AppSpacing.Lg))
-            Button(onClick = onBack) {
-                Text("返回")
-            }
-        }
-    }
-}
-
-@Composable
-private fun EmptyState(onBack: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.BrokenImage,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            )
-            Spacer(modifier = Modifier.height(AppSpacing.Lg))
-            Text(
-                text = "暂无立绘数据",
-                style = AppTypography.BodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(AppSpacing.Lg))
-            Button(onClick = onBack) {
-                Text("返回")
-            }
-        }
-    }
 }
 
 @Composable

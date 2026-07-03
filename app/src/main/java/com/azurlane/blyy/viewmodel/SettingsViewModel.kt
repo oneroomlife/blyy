@@ -44,6 +44,13 @@ class SettingsViewModel @Inject constructor(
     val forceDarkTheme: StateFlow<Boolean> = settings.forceDarkTheme
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val dynamicColorEnabled: StateFlow<Boolean> = settings.dynamicColorEnabled
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+        )
+
     val autoCheckUpdateEnabled: StateFlow<Boolean> = settings.autoCheckUpdateEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
@@ -71,6 +78,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setForceDarkTheme(force: Boolean) {
         viewModelScope.launch { settings.setForceDarkTheme(force) }
+    }
+
+    fun setDynamicColorEnabled(enabled: Boolean) {
+        viewModelScope.launch { settings.setDynamicColorEnabled(enabled) }
     }
 
     fun setAutoCheckUpdateEnabled(enabled: Boolean) {

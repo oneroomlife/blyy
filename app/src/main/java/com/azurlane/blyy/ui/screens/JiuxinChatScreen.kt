@@ -87,6 +87,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -101,6 +102,8 @@ import com.azurlane.blyy.data.model.ChatMessage
 import com.azurlane.blyy.data.model.ChatMessageType
 import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyBottomSheet
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
@@ -129,10 +132,11 @@ private object JuusColors {
     val InputFocusBorder = Color(0xFF20A0FF) // 输入框聚焦边框
     val SendActive = Color(0xFF20A0FF)     // 发送按钮激活
     val SendInactive = Color(0xFFE5E9F2)   // 发送按钮未激活
+    val SendIconInactive = Color(0xFF7F8C9B) // 发送按钮未激活图标（深色，浅灰底上可读）
     val TextPrimary = Color(0xFF2C3E50)    // 主文字
-    val TextSecondary = Color(0xFF7F8C9B)  // 辅助文字
+    val TextSecondary = Color(0xFF5A6B7B)  // 辅助文字（WCAG AA 4.6:1 on 0xFFEBF4FB）
     val TextOnPrimary = Color.White        // 主色上文字
-    val TextTime = Color(0xFFB0BEC5)       // 时间文字
+    val TextTime = Color(0xFF5A6B7B)       // 时间文字（WCAG AA 4.6:1 on 0xFFEBF4FB）
     val SystemText = Color(0xFFC8C7C8)     // 系统消息文字
     val AvatarBorder = Color(0xFFE5E9F2)   // 头像边框
     val TypingDot = Color(0xFF85D0FF)      // 打字动画点色
@@ -143,7 +147,7 @@ private object JuusColors {
     object Dark {
         val PrimaryBg = Color(0xFF0D1B2A)
         val UserBubble = Color(0xFF1565C0)
-        val AiBubble = Color(0xFF1A2744)
+        val AiBubble = Color(0xFF243559)
         val AiBubbleBorder = Color(0xFF2A3F5F)
         val AiName = Color(0xFF85D0FF)
         val VoiceBubble = Color(0xFF2A1A28)
@@ -156,11 +160,12 @@ private object JuusColors {
         val InputFocusBorder = Color(0xFF85D0FF)
         val SendActive = Color(0xFF85D0FF)
         val SendInactive = Color(0xFF2A3F5F)
+        val SendIconActive = Color(0xFF0D1B2A) // 发送按钮激活图标（深色，浅蓝底上可读）
         val TextPrimary = Color(0xFFE2EAF4)
-        val TextSecondary = Color(0xFF94A8BE)
+        val TextSecondary = Color(0xFFA8BCD0)
         val TextOnPrimary = Color.White
-        val TextTime = Color(0xFF5A7A90)
-        val SystemText = Color(0xFF5A7A90)
+        val TextTime = Color(0xFF8FA8BE)
+        val SystemText = Color(0xFFA0B8CE)
         val AvatarBorder = Color(0xFF2A3F5F)
         val TypingDot = Color(0xFF85D0FF)
         val ErrorBg = Color(0xFF2A1A1A)
@@ -224,6 +229,8 @@ fun JiuxinChatScreen(
 
             // 聊天消息区域 — JuusTalk 风格浅蓝背景
             val chatBg = if (isDark) JuusColors.Dark.PrimaryBg else JuusColors.PrimaryBg
+            // 提升到 LazyColumn 外层，避免每个 item 重复读取 LocalConfiguration
+            val messageMaxWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -244,6 +251,7 @@ fun JiuxinChatScreen(
                         userAvatarUrl = userAvatarUrl,
                         isDark = isDark,
                         isPlaying = currentlyPlayingId == message.id,
+                        maxWidth = messageMaxWidth,
                         onVoiceClick = remember(message.id, message.voiceUrl) {
                             {
                                 if (message.voiceUrl.isNotBlank()) {
@@ -273,7 +281,7 @@ fun JiuxinChatScreen(
                         val errorText = if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText
                         Box(
                             modifier = Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
                                 .background(errorBg)
                                 .padding(horizontal = 16.dp, vertical = 10.dp)
                         ) {
@@ -345,19 +353,17 @@ fun JiuxinChatScreen(
     // ── 删除确认弹窗 ──
     showDeleteConfirm?.let { sessionId ->
         val sessionName = sessions.find { it.id == sessionId }?.name ?: "此对话"
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = null },
-            title = { Text("删除对话") },
-            text = { Text("确定要删除「$sessionName」吗？此操作不可撤销。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteSession(sessionId)
-                    showDeleteConfirm = null
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        BlyyConfirmDialog(
+            title = "删除对话",
+            message = "确定要删除「$sessionName」吗？此操作不可撤销。",
+            confirmText = "删除",
+            dismissText = "取消",
+            onConfirm = {
+                viewModel.deleteSession(sessionId)
+                showDeleteConfirm = null
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = null }) { Text("取消") }
-            }
+            onDismiss = { showDeleteConfirm = null },
+            isDestructive = true
         )
     }
 
@@ -373,8 +379,8 @@ fun JiuxinChatScreen(
                     onValueChange = { renameText = it },
                     singleLine = true,
                     textStyle = AppTypography.BodyMedium,
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = JuusColors.Primary),
-                    shape = RoundedCornerShape(8.dp)
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Sm)
                 )
             },
             confirmButton = {
@@ -400,6 +406,7 @@ private fun UserConfigDialog(
     onSave: (String, String) -> Unit,
     viewModel: JiuxinViewModel
 ) {
+    val isDark = LocalIsDark.current
     var name by remember { mutableStateOf(currentName) }
     var avatarUrl by remember { mutableStateOf(currentAvatarUrl) }
     var showAvatarPicker by remember { mutableStateOf(false) }
@@ -416,8 +423,8 @@ private fun UserConfigDialog(
                         modifier = Modifier
                             .size(64.dp)
                             .clip(CircleShape)
-                            .background(JuusColors.Primary.copy(alpha = 0.1f))
-                            .border(1.dp, JuusColors.Primary.copy(alpha = 0.3f), CircleShape)
+                            .background((if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.1f))
+                            .border(1.dp, (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.3f), CircleShape)
                             .clickable { showAvatarPicker = true },
                         contentAlignment = Alignment.Center
                     ) {
@@ -433,7 +440,7 @@ private fun UserConfigDialog(
                         val showPreviewFallback = avatarUrl.isBlank() ||
                             previewAvatarState.value is AsyncImagePainter.State.Error
                         if (showPreviewFallback) {
-                            Icon(Icons.Rounded.Person, null, modifier = Modifier.size(32.dp), tint = JuusColors.Primary.copy(alpha = 0.5f))
+                            Icon(Icons.Rounded.Person, null, modifier = Modifier.size(32.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f))
                         }
                     }
                     Text("点击更换头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -445,8 +452,8 @@ private fun UserConfigDialog(
                     label = { Text("显示名称") },
                     singleLine = true,
                     textStyle = AppTypography.BodyMedium,
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = JuusColors.Primary),
-                    shape = RoundedCornerShape(8.dp)
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Sm)
                 )
             }
         },
@@ -516,7 +523,7 @@ private fun JuusChatTopBar(
         ) {
             Text(
                 text = title,
-                style = AppTypography.TitleMedium.copy(fontWeight = FontWeight.Bold, fontSize = 18.sp),
+                style = AppTypography.TitleMediumBold.copy(fontSize = 18.sp),
                 color = contentColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -603,15 +610,15 @@ private fun TypingIndicator(
         Column {
             Text(
                 text = jiuxinName,
-                style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Medium, color = nameColor),
+                style = AppTypography.LabelSmallMedium.copy(color = nameColor),
                 modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
             )
             // 打字气泡
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                    .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
                     .background(bubbleBg)
-                    .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                    .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
                     .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 TypingDots(dotColor = dotColor)
@@ -658,24 +665,18 @@ private fun HistoryPanel(
     onDeleteSession: (String) -> Unit,
     onRenameSession: (String) -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(topStart = AppSpacing.Corner.Xl, topEnd = AppSpacing.Corner.Xl)
-    ) {
+    val isDark = LocalIsDark.current
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().height(520.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(text = "历史对话", style = AppTypography.TitleMedium, fontWeight = FontWeight.Bold)
+                Text(text = "历史对话", style = AppTypography.TitleMediumBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     IconButton(onClick = onNewSession) {
-                        Icon(Icons.Rounded.Add, contentDescription = "新建对话", tint = JuusColors.Primary)
+                        Icon(Icons.Rounded.Add, contentDescription = "新建对话", tint = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary)
                     }
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Rounded.Edit, contentDescription = "关闭")
@@ -686,9 +687,10 @@ private fun HistoryPanel(
             if (sessions.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Icon(Icons.Rounded.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
-                        Text("暂无对话记录", style = AppTypography.BodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-                        Text("点击 + 开始新对话", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f))
+                        // 暗色模式下提高图标可见度：alpha 0.3 → 0.5（暗色）/ 0.35（浅色）
+                        Icon(Icons.Rounded.ChatBubbleOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.5f else 0.35f))
+                        Text("暂无对话记录", style = AppTypography.BodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.6f))
+                        Text("点击 + 开始新对话", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.6f else 0.45f))
                     }
                 }
             } else {
@@ -700,8 +702,8 @@ private fun HistoryPanel(
                         val isCurrent = session.id == currentSessionId
                         Row(
                             modifier = Modifier.fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (isCurrent) JuusColors.Primary.copy(alpha = 0.08f) else Color.Transparent)
+                                .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                                .background(if (isCurrent) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.08f) else Color.Transparent)
                                 .clickable { onSwitchSession(session.id) }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -711,21 +713,22 @@ private fun HistoryPanel(
                                     text = session.name,
                                     style = AppTypography.TitleSmall,
                                     fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isCurrent) JuusColors.Primary else MaterialTheme.colorScheme.onSurface,
+                                    color = if (isCurrent) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = formatSessionTime(session.updatedAt),
                                     style = AppTypography.LabelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                    // 暗色模式下提高时间戳可读性：0.5 → 0.7
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.55f)
                                 )
                             }
                             IconButton(onClick = { onRenameSession(session.id) }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Rounded.Edit, contentDescription = "重命名", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                                Icon(Icons.Rounded.Edit, contentDescription = "重命名", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.55f))
                             }
                             IconButton(onClick = { onDeleteSession(session.id) }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Rounded.Delete, contentDescription = "删除", modifier = Modifier.size(16.dp), tint = JuusColors.ErrorText.copy(alpha = 0.6f))
+                                Icon(Icons.Rounded.Delete, contentDescription = "删除", modifier = Modifier.size(16.dp), tint = (if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText).copy(alpha = 0.6f))
                             }
                         }
                     }
@@ -744,11 +747,12 @@ private fun MessageBubble(
     userAvatarUrl: String,
     isDark: Boolean,
     isPlaying: Boolean,
+    maxWidth: Dp,
     onVoiceClick: () -> Unit,
     onStickerClick: () -> Unit,
     onUserAvatarLongClick: () -> Unit
 ) {
-    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
+    val context = LocalContext.current
 
     when (message.type) {
         ChatMessageType.USER.name -> {
@@ -762,12 +766,12 @@ private fun MessageBubble(
                 Column(modifier = Modifier.widthIn(max = maxWidth), horizontalAlignment = Alignment.End) {
                     Text(
                         text = userName,
-                        style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Medium, color = bubbleColor),
+                        style = AppTypography.LabelSmallMedium.copy(color = bubbleColor),
                         modifier = Modifier.padding(end = 2.dp, bottom = 3.dp)
                     )
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 12.dp, bottomEnd = 4.dp))
+                            .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Md, bottomEnd = AppSpacing.Corner.Xs))
                             .background(bubbleColor)
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
@@ -782,7 +786,7 @@ private fun MessageBubble(
                     // 时间戳
                     Text(
                         text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 10.sp),
+                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
                         color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                         modifier = Modifier.padding(end = 4.dp, top = 2.dp)
                     )
@@ -860,14 +864,14 @@ private fun MessageBubble(
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
                     Text(
                         text = jiuxinName,
-                        style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Medium, color = nameColor),
+                        style = AppTypography.LabelSmallMedium.copy(color = nameColor),
                         modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
                     )
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                            .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
                             .background(bubbleBg)
-                            .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                            .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Text(
@@ -877,7 +881,7 @@ private fun MessageBubble(
                     }
                     Text(
                         text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 10.sp),
+                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
                         color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                         modifier = Modifier.padding(start = 2.dp, top = 2.dp)
                     )
@@ -924,14 +928,14 @@ private fun MessageBubble(
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
                     Text(
                         text = message.shipName,
-                        style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Medium, color = voiceAccent),
+                        style = AppTypography.LabelSmallMedium.copy(color = voiceAccent),
                         modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
                     )
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                            .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
                             .background(bubbleBg)
-                            .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                            .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
                             .clickable(onClick = onVoiceClick)
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
@@ -950,7 +954,7 @@ private fun MessageBubble(
                     }
                     Text(
                         text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 10.sp),
+                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
                         color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                         modifier = Modifier.padding(start = 2.dp, top = 2.dp)
                     )
@@ -978,10 +982,12 @@ private fun MessageBubble(
                 ) {
                     if (message.avatarUrl.isNotBlank()) {
                         AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(message.avatarUrl)
-                                .crossfade(true)
-                                .build(),
+                            model = remember(message.avatarUrl) {
+                                ImageRequest.Builder(context)
+                                    .data(message.avatarUrl)
+                                    .crossfade(true)
+                                    .build()
+                            },
                             contentDescription = null,
                             modifier = Modifier.size(36.dp).clip(CircleShape),
                             contentScale = ContentScale.Crop,
@@ -999,29 +1005,31 @@ private fun MessageBubble(
                 Column {
                     Text(
                         text = message.shipName,
-                        style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Medium, color = nameColor),
+                        style = AppTypography.LabelSmallMedium.copy(color = nameColor),
                         modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
                     )
                     Box(
                         modifier = Modifier
                             .widthIn(max = 160.dp)
                             .heightIn(min = 60.dp, max = 180.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isDark) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.03f))
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                            .background(if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.03f))
                             .clickable(onClick = onStickerClick)
                     ) {
                         var isLoading by remember { mutableStateOf(true) }
                         var isError by remember { mutableStateOf(false) }
 
                         AsyncImage(
-                            model = ImageRequest.Builder(LocalContext.current)
-                                .data(message.stickerUrl)
-                                .crossfade(true)
-                                .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
-                                .addHeader("Referer", "https://wiki.biligame.com/")
-                                .memoryCachePolicy(CachePolicy.ENABLED)
-                                .diskCachePolicy(CachePolicy.ENABLED)
-                                .build(),
+                            model = remember(message.stickerUrl) {
+                                ImageRequest.Builder(context)
+                                    .data(message.stickerUrl)
+                                    .crossfade(true)
+                                    .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36")
+                                    .addHeader("Referer", "https://wiki.biligame.com/")
+                                    .memoryCachePolicy(CachePolicy.ENABLED)
+                                    .diskCachePolicy(CachePolicy.ENABLED)
+                                    .build()
+                            },
                             contentDescription = "表情包",
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1051,7 +1059,7 @@ private fun MessageBubble(
                     }
                     Text(
                         text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 10.sp),
+                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
                         color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                         modifier = Modifier.padding(start = 2.dp, top = 2.dp)
                     )
@@ -1099,7 +1107,7 @@ private fun ChatInputBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(footerBg)
-            .border(width = 1.dp, color = footerBorder, shape = RoundedCornerShape(0.dp))
+            .border(width = 1.dp, color = footerBorder, shape = RoundedCornerShape(AppSpacing.Corner.None))
             .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
@@ -1123,7 +1131,7 @@ private fun ChatInputBar(
                 focusedContainerColor = inputBg,
                 unfocusedContainerColor = inputBg
             ),
-            shape = RoundedCornerShape(20.dp)
+            shape = RoundedCornerShape(AppSpacing.Corner.Xl)
         )
         IconButton(
             onClick = onSend,
@@ -1138,7 +1146,13 @@ private fun ChatInputBar(
             Icon(
                 Icons.AutoMirrored.Rounded.Send,
                 contentDescription = "发送",
-                tint = Color.White,
+                // 暗色模式：激活态背景为浅蓝(0xFF85D0FF)，需用深色图标；未激活态背景为深蓝，用浅色图标
+                // 浅色模式：激活态背景为蓝(0xFF20A0FF)，用白色图标；未激活态背景为浅灰，用深色图标
+                tint = if (inputText.isNotBlank() && enabled) {
+                    if (isDark) JuusColors.Dark.SendIconActive else Color.White
+                } else {
+                    if (isDark) Color.White else JuusColors.SendIconInactive
+                },
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -1150,15 +1164,15 @@ private fun ChatInputBar(
 private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDismiss: () -> Unit, onAvatarSelected: (String) -> Unit) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val context = LocalContext.current
+    val isDark = LocalIsDark.current
     val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.GetContent()) { uri: Uri? -> uri?.let { try { context.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }; onAvatarSelected(it.toString()) } }
     var avatarTab by remember { mutableStateOf(0) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(topStart = AppSpacing.Corner.Xl, topEnd = AppSpacing.Corner.Xl)) {
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().height(520.dp)) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(text = "选择头像", style = AppTypography.TitleMedium, fontWeight = FontWeight.Bold)
+                Text(text = "选择头像", style = AppTypography.TitleMediumBold)
                 IconButton(onClick = onDismiss) { Icon(Icons.Rounded.Close, contentDescription = "关闭") }
             }
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
@@ -1167,21 +1181,21 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
             }
             Spacer(modifier = Modifier.height(AppSpacing.Sm))
             if (avatarTab == 0) {
-                OutlinedTextField(value = searchQuery, onValueChange = viewModel::setShipSearchQuery, modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg), placeholder = { Text("搜索舰娘...") }, singleLine = true, textStyle = AppTypography.BodyMedium, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = JuusColors.Primary), shape = RoundedCornerShape(AppSpacing.Corner.Sm))
+                OutlinedTextField(value = searchQuery, onValueChange = viewModel::setShipSearchQuery, modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg), placeholder = { Text("搜索舰娘...") }, singleLine = true, textStyle = AppTypography.BodyMedium, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary), shape = RoundedCornerShape(AppSpacing.Corner.Sm))
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     items(filteredShips, key = { it.name }) { ship ->
                         val isSelected = ship.avatarUrl == currentAvatarUrl
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) JuusColors.Primary else Color.LightGray.copy(alpha = 0.3f), CircleShape).clickable { onAvatarSelected(ship.avatarUrl) }, contentAlignment = Alignment.Center) { AsyncImage(model = ship.avatarUrl, contentDescription = null, modifier = Modifier.size(52.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
-                            Text(text = ship.name, style = AppTypography.LabelSmall.copy(fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isSelected) JuusColors.Primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp))
+                            Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else Color.LightGray.copy(alpha = 0.3f), CircleShape).clickable { onAvatarSelected(ship.avatarUrl) }, contentAlignment = Alignment.Center) { AsyncImage(model = ship.avatarUrl, contentDescription = null, modifier = Modifier.size(52.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
+                            Text(text = ship.name, style = AppTypography.LabelSmall.copy(fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp))
                         }
                     }
                 }
             } else {
                 Column(modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     if (currentAvatarUrl.isNotBlank()) {
-                        Box(modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, JuusColors.Primary.copy(alpha = 0.3f), CircleShape), contentAlignment = Alignment.Center) { AsyncImage(model = currentAvatarUrl, contentDescription = null, modifier = Modifier.size(120.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
+                        Box(modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.3f), CircleShape), contentAlignment = Alignment.Center) { AsyncImage(model = currentAvatarUrl, contentDescription = null, modifier = Modifier.size(120.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
                         Spacer(modifier = Modifier.height(AppSpacing.Md)); Text("当前头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(modifier = Modifier.height(AppSpacing.Lg))
                     }
                     TextButton(onClick = { imagePickerLauncher.launch("image/*") }) {

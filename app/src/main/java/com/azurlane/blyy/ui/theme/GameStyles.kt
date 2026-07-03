@@ -40,32 +40,32 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.azurlane.blyy.ui.theme.BlyyShapes
-import com.azurlane.blyy.ui.theme.AppAnimation.Springs
+import com.azurlane.blyy.ui.components.BlyyButton
+import com.azurlane.blyy.ui.components.BlyyButtonVariant
 
 object GameStyles {
 
     object Card {
-        val CornerSize = 12.dp
-        val Elevation = 8.dp
-        val InnerPadding = 20.dp
-        val OuterPadding = 16.dp
+        val CornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Card.CornerSize
+        val Elevation: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Card.Elevation
+        val InnerPadding: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Card.InnerPadding
+        val OuterPadding: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Card.OuterPadding
     }
 
     object Button {
-        val Height = 52.dp
-        val CornerSize = 8.dp
-        val IconSize = 20.dp
+        val Height: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Button.Height
+        val CornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Button.CornerSize
+        val IconSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Button.IconSize
     }
 
     object Input {
-        val Height = 56.dp
-        val CornerSize = 20.dp
+        val Height: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Input.Height
+        val CornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Input.CornerSize
     }
 
     object Score {
-        val ChipCornerSize = 20.dp
-        val BannerCornerSize = 12.dp
+        val ChipCornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Score.ChipCornerSize
+        val BannerCornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Game.Score.BannerCornerSize
     }
 
     object Animation {
@@ -296,55 +296,14 @@ fun GameButton(
     icon: ImageVector? = null,
     isPrimary: Boolean = true
 ) {
-    val buttonScale by animateFloatAsState(
-        targetValue = if (enabled) 1f else 0.98f,
-        animationSpec = GameStyles.Animation.scaleAnimation,
-        label = "buttonScale"
+    BlyyButton(
+        text = text,
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        enabled = enabled,
+        icon = icon,
+        variant = if (isPrimary) BlyyButtonVariant.Primary else BlyyButtonVariant.Secondary
     )
-
-    if (isPrimary) {
-        Button(
-            onClick = onClick,
-            modifier = modifier
-                .height(GameStyles.Button.Height)
-                .scale(buttonScale),
-            enabled = enabled,
-            shape = BlyyShapes.Button,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
-            ),
-            elevation = ButtonDefaults.buttonElevation(
-                defaultElevation = 4.dp,
-                pressedElevation = 2.dp
-            )
-        ) {
-            icon?.let {
-                Icon(it, contentDescription = null, modifier = Modifier.size(GameStyles.Button.IconSize))
-                Spacer(Modifier.width(8.dp))
-            }
-            Text(text, style = AppTypography.LabelLarge)
-        }
-    } else {
-        OutlinedButton(
-            onClick = onClick,
-            modifier = modifier
-                .height(GameStyles.Button.Height)
-                .scale(buttonScale),
-            enabled = enabled,
-            shape = BlyyShapes.Button,
-            colors = ButtonDefaults.outlinedButtonColors(
-                contentColor = MaterialTheme.colorScheme.primary,
-                disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-            )
-        ) {
-            icon?.let {
-                Icon(it, contentDescription = null, modifier = Modifier.size(GameStyles.Button.IconSize))
-                Spacer(Modifier.width(8.dp))
-            }
-            Text(text, style = AppTypography.LabelLarge)
-        }
-    }
 }
 
 @Composable
@@ -366,7 +325,7 @@ fun GameStatItem(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(label, style = AppTypography.LabelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = AppTypography.TitleMedium, fontWeight = FontWeight.Bold)
+            Text(value, style = AppTypography.TitleMediumBold)
             Text(subValue, style = AppTypography.LabelSmall, color = accentColor)
         }
     }
@@ -429,11 +388,4 @@ fun GameIconBadge(
             modifier = Modifier.size((size * 0.6).dp)
         )
     }
-}
-
-private fun Color.luminance(): Float {
-    val r = this.red
-    val g = this.green
-    val b = this.blue
-    return 0.299f * r + 0.587f * g + 0.114f * b
 }

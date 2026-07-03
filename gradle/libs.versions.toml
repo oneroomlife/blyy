@@ -28,6 +28,7 @@ mockito = "5.16.0"
 mockitoKotlin = "5.4.0"
 turbine = "1.2.0"
 kotlinxCoroutinesTest = "1.10.2"
+zstdJni = "1.5.7-6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -72,6 +73,12 @@ mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mo
 mockito-kotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version.ref = "mockitoKotlin" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }
+# ⚠️ 注意：zstd-jni 不能通过 version catalog 的 library 条目直接声明 AAR 类型，
+# Gradle 9.x version catalog 不支持 type/classifier 字段。
+# 必须在 app/build.gradle.kts 中用字符串 "com.github.luben:zstd-jni:版本@aar" 形式声明。
+# 标准 JAR 仅含桌面 Linux .so（/linux/aarch64/...），Android 会因找不到 arm64-v8a .so
+# 抛 UnsatisfiedLinkError 闪退。AAR 包含全部 4 个 Android ABI 的 native 库。
+zstd-jni = { group = "com.github.luben", name = "zstd-jni", version.ref = "zstdJni" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

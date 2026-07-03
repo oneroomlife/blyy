@@ -27,6 +27,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.azurlane.blyy.data.model.LeaderboardCategory
 import com.azurlane.blyy.data.model.LeaderboardEntry
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyAnimatedEmptyState
+import com.azurlane.blyy.ui.components.BlyyErrorState
+import com.azurlane.blyy.ui.components.BlyyTabRow
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
@@ -116,7 +119,10 @@ fun LeaderboardScreen(
                                     }
                                 }
                             }
-                            itemsIndexed(entries) { index, entry ->
+                            itemsIndexed(
+                                items = entries,
+                                key = { _, entry -> "${entry.uid}-${entry.score}-${entry.timestamp}" }
+                            ) { index, entry ->
                                 LeaderboardRankCard(
                                     rank = index + 1,
                                     entry = entry,
@@ -154,21 +160,12 @@ private fun CategoryTabRow(
     selectedCategory: LeaderboardCategory,
     onCategoryChange: (LeaderboardCategory) -> Unit
 ) {
-    ScrollableTabRow(
-        selectedTabIndex = selectedCategory.ordinal,
-        edgePadding = AppSpacing.Screen.Horizontal,
-        containerColor = Color.Transparent,
-        contentColor = MaterialTheme.colorScheme.primary,
-        divider = {}
-    ) {
-        LeaderboardCategory.values().forEach { category ->
-            Tab(
-                selected = selectedCategory == category,
-                onClick = { onCategoryChange(category) },
-                text = { Text(category.displayName, style = AppTypography.LabelLarge) }
-            )
-        }
-    }
+    val categories = LeaderboardCategory.entries
+    BlyyTabRow(
+        tabs = categories.map { it.displayName },
+        selectedIndex = selectedCategory.ordinal,
+        onTabSelected = { index -> onCategoryChange(categories[index]) }
+    )
 }
 
 @Composable
@@ -234,7 +231,8 @@ private fun UserInfoWarning(
 private fun LeaderboardRankCard(
     rank: Int,
     entry: LeaderboardEntry,
-    isCurrentUser: Boolean
+    isCurrentUser: Boolean,
+    modifier: Modifier = Modifier
 ) {
     // 前三名渐变色（金/银/铜），其余使用主题中性色
     val rankColors = when (rank) {
@@ -255,7 +253,7 @@ private fun LeaderboardRankCard(
 
     // 卡片容器：紧凑条形 + 当前用户高亮边框
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(AppSpacing.Corner.Md),
         colors = CardDefaults.cardColors(
             containerColor = if (isCurrentUser) {
@@ -404,27 +402,12 @@ private fun EmptyLeaderboardView() {
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
-        ) {
-            Icon(
-                Icons.Rounded.Leaderboard,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
-            )
-            Text(
-                "暂无排行数据",
-                style = AppTypography.TitleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "完成游戏后从历史记录上传成绩",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-            )
-        }
+        BlyyAnimatedEmptyState(
+            visible = true,
+            icon = Icons.Rounded.Leaderboard,
+            title = "暂无排行数据",
+            description = "完成游戏后从历史记录上传成绩"
+        )
     }
 }
 
@@ -434,23 +417,11 @@ private fun ErrorView(
     onRetry: () -> Unit
 ) {
     Box(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AppSpacing.Screen.Horizontal),
         contentAlignment = Alignment.Center
     ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
-        ) {
-            Text(
-                error,
-                style = AppTypography.BodyMedium,
-                color = MaterialTheme.colorScheme.error,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = AppSpacing.Xl)
-            )
-            Button(onClick = onRetry) {
-                Text("重试")
-            }
-        }
+        BlyyErrorState(message = error, onRetry = onRetry)
     }
 }

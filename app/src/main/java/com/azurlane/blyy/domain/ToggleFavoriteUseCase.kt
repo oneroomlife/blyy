@@ -6,7 +6,7 @@ import javax.inject.Inject
 class ToggleFavoriteUseCase @Inject constructor(
     private val repository: ShipRepository
 ) {
-    suspend operator fun invoke(shipName: String, isFavorite: Boolean) {
-        repository.toggleFav(shipName, isFavorite)
+    suspend operator fun invoke(shipName: String, archiveType: String, isFavorite: Boolean) {
+        repository.toggleFav(shipName, archiveType, isFavorite)
     }
 }

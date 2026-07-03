@@ -66,6 +66,10 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.chamferedShape
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.isWatchScreen
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.Surface
+import androidx.compose.ui.unit.sp
 
 /**
  * 自适应页面背景 — 根据 UI 风格切换
@@ -404,7 +408,7 @@ fun BlyyPrimaryButton(
             )
             .border(
                 width = AppSpacing.Border.Thin,
-                color = AppColors.Accent.Gold.copy(alpha = if (enabled) 0.4f else 0.1f),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (enabled) 0.35f else 0.12f),
                 shape = BlyyShapes.Button
             )
             .clickable(
@@ -908,5 +912,89 @@ fun BlyySectionPanel(
             }
         }
         BlyyPanel(content = content)
+    }
+}
+
+/**
+ * 统一语音气泡组件 — 替代 SecretaryChibiOverlay / VoiceScreen / ShipGalleryScreen 中的重复实现。
+ *
+ * 支持两种变体：
+ * - [SpeechBubbleVariant.WithTail]：带三角尾尖，深色主题下深底白字，浅色主题下白底黑字（原 SecretaryChibiOverlay/VoiceScreen 实现）
+ * - [SpeechBubbleVariant.Compact]：无尾尖，单行省略，颜色与 WithTail 相反（原 ShipGalleryScreen 实现）
+ *
+ * @param text 气泡文字
+ * @param variant 气泡变体，默认 [SpeechBubbleVariant.WithTail]
+ * @param modifier 修饰符
+ * @param isDark 是否暗色模式，默认读取 [LocalIsDark]
+ */
+@Composable
+fun BlyySpeechBubble(
+    text: String,
+    variant: SpeechBubbleVariant = SpeechBubbleVariant.WithTail,
+    modifier: Modifier = Modifier,
+    isDark: Boolean = LocalIsDark.current
+) {
+    when (variant) {
+        SpeechBubbleVariant.WithTail -> WithTailBubble(text = text, isDark = isDark, modifier = modifier)
+        SpeechBubbleVariant.Compact -> CompactBubble(text = text, isDark = isDark, modifier = modifier)
+    }
+}
+
+enum class SpeechBubbleVariant { WithTail, Compact }
+
+@Composable
+private fun WithTailBubble(text: String, isDark: Boolean, modifier: Modifier = Modifier) {
+    val bubbleColor = if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
+    val textColor = if (isDark) Color.White else Color.Black
+    val hPadding = if (text.length > 40) AppSpacing.Lg else AppSpacing.Md
+    val vPadding = if (text.length > 40) AppSpacing.Padding.ListItemVertical else AppSpacing.Sm
+    val cornerRadius = if (text.length > 60) AppSpacing.Corner.Lg else AppSpacing.Corner.Md
+
+    Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Surface(
+            shape = RoundedCornerShape(cornerRadius),
+            color = bubbleColor,
+            tonalElevation = AppSpacing.Elevation.Md,
+            shadowElevation = AppSpacing.Elevation.Lg,
+            border = BorderStroke(AppSpacing.Border.Thin, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+        ) {
+            Text(
+                text = text,
+                modifier = Modifier.padding(horizontal = hPadding, vertical = vPadding),
+                style = AppTypography.BodySmallMedium.copy(
+                    fontSize = if (text.length > 80) 11.sp else 13.sp,
+                    lineHeight = if (text.length > 80) 15.sp else 18.sp
+                ),
+                color = textColor,
+                textAlign = TextAlign.Center
+            )
+        }
+        Canvas(modifier = Modifier.size(12.dp, 6.dp)) {
+            val path = Path().apply {
+                moveTo(0f, 0f)
+                lineTo(size.width, 0f)
+                lineTo(size.width / 2f, size.height)
+                close()
+            }
+            drawPath(path, color = bubbleColor)
+        }
+    }
+}
+
+@Composable
+private fun CompactBubble(text: String, isDark: Boolean, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(AppSpacing.Corner.Md),
+        color = if (isDark) Color.White.copy(alpha = 0.9f) else Color.Black.copy(alpha = 0.8f),
+        modifier = modifier
+    ) {
+        Text(
+            text = text,
+            style = AppTypography.LabelSmall,
+            color = if (isDark) Color.Black else Color.White,
+            modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

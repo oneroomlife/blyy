@@ -189,8 +189,7 @@ private fun AppHeaderSection(currentVersion: String) {
 
         Text(
             text = "碧蓝语音",
-            style = AppTypography.TitleLarge,
-            fontWeight = FontWeight.Bold
+            style = AppTypography.TitleLargeBold
         )
 
         Spacer(modifier = Modifier.height(AppSpacing.Xs))
@@ -272,7 +271,19 @@ private fun DisclaimerSection(
             )
 
             Text(
+                text = "本应用中涉及的碧蓝档案（Blue Archive）相关角色台词、立绘、语音等内容，其著作权及相关权利均归Nexon Games Co., Ltd. 所有。© 2021-2026 Nexon Games Co., Ltd.",
+                style = AppTypography.BodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
                 text = "本应用所使用的游戏资源链接均来源于碧蓝航线Wiki（https://wiki.biligame.com/blhx），仅供学习交流使用，不得用于任何商业用途。",
+                style = AppTypography.BodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Text(
+                text = "本应用所使用的碧蓝档案游戏资源链接均来源于Gamekee碧蓝档案Wiki（https://www.gamekee.com/ba/），特此致谢。",
                 style = AppTypography.BodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

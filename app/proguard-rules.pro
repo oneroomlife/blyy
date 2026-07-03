@@ -5,6 +5,13 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
+# ── ZSTD-JNI ──
+# 官方文档明确说明：Java 类不能被重命名/最小化/重定位，
+# 否则 JVM 链接 native 库时会因类名不匹配而失败。
+-keep class com.github.luben.zstd.** { *; }
+-dontwarn com.github.luben.zstd.**
+-keepclassmembers class com.github.luben.zstd.** { *; }
+
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface
 # class:

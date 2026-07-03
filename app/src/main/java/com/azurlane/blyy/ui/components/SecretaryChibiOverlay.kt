@@ -194,7 +194,7 @@ fun SecretaryChibiOverlay(
                     ) {
                         Text(
                             text = "拖动调整位置",
-                            style = AppTypography.LabelSmall.copy(fontWeight = FontWeight.Bold),
+                            style = AppTypography.LabelSmallBold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs)
                         )

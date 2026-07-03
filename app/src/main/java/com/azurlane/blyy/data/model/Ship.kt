@@ -3,11 +3,11 @@ package com.azurlane.blyy.data.model
 import androidx.compose.runtime.Immutable
 import androidx.room.Entity
 import androidx.room.Index
-import androidx.room.PrimaryKey
 
 @Immutable
 @Entity(
     tableName = "ships",
+    primaryKeys = ["name", "archiveType"],
     indices = [
         Index(value = ["isFavorite"]),
         Index(value = ["archiveType"]),
@@ -15,7 +15,7 @@ import androidx.room.PrimaryKey
     ]
 )
 data class Ship(
-    @PrimaryKey val name: String,
+    val name: String,
     val avatarUrl: String,
     val borderUrl: String?,
     val link: String,     // 用于跳转详情页的 Wiki 后缀
@@ -27,5 +27,7 @@ data class Ship(
     val extra: String,    // 改造, META... / 角色定位...
 
     val archiveType: String = "DOCK", // DOCK or STUDENT
-    val isFavorite: Boolean = false // 用户收藏状态
+    val isFavorite: Boolean = false, // 用户收藏状态
+    // 学生档案 14 维筛选数据（JSON 格式，仅 STUDENT 有效；DOCK 为空字符串）
+    val filterData: String = ""
 )

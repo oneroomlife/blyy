@@ -13,8 +13,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.SharedTransitionLayout
@@ -125,6 +129,7 @@ import com.azurlane.blyy.ui.screens.GuessByVoiceScreen
 import com.azurlane.blyy.ui.screens.GuessHistoryScreen
 import com.azurlane.blyy.ui.screens.HomeScreen
 import com.azurlane.blyy.ui.screens.ShipGalleryScreen
+import com.azurlane.blyy.ui.screens.StudentGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
 import com.azurlane.blyy.ui.screens.AboutScreen
 import com.azurlane.blyy.ui.screens.AssistantScreen
@@ -144,8 +149,10 @@ import com.azurlane.blyy.viewmodel.GalleryViewModel
 import com.azurlane.blyy.viewmodel.GuessShipViewModel
 import com.azurlane.blyy.viewmodel.HomeViewModel
 import com.azurlane.blyy.viewmodel.ShipGalleryViewModel
+import com.azurlane.blyy.viewmodel.StudentGalleryViewModel
 import com.azurlane.blyy.viewmodel.VoiceIntent
 import com.azurlane.blyy.viewmodel.VoiceViewModel
+import com.azurlane.blyy.viewmodel.ArchiveType
 import com.azurlane.blyy.viewmodel.UpdateCheckViewModel
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.utils.OverlayPermissionHelper
@@ -164,6 +171,22 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     object Gallery : Screen("gallery", "船坞", Icons.AutoMirrored.Filled.List)
     object About : Screen("about", "关于", Icons.Default.Info)
 }
+
+/** Material Motion — Fade Through，用于底部 Tab 同级切换 */
+private fun tabFadeThroughEnter(): EnterTransition =
+    fadeIn(
+        animationSpec = tween(300, delayMillis = 90, easing = AppAnimation.Easings.EmphasizedDecelerate)
+    ) + scaleIn(
+        initialScale = 0.96f,
+        animationSpec = tween(300, delayMillis = 90, easing = AppAnimation.Easings.EmphasizedDecelerate)
+    )
+
+private fun tabFadeThroughExit(): ExitTransition =
+    fadeOut(animationSpec = tween(90, easing = AppAnimation.Easings.EmphasizedAccelerate)) +
+        scaleOut(
+            targetScale = 1.04f,
+            animationSpec = tween(90, easing = AppAnimation.Easings.EmphasizedAccelerate)
+        )
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -213,10 +236,14 @@ class MainActivity : ComponentActivity() {
             val forceDarkTheme by playerSettings.forceDarkTheme.collectAsStateWithLifecycle(
                 initialValue = false
             )
+            val dynamicColorEnabled by playerSettings.dynamicColorEnabled.collectAsStateWithLifecycle(
+                initialValue = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            )
             val systemDark = isSystemInDarkTheme()
             BlyyTheme(
                 darkTheme = if (forceDarkTheme) true else systemDark,
-                uiStyle = uiStyle
+                uiStyle = uiStyle,
+                dynamicColor = dynamicColorEnabled
             ) {
                 KeepSystemBarsHidden()
                 // 等待UI样式加载完成后再渲染，避免旧UI模式下新UI短暂闪现
@@ -327,6 +354,8 @@ fun AppContent() {
     
     val showBottomBar = currentDestination?.route?.startsWith("voice/") != true &&
             currentDestination?.route?.startsWith("gallery/") != true &&
+            currentDestination?.route?.startsWith("student_voice/") != true &&
+            currentDestination?.route?.startsWith("student_gallery/") != true &&
             currentDestination?.route?.startsWith("guess_image") != true &&
             currentDestination?.route?.startsWith("guess_voice") != true &&
             currentDestination?.route?.startsWith("guess_history") != true &&
@@ -358,6 +387,9 @@ fun AppContent() {
     }
     
     var isBottomBarVisible by remember { mutableStateOf(true) }
+
+    // 底部导航 Gallery 标签动态文本 — DOCK 模式"船坞"，STUDENT 模式"成员"
+    var galleryLabel by remember { mutableStateOf("船坞") }
 
     val bottomBarOffset by animateFloatAsState(
         targetValue = if (showBottomBar && isBottomBarVisible) 0f else 300f,
@@ -495,7 +527,13 @@ fun AppContent() {
                         )
                     }
                 ) {
-                    composable(Screen.Home.route) {
+                    composable(
+                        route = Screen.Home.route,
+                        enterTransition = { tabFadeThroughEnter() },
+                        exitTransition = { tabFadeThroughExit() },
+                        popEnterTransition = { tabFadeThroughEnter() },
+                        popExitTransition = { tabFadeThroughExit() }
+                    ) {
                         val viewModel: HomeViewModel = hiltViewModel()
                         val state by viewModel.state.collectAsStateWithLifecycle()
                         HomeScreen(
@@ -519,18 +557,41 @@ fun AppContent() {
                             animatedContentScope = this
                         )
                     }
-                    composable(Screen.Gallery.route) {
+                    composable(
+                        route = Screen.Gallery.route,
+                        enterTransition = { tabFadeThroughEnter() },
+                        exitTransition = { tabFadeThroughExit() },
+                        popEnterTransition = { tabFadeThroughEnter() },
+                        popExitTransition = { tabFadeThroughExit() }
+                    ) {
                         val viewModel: GalleryViewModel = hiltViewModel()
                         val state by viewModel.state.collectAsStateWithLifecycle()
                         val filteredShips by viewModel.filteredShips.collectAsStateWithLifecycle()
+                        // 档案类型变化时同步底部导航标签：DOCK→"船坞"，STUDENT→"成员"
+                        LaunchedEffect(state.archiveType) {
+                            galleryLabel = when (state.archiveType) {
+                                ArchiveType.STUDENT -> "成员"
+                                ArchiveType.DOCK -> "船坞"
+                            }
+                        }
                         GalleryScreen(
                             state = state,
                             filteredShips = filteredShips,
                             onIntent = viewModel::onIntent,
                             sharedTransitionScope = this@SharedTransitionLayout,
                             animatedContentScope = this,
-                            onShipClick = { ship -> navController.navigate("voice/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}") },
-                            onShowGallery = { ship -> navController.navigate("gallery/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}") },
+                            onShipClick = { ship ->
+                                when (state.archiveType) {
+                                    ArchiveType.DOCK -> navController.navigate("voice/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}")
+                                    ArchiveType.STUDENT -> navController.navigate("student_voice/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}&studentLink=${Uri.encode(ship.link)}")
+                                }
+                            },
+                            onShowGallery = { ship ->
+                                when (state.archiveType) {
+                                    ArchiveType.DOCK -> navController.navigate("gallery/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}")
+                                    ArchiveType.STUDENT -> navController.navigate("student_gallery/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}&studentLink=${Uri.encode(ship.link)}")
+                                }
+                            },
                             onScrollStateChange = { isScrolling ->
                                 isBottomBarVisible = !isScrolling
                             }
@@ -581,6 +642,62 @@ fun AppContent() {
 
                         ShipGalleryScreen(
                             shipName = shipName,
+                            avatarUrl = avatarUrl,
+                            state = galleryState,
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable(
+                        route = "student_voice/{studentName}?avatarUrl={avatarUrl}&studentLink={studentLink}",
+                        arguments = listOf(
+                            navArgument("studentName") { type = NavType.StringType },
+                            navArgument("avatarUrl") { type = NavType.StringType },
+                            navArgument("studentLink") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        val studentName = backStackEntry.arguments?.getString("studentName") ?: ""
+                        val avatarUrl = backStackEntry.arguments?.getString("avatarUrl") ?: ""
+                        val studentLink = backStackEntry.arguments?.getString("studentLink") ?: ""
+                        val viewModel: VoiceViewModel = hiltViewModel()
+
+                        LaunchedEffect(studentName, avatarUrl, studentLink) {
+                            if (studentName.isNotEmpty() && avatarUrl.isNotEmpty() && studentLink.isNotEmpty()) {
+                                viewModel.onIntent(
+                                    VoiceIntent.LoadStudentVoices(studentName, avatarUrl, studentLink)
+                                )
+                            }
+                        }
+
+                        VoiceScreen(
+                            onBack = { navController.popBackStack() },
+                            sharedTransitionScope = this@SharedTransitionLayout,
+                            animatedContentScope = this,
+                            voiceViewModel = viewModel
+                        )
+                    }
+                    composable(
+                        route = "student_gallery/{studentName}?avatarUrl={avatarUrl}&studentLink={studentLink}",
+                        arguments = listOf(
+                            navArgument("studentName") { type = NavType.StringType },
+                            navArgument("avatarUrl") { type = NavType.StringType },
+                            navArgument("studentLink") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        val studentName = backStackEntry.arguments?.getString("studentName") ?: ""
+                        val avatarUrl = backStackEntry.arguments?.getString("avatarUrl") ?: ""
+                        val studentLink = backStackEntry.arguments?.getString("studentLink") ?: ""
+                        val viewModel: StudentGalleryViewModel = hiltViewModel()
+                        val galleryState by viewModel.state.collectAsStateWithLifecycle()
+
+                        LaunchedEffect(studentLink) {
+                            if (studentLink.isNotEmpty()) {
+                                viewModel.loadGallery(studentLink)
+                            }
+                        }
+
+                        StudentGalleryScreen(
+                            studentName = studentName,
                             avatarUrl = avatarUrl,
                             state = galleryState,
                             viewModel = viewModel,
@@ -744,6 +861,7 @@ fun AppContent() {
                     ModernNavigationBar(
                         screens = screens,
                         currentDestination = currentDestination,
+                        galleryLabel = galleryLabel,
                         onNavigate = { route ->
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             navController.navigate(route) {
@@ -788,6 +906,7 @@ private fun KeepSystemBarsHidden() {
 private fun ModernNavigationBar(
     screens: List<Screen>,
     currentDestination: NavDestination?,
+    galleryLabel: String,
     onNavigate: (String) -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
@@ -860,9 +979,12 @@ private fun ModernNavigationBar(
             ) {
                 screens.forEach { screen ->
                     val isSelected = currentDestination?.hierarchy?.any { it.route == screen.route } == true
-                    
+                    // Gallery 屏幕使用动态标签（船坞/成员），其余屏幕使用固定标签
+                    val displayLabel = if (screen.route == Screen.Gallery.route) galleryLabel else screen.label
+
                     ModernNavigationItem(
                         screen = screen,
+                        displayLabel = displayLabel,
                         isSelected = isSelected,
                         onClick = { onNavigate(screen.route) }
                     )
@@ -875,6 +997,7 @@ private fun ModernNavigationBar(
 @Composable
 private fun RowScope.ModernNavigationItem(
     screen: Screen,
+    displayLabel: String,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
@@ -949,7 +1072,7 @@ private fun RowScope.ModernNavigationItem(
             ) {
                 Icon(
                     imageVector = screen.icon,
-                    contentDescription = screen.label,
+                    contentDescription = displayLabel,
                     modifier = Modifier
                         .size(if (isWatch) 18.dp else 24.dp)
                         .scale(iconScale),
@@ -965,7 +1088,7 @@ private fun RowScope.ModernNavigationItem(
                 Spacer(modifier = Modifier.height(if (isWatch) 1.dp else AppSpacing.Xxs))
 
                 Text(
-                    text = screen.label,
+                    text = displayLabel,
                     style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
                     color = accentColor,
                     modifier = Modifier.padding(horizontal = AppSpacing.Sm)
@@ -978,7 +1101,7 @@ private fun RowScope.ModernNavigationItem(
                     modifier = Modifier
                         .padding(horizontal = AppSpacing.Sm)
                         .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
+                        .clip(RoundedCornerShape(AppSpacing.Corner.Xxs))
                         .background(
                             if (isCommandCenter) {
                                 Brush.horizontalGradient(
@@ -1267,7 +1390,7 @@ private fun ModernDrawerSheet(
                                                 brush = Brush.verticalGradient(
                                                     colors = listOf(accentColor, accentColor.copy(alpha = 0.3f))
                                                 ),
-                                                shape = RoundedCornerShape(2.dp)
+                                                shape = RoundedCornerShape(AppSpacing.Corner.Xxs)
                                             )
                                     )
                                 } else {
@@ -1277,7 +1400,7 @@ private fun ModernDrawerSheet(
                                             .height(14.dp)
                                             .background(
                                                 MaterialTheme.colorScheme.primary,
-                                                RoundedCornerShape(2.dp)
+                                                RoundedCornerShape(AppSpacing.Corner.Xxs)
                                             )
                                     )
                                 }
@@ -1444,7 +1567,7 @@ private fun ModernDrawerItem(
                             brush = Brush.verticalGradient(
                                 colors = listOf(item.color, item.color.copy(alpha = 0.3f))
                             ),
-                            shape = RoundedCornerShape(2.dp)
+                            shape = RoundedCornerShape(AppSpacing.Corner.Xxs)
                         )
                 )
             }
@@ -1549,7 +1672,7 @@ private fun UpdateAvailableDialog(
         confirmButton = {
             Surface(
                 onClick = onUpdate,
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(AppSpacing.Corner.Sm),
                 color = accentColor
             ) {
                 Text(
@@ -1565,6 +1688,6 @@ private fun UpdateAvailableDialog(
                 Text("稍后提醒")
             }
         },
-        shape = if (isWatch) RoundedCornerShape(16.dp) else RoundedCornerShape(24.dp)
+        shape = if (isWatch) RoundedCornerShape(AppSpacing.Corner.Lg) else RoundedCornerShape(AppSpacing.Corner.Xxl)
     )
 }
