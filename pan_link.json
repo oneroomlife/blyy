@@ -1,8 +1,8 @@
 {
   "version": "1.0.0",
-  "pan_url": "https://pan.baidu.com/s/PLACEHOLDER_REPLACE_WITH_REAL_LINK",
+  "pan_url": "https://pan.quark.cn/s/99f42337594c?pwd=zV8N",
   "pan_password": "blyy",
-  "pan_type": "百度网盘",
+  "pan_type": "夸克网盘",
   "update_time": "2026-07-06",
-  "notes": "若 GitHub 下载缓慢，可使用网盘下载更新包。提取码见 pan_password 字段。"
+  "notes": "若 GitHub 下载缓慢，可使用网盘下载更新包。"
 }
