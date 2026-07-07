@@ -6,6 +6,8 @@ import android.util.Log
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -16,11 +18,20 @@ import javax.inject.Singleton
 
 /**
  * 应用更新检测结果
+ *
+ * @param versionName 最新版本号（不含 v 前缀）
+ * @param changelog   更新日志（来自 GitHub Release body）
+ * @param downloadUrl GitHub Releases 直链（APK 资源 URL 或 Release 页面 URL）
+ * @param driveLink   网盘备用下载链接（在线获取自 GitHub 仓库）；
+ *                    为 null 表示未配置网盘链接，UI 仅显示 GitHub 更新方式
+ * @param currentVersion 当前应用版本号（用于 UI 版本对比展示）
  */
 data class UpdateInfo(
     val versionName: String,
     val changelog: String,
-    val downloadUrl: String
+    val downloadUrl: String,
+    val driveLink: NetworkDriveLink? = null,
+    val currentVersion: String = ""
 )
 
 /**
@@ -32,11 +43,13 @@ data class UpdateInfo(
  * 3. 尊重用户"稍后提醒"设置（跳过已忽略的版本）
  * 4. 处理网络异常、API 请求失败等边界情况
  * 5. 记录详细日志便于排查问题
+ * 6. 在线获取网盘备用下载链接（不改变版本/日志数据来源）
  */
 @Singleton
 class AppUpdateChecker @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val settings: PlayerSettingsDataStore
+    private val settings: PlayerSettingsDataStore,
+    private val driveLinkProvider: NetworkDriveLinkProvider
 ) {
     private val currentVersion: String by lazy {
         try {
@@ -50,53 +63,91 @@ class AppUpdateChecker @Inject constructor(
         private const val TAG = "AppUpdateChecker"
         private const val GITHUB_API_LATEST = "https://api.github.com/repos/oneroomlife/blyy/releases/latest"
         private const val GITHUB_RELEASE_PAGE = "https://github.com/oneroomlife/blyy/releases"
-        private const val CONNECT_TIMEOUT_MS = 15_000
-        private const val READ_TIMEOUT_MS = 15_000
-        private const val MAX_RETRIES = 2
+        private const val CONNECT_TIMEOUT_MS = 4_000
+        private const val READ_TIMEOUT_MS = 5_000
+        private const val MAX_RETRIES = 1
+        private const val RETRY_DELAY_MS = 400L
+
+        /** Release 信息缓存有效期（毫秒）。短缓存让连续启动秒级返回，同时保证及时性。 */
+        private const val RELEASE_CACHE_TTL_MS = 10 * 60 * 1000L
     }
+
+    /** 缓存的 release 原始三元组 (version, changelog, downloadUrl) 与时间戳 */
+    @Volatile
+    private var cachedRelease: Triple<String, String, String>? = null
+    @Volatile
+    private var cachedReleaseAt: Long = 0L
 
     /**
      * 执行更新检测。
      *
+     * 优化点：
+     * - 自动检测开关与跳过版本号并行读取 DataStore，省去串行等待
+     * - Release 信息带 10 分钟短缓存：连续启动时秒级返回，避免每次都发起网络请求
+     * - 版本检测与网盘链接获取并行执行（async），缩短启动等待时长
+     * - 若版本检测判定为"无需更新/已跳过"，则丢弃网盘链接结果，避免浪费 UI 资源
+     *
+     * @param forceRefresh true 时跳过 release 缓存强制重新拉取（用于"关于"页手动检查）
      * @return UpdateInfo 如果有新版本可用且未被用户跳过；null 如果无需更新或检测失败
      */
-    suspend fun checkForUpdate(): UpdateInfo? {
-        // 先检查用户是否开启了自动检测
-        val enabled = settings.autoCheckUpdateEnabled.first()
+    suspend fun checkForUpdate(forceRefresh: Boolean = false): UpdateInfo? {
+        // 并行读取自动检测开关与跳过版本号，省去串行等待
+        val (enabled, skippedVersion) = coroutineScope {
+            val enabledDeferred = async { settings.autoCheckUpdateEnabled.first() }
+            val skippedDeferred = async { settings.skippedUpdateVersion.first() }
+            enabledDeferred.await() to skippedDeferred.await()
+        }
+
         if (!enabled) {
             Log.d(TAG, "Auto update check is disabled by user, skipping")
             return null
         }
 
         return try {
-            val result = fetchLatestReleaseWithRetry()
-            if (result == null) {
-                Log.w(TAG, "Failed to fetch latest release info after retries")
-                return null
+            coroutineScope {
+                // 并行启动：版本检测 + 网盘链接获取
+                val releaseDeferred = async { fetchLatestReleaseWithRetry(forceRefresh) }
+                val driveLinkDeferred = async {
+                    try {
+                        driveLinkProvider.getLink()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to load drive link: ${e.message}")
+                        null
+                    }
+                }
+
+                val result = releaseDeferred.await()
+                if (result == null) {
+                    Log.w(TAG, "Failed to fetch latest release info after retries")
+                    return@coroutineScope null
+                }
+
+                val (latestVersion, changelog, downloadUrl) = result
+                Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion")
+                Log.d(TAG, "Changelog length: ${changelog.length}, Download URL: $downloadUrl")
+
+                if (!isNewerVersion(latestVersion)) {
+                    Log.d(TAG, "App is up to date")
+                    return@coroutineScope null
+                }
+
+                // 检查用户是否已跳过此版本（skippedVersion 已并行读取）
+                if (skippedVersion == latestVersion) {
+                    Log.d(TAG, "User skipped version $latestVersion, not showing update dialog")
+                    return@coroutineScope null
+                }
+
+                // 等待网盘链接结果（通常已先于版本检测完成）
+                val driveLink = driveLinkDeferred.await()
+                Log.i(TAG, "New version available: $latestVersion (hasDriveLink=${driveLink != null})")
+                UpdateInfo(
+                    versionName = latestVersion,
+                    changelog = changelog.ifEmpty { "暂无更新日志" },
+                    downloadUrl = downloadUrl.ifEmpty { GITHUB_RELEASE_PAGE },
+                    driveLink = driveLink,
+                    currentVersion = currentVersion
+                )
             }
-
-            val (latestVersion, changelog, downloadUrl) = result
-            Log.i(TAG, "Current: $currentVersion, Latest: $latestVersion")
-            Log.d(TAG, "Changelog length: ${changelog.length}, Download URL: $downloadUrl")
-
-            if (!isNewerVersion(latestVersion)) {
-                Log.d(TAG, "App is up to date")
-                return null
-            }
-
-            // 检查用户是否已跳过此版本
-            val skippedVersion = settings.skippedUpdateVersion.first()
-            if (skippedVersion == latestVersion) {
-                Log.d(TAG, "User skipped version $latestVersion, not showing update dialog")
-                return null
-            }
-
-            Log.i(TAG, "New version available: $latestVersion")
-            UpdateInfo(
-                versionName = latestVersion,
-                changelog = changelog.ifEmpty { "暂无更新日志" },
-                downloadUrl = downloadUrl.ifEmpty { GITHUB_RELEASE_PAGE }
-            )
         } catch (e: Exception) {
             Log.e(TAG, "Update check failed", e)
             null
@@ -116,14 +167,33 @@ class AppUpdateChecker @Inject constructor(
      */
     fun getAppVersion(): String = currentVersion
 
-    private suspend fun fetchLatestReleaseWithRetry(): Triple<String, String, String>? {
+    private suspend fun fetchLatestReleaseWithRetry(forceRefresh: Boolean): Triple<String, String, String>? {
+        // 缓存命中且未过期时直接返回，避免每次启动都发起网络请求
+        if (!forceRefresh) {
+            val cached = cachedRelease
+            if (cached != null && System.currentTimeMillis() - cachedReleaseAt < RELEASE_CACHE_TTL_MS) {
+                Log.d(TAG, "Returning cached release info (age=${System.currentTimeMillis() - cachedReleaseAt}ms)")
+                return cached
+            }
+        }
+
         repeat(MAX_RETRIES) { attempt ->
             val result = fetchLatestRelease()
-            if (result != null) return result
-            if (attempt < MAX_RETRIES - 1) {
-                Log.d(TAG, "Retry ${attempt + 1}/$MAX_RETRIES after 1s delay")
-                kotlinx.coroutines.delay(1000)
+            if (result != null) {
+                // 写入缓存
+                cachedRelease = result
+                cachedReleaseAt = System.currentTimeMillis()
+                return result
             }
+            if (attempt < MAX_RETRIES - 1) {
+                Log.d(TAG, "Retry ${attempt + 1}/$MAX_RETRIES after ${RETRY_DELAY_MS}ms delay")
+                kotlinx.coroutines.delay(RETRY_DELAY_MS)
+            }
+        }
+        // 所有重试失败：若有过期缓存，降级返回过期缓存（保证可用性优先于及时性）
+        cachedRelease?.let {
+            Log.w(TAG, "All retries failed, returning stale release cache")
+            return it
         }
         return null
     }

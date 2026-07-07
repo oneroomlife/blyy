@@ -15,6 +15,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +32,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import com.azurlane.blyy.ui.icons.Github
 import androidx.compose.material.icons.automirrored.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Download
@@ -39,7 +42,9 @@ import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Update
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -48,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +73,10 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.BlyyShapes
+import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.ui.theme.LocalUiStyle
+import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.viewmodel.AboutIntent
 import com.azurlane.blyy.viewmodel.AboutState
 import com.azurlane.blyy.viewmodel.AboutViewModel
@@ -351,7 +361,21 @@ private fun CheckUpdateSection(
             verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
         ) {
             if (state.isCheckingUpdate) {
-                BlyyPanel(modifier = Modifier.fillMaxWidth()) {
+                // 优化后的加载状态：渐变描边面板 + 脉冲圆点指示器
+                val infiniteTransition = rememberInfiniteTransition(label = "checkUpdatePulse")
+                val dotAlpha by infiniteTransition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(800, easing = EaseInOutSine),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "dotAlpha"
+                )
+                BlyyPanel(
+                    modifier = Modifier.fillMaxWidth(),
+                    accentColor = MaterialTheme.colorScheme.primary
+                ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -366,10 +390,21 @@ private fun CheckUpdateSection(
                         )
                         Spacer(modifier = Modifier.width(AppSpacing.Sm))
                         Text(
-                            text = "检查中...",
+                            text = "正在检查更新",
                             style = AppTypography.BodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurface
                         )
+                        Spacer(modifier = Modifier.width(AppSpacing.Xxs))
+                        // 脉冲省略号动画
+                        repeat(3) { i ->
+                            Text(
+                                text = ".",
+                                style = AppTypography.TitleLargeBold,
+                                color = MaterialTheme.colorScheme.primary.copy(
+                                    alpha = if (i == 0) dotAlpha else 0.4f
+                                )
+                            )
+                        }
                     }
                 }
             } else {
@@ -388,8 +423,13 @@ private fun CheckUpdateSection(
             ) {
                 when (val status = state.updateStatus) {
                     is UpdateStatus.UpToDate -> {
+                        // 优化后的"已是最新"状态：带成功图标的卡片
                         StatusCard(
-                            message = "当前已是最新版本",
+                            message = if (state.latestVersion.isNotEmpty()) {
+                                "当前已是最新版本 v${state.latestVersion}"
+                            } else {
+                                "当前已是最新版本"
+                            },
                             isSuccess = true
                         )
                     }
@@ -409,15 +449,48 @@ private fun CheckUpdateSection(
                                     )
                                 }
                             }
+                            // 更新渠道选择
+                            Text(
+                                text = "选择更新方式",
+                                style = AppTypography.LabelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = AppSpacing.Xs)
+                            )
+
+                            // GitHub 渠道
                             if (state.downloadUrl.isNotEmpty()) {
-                                BlyyPrimaryButton(
-                                    text = "下载更新",
+                                UpdateChannelCard(
+                                    icon = Icons.Rounded.Github,
+                                    title = "通过 GitHub 更新",
+                                    subtitle = "官方仓库直链，速度可能较慢",
+                                    accentColor = MaterialTheme.colorScheme.primary,
                                     onClick = {
-                                        val intent = Intent(Intent.ACTION_VIEW, state.downloadUrl.toUri())
-                                        context.startActivity(intent)
-                                    },
-                                    icon = Icons.Rounded.Download,
-                                    modifier = Modifier.fillMaxWidth()
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, state.downloadUrl.toUri())
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                            }
+
+                            // 网盘渠道（仅在有可用链接时显示）
+                            val driveLink = state.driveLink
+                            if (driveLink != null) {
+                                UpdateChannelCard(
+                                    icon = Icons.Rounded.CloudDownload,
+                                    title = "通过${driveLink.label}更新",
+                                    subtitle = driveLink.note.ifEmpty { "备用下载渠道" },
+                                    accentColor = AppColors.Accent.GoldDark,
+                                    onClick = {
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, driveLink.url.toUri())
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -452,5 +525,75 @@ private fun StatusCard(
             modifier = Modifier.padding(AppSpacing.Md),
             textAlign = TextAlign.Center
         )
+    }
+}
+
+/**
+ * 更新渠道卡片 — 用于"关于"页检查更新结果展示。
+ * 与启动弹窗中的 UpdateChannelOption 视觉语言保持一致。
+ */
+@Composable
+private fun UpdateChannelCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    val isDark = LocalIsDark.current
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light
+    val shape = if (isCommandCenter) BlyyShapes.Button else RoundedCornerShape(AppSpacing.Corner.Md)
+
+    Surface(
+        onClick = onClick,
+        shape = shape,
+        color = panelColor.copy(alpha = 0.6f),
+        border = BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = accentColor.copy(alpha = 0.35f)
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm + AppSpacing.Xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(
+                        color = accentColor.copy(alpha = 0.15f),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = AppTypography.LabelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }

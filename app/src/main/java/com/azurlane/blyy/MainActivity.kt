@@ -12,11 +12,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
@@ -27,6 +30,10 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -48,6 +55,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
@@ -55,6 +63,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Leaderboard
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
@@ -118,6 +127,7 @@ import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
 import com.azurlane.blyy.ui.components.adaptiveGlassBorder
 import com.azurlane.blyy.ui.components.adaptiveGlassSurface
+import com.azurlane.blyy.ui.icons.Github
 import com.azurlane.blyy.ui.screens.SettingsScreen
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
@@ -404,30 +414,41 @@ fun AppContent() {
 
     SharedTransitionLayout {
         // ── 启动时自动检测更新 ──
-        val updateChecker: AppUpdateChecker = hiltViewModel<UpdateCheckViewModel>().updateChecker
-        var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-
-        LaunchedEffect(Unit) {
-            // 延迟1秒执行，避免影响启动性能
-            kotlinx.coroutines.delay(1000L)
-            updateInfo = updateChecker.checkForUpdate()
-        }
+        // 状态由 UpdateCheckViewModel 持有，确保配置变更时不丢失，且 init 块只执行一次
+        val updateCheckViewModel: UpdateCheckViewModel = hiltViewModel()
+        val updateChecker: AppUpdateChecker = updateCheckViewModel.updateChecker
+        val updateInfo by updateCheckViewModel.updateInfo.collectAsStateWithLifecycle()
 
         if (updateInfo != null) {
             // 先捕获当前值，避免回调中 updateInfo 已被置空导致 NPE
             val currentUpdateInfo = updateInfo!!
             UpdateAvailableDialog(
                 updateInfo = currentUpdateInfo,
-                onUpdate = {
+                onUpdateViaGithub = {
                     try {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl))
                         context.startActivity(intent)
                     } catch (e: Exception) {
-                        Log.e("MainActivity", "Failed to open update URL", e)
+                        Log.e("MainActivity", "Failed to open GitHub update URL", e)
+                        Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
                     }
-                    updateInfo = null
+                    updateCheckViewModel.dismissUpdate()
                 },
-                onDismiss = {
+                onUpdateViaDrive = {
+                    val driveLink = currentUpdateInfo.driveLink
+                    if (driveLink != null) {
+                        try {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(driveLink.url))
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Failed to open drive URL", e)
+                            Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    updateCheckViewModel.dismissUpdate()
+                },
+                onSkipVersion = {
+                    // 用户点击"稍后自行更新"按钮 → 记录跳过版本，下次启动不再提示
                     scope.launch {
                         try {
                             updateChecker.skipVersion(currentUpdateInfo.versionName)
@@ -435,7 +456,11 @@ fun AppContent() {
                             Log.e("MainActivity", "Failed to skip version", e)
                         }
                     }
-                    updateInfo = null
+                    updateCheckViewModel.dismissUpdate()
+                },
+                onDismiss = {
+                    // 用户点击空白区域或按返回键 → 仅关闭弹窗，不记录跳过，下次启动仍会提示
+                    updateCheckViewModel.dismissUpdate()
                 }
             )
         }
@@ -1020,6 +1045,18 @@ private fun RowScope.ModernNavigationItem(
         label = "IndicatorAlpha"
     )
 
+    // 选中态光晕呼吸 — 让选中项"活"起来
+    val infiniteTransition = rememberInfiniteTransition(label = "navItemGlow")
+    val glowPulse by infiniteTransition.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glowPulse"
+    )
+
     Surface(
         onClick = onClick,
         modifier = Modifier
@@ -1044,7 +1081,8 @@ private fun RowScope.ModernNavigationItem(
                                 .background(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
-                                            accentColor.copy(alpha = 0.2f * indicatorAlpha),
+                                            accentColor.copy(alpha = 0.22f * indicatorAlpha * glowPulse),
+                                            accentColor.copy(alpha = 0.08f * indicatorAlpha),
                                             Color.Transparent
                                         )
                                     ),
@@ -1052,14 +1090,22 @@ private fun RowScope.ModernNavigationItem(
                                 )
                                 .border(
                                     width = 1.dp,
-                                    brush = Brush.linearGradient(
+                                    brush = Brush.sweepGradient(
                                         colors = listOf(
-                                            accentColor.copy(alpha = 0.5f * indicatorAlpha),
-                                            AppColors.Accent.Gold.copy(alpha = 0.2f * indicatorAlpha)
+                                            accentColor.copy(alpha = 0.6f * indicatorAlpha),
+                                            AppColors.Accent.Gold.copy(alpha = 0.25f * indicatorAlpha),
+                                            accentColor.copy(alpha = 0.3f * indicatorAlpha)
                                         )
                                     ),
                                     shape = CircleShape
                                 )
+                        } else if (isCommandCenter && !isSelected) {
+                            // 未选中项也加一层极淡的描边，保持视觉一致性
+                            Modifier.border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f),
+                                shape = CircleShape
+                            )
                         } else if (isSelected) {
                             Modifier
                                 .background(
@@ -1084,39 +1130,58 @@ private fun RowScope.ModernNavigationItem(
                 )
             }
 
-            if (isSelected) {
-                Spacer(modifier = Modifier.height(if (isWatch) 1.dp else AppSpacing.Xxs))
+            // 文字与指示器使用 AnimatedVisibility 平滑出入，避免布局跳变
+            AnimatedVisibility(
+                visible = isSelected,
+                enter = fadeIn(tween(200)) + expandVertically(tween(250)),
+                exit = fadeOut(tween(150)) + shrinkVertically(tween(200))
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Spacer(modifier = Modifier.height(if (isWatch) 1.dp else AppSpacing.Xxs))
 
-                Text(
-                    text = displayLabel,
-                    style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
-                    color = accentColor,
-                    modifier = Modifier.padding(horizontal = AppSpacing.Sm)
-                )
+                    Text(
+                        text = displayLabel,
+                        style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
+                        color = accentColor,
+                        modifier = Modifier.padding(horizontal = AppSpacing.Sm)
+                    )
 
-                Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
 
-                // 选中指示点
-                Box(
-                    modifier = Modifier
-                        .padding(horizontal = AppSpacing.Sm)
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(AppSpacing.Corner.Xxs))
-                        .background(
-                            if (isCommandCenter) {
-                                Brush.horizontalGradient(
-                                    colors = listOf(
-                                        accentColor,
-                                        AppColors.Accent.Gold.copy(alpha = 0.6f)
+                    // 选中指示条 — 加宽并带光晕
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = AppSpacing.Sm)
+                            .height(3.dp)
+                            .width(20.dp)
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Xxs))
+                            .background(
+                                if (isCommandCenter) {
+                                    Brush.horizontalGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            accentColor,
+                                            AppColors.Accent.Gold.copy(alpha = 0.8f),
+                                            accentColor,
+                                            Color.Transparent
+                                        )
                                     )
-                                )
-                            } else {
-                                Brush.horizontalGradient(
-                                    colors = listOf(accentColor, accentColor)
-                                )
-                            }
-                        )
-                )
+                                } else {
+                                    Brush.horizontalGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            accentColor,
+                                            accentColor,
+                                            Color.Transparent
+                                        )
+                                    )
+                                }
+                            )
+                    )
+                }
             }
         }
     }
@@ -1578,28 +1643,62 @@ private fun ModernDrawerItem(
 /**
  * 应用更新可用时的模态弹窗。
  *
- * 显示新版本号、更新内容摘要，以及"立即更新"和"稍后提醒"两个操作按钮。
+ * 显示新版本号、更新内容摘要，并提供两种更新渠道：
+ * - 通过 GitHub 更新（直链 APK 或 Releases 页面）
+ * - 通过网盘更新（在线获取自 GitHub 仓库的备用链接）
+ *
+ * 若网盘链接未配置，则仅显示 GitHub 更新按钮，保持向后兼容。
+ *
+ * 暗色模式优化：
+ * - 版本号卡片使用渐变背景 + 左侧装饰条，提高暗色下的视觉锚点
+ * - 渠道选项卡片在暗色下使用更鲜明的背景与边框，增强可点击感
+ * - Command Center 风格下保持 HUD 玻璃质感；Classic 风格下使用 Material 配色
  */
 @Composable
 private fun UpdateAvailableDialog(
     updateInfo: UpdateInfo,
-    onUpdate: () -> Unit,
+    onUpdateViaGithub: () -> Unit,
+    onUpdateViaDrive: () -> Unit,
+    onSkipVersion: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
     val accentColor = if (isCommandCenter) AppColors.Accent.Cyan else MaterialTheme.colorScheme.primary
+    val driveLink = updateInfo.driveLink
+
+    // 图标呼吸脉冲动画 — 吸引注意力，让更新提示更有"活力"
+    val infiniteTransition = rememberInfiniteTransition(label = "updateIconPulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = if (isDark) 0.2f else 0.12f,
+        targetValue = if (isDark) 0.5f else 0.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+    val iconScale by infiniteTransition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "iconScale"
+    )
 
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = {
             Box(
                 modifier = Modifier
-                    .size(if (isWatch) 36.dp else 48.dp)
+                    .size(if (isWatch) 36.dp else 52.dp)
                     .background(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                accentColor.copy(alpha = 0.2f),
+                                accentColor.copy(alpha = pulseAlpha),
                                 Color.Transparent
                             )
                         ),
@@ -1611,35 +1710,113 @@ private fun UpdateAvailableDialog(
                     imageVector = Icons.Rounded.Star,
                     contentDescription = null,
                     tint = accentColor,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier
+                        .size(24.dp)
+                        .scale(iconScale)
                 )
             }
         },
         title = {
             Text(
                 text = "发现新版本",
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
             )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // 版本号卡片 — 渐变背景 + 左侧装饰条 + 边框 + 版本对比
                 Surface(
                     shape = BlyyShapes.PanelSmall,
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                    color = Color.Transparent,
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = AppSpacing.Border.Thin,
+                        color = accentColor.copy(alpha = if (isDark) 0.4f else 0.25f)
+                    )
                 ) {
-                    Row(
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .background(
+                                brush = Brush.linearGradient(
+                                    colors = if (isDark) {
+                                        listOf(
+                                            accentColor.copy(alpha = 0.22f),
+                                            accentColor.copy(alpha = 0.06f)
+                                        )
+                                    } else {
+                                        listOf(
+                                            accentColor.copy(alpha = 0.12f),
+                                            accentColor.copy(alpha = 0.03f)
+                                        )
+                                    }
+                                )
+                            )
                     ) {
-                        Text(
-                            text = "v${updateInfo.versionName}",
-                            style = AppTypography.TitleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = accentColor
+                        // 左侧装饰条 — 强化视觉锚点
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .width(3.dp)
+                                .height(36.dp)
+                                .background(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(
+                                            accentColor,
+                                            accentColor.copy(alpha = 0.4f)
+                                        )
+                                    )
+                                )
                         )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // 当前版本 → 新版本 对比，让用户直观看到变化
+                            Text(
+                                text = "v${updateInfo.currentVersion}",
+                                style = AppTypography.LabelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                                tint = accentColor.copy(alpha = 0.7f),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "v${updateInfo.versionName}",
+                                style = AppTypography.TitleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = accentColor
+                            )
+                            Spacer(modifier = Modifier.weight(1f))
+                            // NEW 徽章
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        brush = Brush.linearGradient(
+                                            colors = listOf(
+                                                accentColor,
+                                                accentColor.copy(alpha = 0.7f)
+                                            )
+                                        ),
+                                        shape = RoundedCornerShape(AppSpacing.Corner.Xxs)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "NEW",
+                                    style = AppTypography.LabelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDark) Color.Black else Color.White,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -1660,34 +1837,140 @@ private fun UpdateAvailableDialog(
                                     Text(
                                         text = updateInfo.changelog,
                                         style = AppTypography.BodySmall,
-                                        lineHeight = 20.sp
+                                        lineHeight = 20.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.9f else 1f)
                                     )
                                 }
                             }
                         }
                     }
                 }
+
+                // 更新渠道选择
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "选择更新方式",
+                        style = AppTypography.LabelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // GitHub 渠道
+                    UpdateChannelOption(
+                        icon = Icons.Rounded.Github,
+                        title = "通过 GitHub 更新",
+                        subtitle = "官方仓库直链，速度可能较慢",
+                        accentColor = accentColor,
+                        onClick = onUpdateViaGithub
+                    )
+
+                    // 网盘渠道（仅在有可用链接时显示）
+                    if (driveLink != null) {
+                        UpdateChannelOption(
+                            icon = Icons.Rounded.CloudDownload,
+                            title = "通过${driveLink.label}更新",
+                            subtitle = driveLink.note.ifEmpty { "备用下载渠道" },
+                            accentColor = AppColors.Accent.GoldDark,
+                            onClick = onUpdateViaDrive
+                        )
+                    }
+                }
             }
         },
-        confirmButton = {
-            Surface(
-                onClick = onUpdate,
-                shape = RoundedCornerShape(AppSpacing.Corner.Sm),
-                color = accentColor
-            ) {
-                Text(
-                    text = "立即更新",
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                    style = AppTypography.LabelMedium,
-                    color = Color.White
-                )
-            }
-        },
+        confirmButton = {},
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("稍后提醒")
+            TextButton(onClick = onSkipVersion) {
+                Text("稍后自行更新")
             }
         },
         shape = if (isWatch) RoundedCornerShape(AppSpacing.Corner.Lg) else RoundedCornerShape(AppSpacing.Corner.Xxl)
     )
+}
+
+/**
+ * 更新渠道选项卡片 — 用于 UpdateAvailableDialog 内的渠道选择。
+ *
+ * 暗色模式优化：
+ * - Command Center 风格：保持 HUD 玻璃面板质感，暗色下提高边框亮度
+ * - Classic 风格：使用 surfaceContainerHigh 而非 AppColors.Panel，与 AlertDialog 背景协调
+ * - 图标圆形背景在暗色下提高饱和度，增强视觉吸引力
+ */
+@Composable
+private fun UpdateChannelOption(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    val isDark = LocalIsDark.current
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val shape = if (isCommandCenter) BlyyShapes.Button else RoundedCornerShape(AppSpacing.Corner.Md)
+
+    // Classic 风格下使用 Material 配色与 AlertDialog 背景协调；
+    // Command Center 风格下保持 Panel 玻璃质感
+    val containerColor = when {
+        isCommandCenter && isDark -> AppColors.Panel.Dark.copy(alpha = 0.85f)
+        isCommandCenter && !isDark -> AppColors.Panel.Light.copy(alpha = 0.75f)
+        isDark -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)
+    }
+    val borderColor = accentColor.copy(alpha = if (isDark) 0.5f else 0.3f)
+    val iconBgAlpha = if (isDark) 0.22f else 0.15f
+
+    Surface(
+        onClick = onClick,
+        shape = shape,
+        color = containerColor,
+        border = androidx.compose.foundation.BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = borderColor
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                accentColor.copy(alpha = iconBgAlpha),
+                                accentColor.copy(alpha = iconBgAlpha * 0.4f)
+                            )
+                        ),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = AppTypography.LabelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
 }

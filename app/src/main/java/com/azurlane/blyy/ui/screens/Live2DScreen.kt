@@ -102,6 +102,8 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.viewmodel.Live2DLoadPhase
 import com.azurlane.blyy.viewmodel.Live2DViewModel
 import kotlinx.coroutines.delay
+import okhttp3.OkHttpClient
+import okhttp3.Request as OkRequest
 
 private const val LIVE2D_URL = "https://l2d.su/cn/"
 private const val LIVE2D_HOST = "l2d.su"
@@ -160,6 +162,27 @@ private const val STUCK_THRESHOLD_MS = 15_000L
 private const val MAX_DECOMPRESSED_SIZE = 256L * 1024 * 1024
 
 private const val TAG = "Live2DScreen"
+
+/**
+ * 【Fix J 2026-07-06】ZSTD 解压失败重试专用的 OkHttp 客户端。
+ *
+ * HttpURLConnection 对某些 chunked transfer-encoding 响应处理异常，导致大 .moc3 文件
+ * ZSTD 解压报 "Data corruption detected"（错误码 20，bitstream 结构性损坏）。
+ * OkHttp 使用完全独立的 HTTP/1.1 实现，chunked 解码更健壮，可绕过 HttpURLConnection 的 bug。
+ *
+ * 重试使用 OkHttp 而非 HttpURLConnection，显著提升大 .moc3 文件加载成功率。
+ */
+private val zstdRetryClient: OkHttpClient by lazy {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        OkHttpClient.Builder()
+            .connectTimeout(java.time.Duration.ofSeconds(15))
+            .readTimeout(java.time.Duration.ofSeconds(60))
+            .retryOnConnectionFailure(true)
+            .build()
+    } else {
+        TODO("VERSION.SDK_INT < O")
+    }
+}
 
 /**
  * Live2D 全屏沉浸展示界面。
@@ -806,12 +829,42 @@ private fun WebView.configureForLive2D(
             val scheme = request.url?.scheme ?: return null
             if (scheme != "http" && scheme != "https") return null
 
+            // 【Fix L 2026-07-06：拦截无用分析/追踪请求】
+            // k.clarity.ms（Microsoft Clarity 分析）请求在日志中频繁出现：
+            //   ① 连接超时 15s（k.clarity.ms/172.175.38.6 不可达）→ 浪费网络资源与用户时间
+            //   ② 即便连上也会被 CORS 策略拦截（无 Access-Control-Allow-Origin 头）→ 503 合成响应
+            //   ③ 这些请求与 Live2D 功能完全无关，纯粹是 l2d.su 站点注入的分析脚本
+            // 直接返回空 204 响应，让 JS 认为请求成功并静默结束，避免 15s 超时 + CORS 噪音
+            val requestHost = request.url?.host ?: ""
+            if (requestHost.endsWith("clarity.ms") ||
+                requestHost.endsWith("google-analytics.com") ||
+                requestHost.endsWith("googletagmanager.com") ||
+                requestHost.endsWith("doubleclick.net") ||
+                requestHost.endsWith("facebook.net") ||
+                requestHost.endsWith("hotjar.com")) {
+                return WebResourceResponse(
+                    "text/plain",
+                    "utf-8",
+                    204,
+                    "No Content (Analytics Blocked)",
+                    mapOf(
+                        "Content-Type" to "text/plain; charset=utf-8",
+                        "Access-Control-Allow-Origin" to "*"
+                    ),
+                    java.io.ByteArrayInputStream(ByteArray(0))
+                )
+            }
+
             return try {
                 var targetUrlStr = urlStr
                 var url = java.net.URL(targetUrlStr)
                 var connection = (url.openConnection() as java.net.HttpURLConnection).apply {
                     requestMethod = request.method
-                    connectTimeout = 15000
+                    // 【Fix P 2026-07-06】连接超时从 15s 降到 8s。
+                    // 日志证据：kaxin.webp/qiye.webp/aersasi_3.cdi3.json 等资源连接超时 15s
+                    // → 用户等待时间长 + 触发大写 URL fallback → 404。
+                    // 8s 足够建立 TCP 连接（正常 <1s），不可达时快速失败。
+                    connectTimeout = 8000
                     // 放宽到 60s：通过 Clash 代理下载大 .moc3 文件（最大 4.5MB 解压后）需要更多时间
                     readTimeout = 60000
                     instanceFollowRedirects = true
@@ -903,7 +956,7 @@ private fun WebView.configureForLive2D(
                     url = java.net.URL(targetUrlStr)
                     connection = (url.openConnection() as java.net.HttpURLConnection).apply {
                         requestMethod = request.method
-                        connectTimeout = 15000
+                        connectTimeout = 8000 // 【Fix P】与初始请求一致
                         readTimeout = 60000
                         instanceFollowRedirects = false // 已手动处理，禁用内核自动行为
 
@@ -1150,6 +1203,19 @@ private fun WebView.configureForLive2D(
                             } catch (e: OutOfMemoryError) {
                                 lastErrorMsg = "OOM buf=$estimatedSize"
                                 break // 缓冲区太大，停止尝试
+                            } catch (e: com.github.luben.zstd.ZstdException) {
+                                // 【Fix I 2026-07-06】"Destination buffer is too small" 等异常须在循环内捕获，
+                                // 继续尝试更大的缓冲区。旧代码异常逃逸到外层 catch → 12x/20x 缓冲区从未尝试
+                                // → 不必要的流式 fallback（虽然流式能成功，但一次性解压性能更好）
+                                lastErrorMsg = "ZstdException buf=$estimatedSize: ${e.message}"
+                                // 【Fix O 2026-07-06】"Data corruption detected" 是字节损坏，增大缓冲区无用。
+                                // 立即 break 跳过 12x/20x 无效尝试，避免分配 79MB/133MB 巨型缓冲区。
+                                // 日志证据：beilaosenlin_2.moc3 (6.6MB) 6x=39MB → 12x=79MB → 20x=133MB 全部失败
+                                if (e.message?.contains("Data corruption detected") == true) {
+                                    Log.d(TAG, "  ZSTD一次性解压 buf=$estimatedSize 字节损坏，跳过更大缓冲区直接重试: ${e.message}")
+                                    break
+                                }
+                                Log.d(TAG, "  ZSTD一次性解压 buf=$estimatedSize 异常，尝试下一个缓冲区: ${e.message}")
                             }
                         }
                     } catch (e: Exception) {
@@ -1159,7 +1225,15 @@ private fun WebView.configureForLive2D(
 
                     // 【备路径：ZstdInputStream 流式解压】
                     // 当主路径失败（如 declaredSize 未知且所有渐进缓冲区均失败）时尝试
-                    if (decompressedBytes == null) {
+                    // 【Fix M 2026-07-06】.moc3 文件因 HttpURLConnection chunked 编码 bug 导致字节损坏时，
+                    // 一次性解压和流式解压都会报 "Data corruption detected"（同一份损坏字节）。
+                    // 跳过流式解压直接进入 OkHttp 重试，节省 ~100ms 无效计算。
+                    // 仅对 static.l2d.su 的 .moc3 文件且错误为 "Data corruption detected" 时跳过。
+                    val isStaticL2dMoc3 = url.host.contains("static.l2d.su") &&
+                        targetUrlStr.lowercase().endsWith(".moc3")
+                    val isDataCorruption = lastErrorMsg?.contains("Data corruption detected") == true
+                    val skipStreaming = isStaticL2dMoc3 && isDataCorruption
+                    if (decompressedBytes == null && !skipStreaming) {
                         try {
                             val zstdIs = com.github.luben.zstd.ZstdInputStream(
                                 java.io.ByteArrayInputStream(finalBytes)
@@ -1171,6 +1245,8 @@ private fun WebView.configureForLive2D(
                             lastErrorMsg = "流式解压失败: ${decompressEx.message}"
                             Log.e(TAG, "【ZSTD 流式解压失败】: $targetUrlStr - ${decompressEx.message}", decompressEx)
                         }
+                    } else if (skipStreaming) {
+                        Log.d(TAG, "  【Fix M】跳过流式解压（.moc3 字节损坏，直接 OkHttp 重试）: $targetUrlStr")
                     }
 
                     if (decompressedBytes != null) {
@@ -1212,34 +1288,40 @@ private fun WebView.configureForLive2D(
                         var retryResolved = false
                         for (retryIdx in 1..2) {
                             try {
-                                Thread.sleep(300L) // 短暂等待，规避瞬态网络抖动
-                                Log.d(TAG, "  ZSTD 重试 #$retryIdx 重新请求: $targetUrlStr")
-                                val retryUrl = java.net.URL(targetUrlStr)
-                                val retryConn = (retryUrl.openConnection() as java.net.HttpURLConnection).apply {
-                                    requestMethod = "GET"
-                                    connectTimeout = 15000
-                                    readTimeout = 60000
-                                    instanceFollowRedirects = false
-                                    setRequestProperty("Referer", LIVE2D_URL)
-                                    setRequestProperty("User-Agent", buildCleanBrowserUserAgent())
-                                    setRequestProperty("Accept-Encoding", "gzip")
-                                    if (retryUrl.host.contains("static.l2d.su")) {
-                                        setRequestProperty("Connection", "close")
-                                    }
-                                    val rCookies = CookieManager.getInstance().getCookie(targetUrlStr)
-                                    if (!rCookies.isNullOrEmpty()) {
-                                        setRequestProperty("Cookie", rCookies)
-                                    }
+                                // 【Fix M 2026-07-06】首次重试时，若错误为 "Data corruption detected"
+                                // （HttpURLConnection chunked bug，非瞬态网络抖动），跳过 300ms 延迟
+                                if (retryIdx == 1 && isDataCorruption) {
+                                    Log.d(TAG, "  ZSTD 重试 #$retryIdx 重新请求 (OkHttp, 无延迟): $targetUrlStr")
+                                } else {
+                                    Thread.sleep(300L) // 短暂等待，规避瞬态网络抖动
+                                    Log.d(TAG, "  ZSTD 重试 #$retryIdx 重新请求 (OkHttp): $targetUrlStr")
                                 }
-                                val retryCode = retryConn.responseCode
+                                // 【Fix J 2026-07-06】使用 OkHttp 替代 HttpURLConnection
+                                // HttpURLConnection 对某些 chunked transfer-encoding 响应处理异常，
+                                // 导致 ZSTD "Data corruption detected"。OkHttp chunked 解码更健壮。
+                                val retryReq = OkRequest.Builder()
+                                    .url(targetUrlStr)
+                                    .get()
+                                    .header("Referer", LIVE2D_URL)
+                                    .header("User-Agent", buildCleanBrowserUserAgent())
+                                    .header("Accept-Encoding", "gzip")
+                                    .header("Connection", "close")
+                                    .apply {
+                                        val rCookies = CookieManager.getInstance().getCookie(targetUrlStr)
+                                        if (!rCookies.isNullOrEmpty()) {
+                                            header("Cookie", rCookies)
+                                        }
+                                    }
+                                    .build()
+                                val retryResp = zstdRetryClient.newCall(retryReq).execute()
+                                val retryCode = retryResp.code
                                 if (retryCode != 200) {
-                                    retryConn.disconnect()
+                                    retryResp.close()
                                     Log.w(TAG, "  ZSTD 重试 #$retryIdx HTTP $retryCode，跳过")
                                     continue
                                 }
-                                val retryRaw = (retryConn.inputStream
-                                    ?: java.io.ByteArrayInputStream(ByteArray(0))).readBytes()
-                                retryConn.disconnect()
+                                val retryRaw = retryResp.body?.bytes() ?: ByteArray(0)
+                                retryResp.close()
 
                                 // 探测重试响应的压缩格式并解压
                                 if (retryRaw.size >= 4 &&
@@ -1268,6 +1350,11 @@ private fun WebView.configureForLive2D(
                                                     break
                                                 }
                                             } catch (oom: OutOfMemoryError) { break }
+                                            catch (e: com.github.luben.zstd.ZstdException) {
+                                                // 【Fix O 2026-07-06】"Data corruption detected" 立即 break，避免无效的大缓冲区分配
+                                                if (e.message?.contains("Data corruption detected") == true) break
+                                                /* buf too small → try next */
+                                            }
                                         }
                                     } catch (e: Exception) { /* 忽略，走流式 */ }
                                     if (retryDecompressed == null) {
@@ -1316,12 +1403,13 @@ private fun WebView.configureForLive2D(
                         }
 
                         if (!retryResolved) {
-                            // 【Fix F：返回原始 ZSTD 流 + Content-Encoding: zstd 头】
+                            // 【Fix F+H 2026-07-06：返回原始 ZSTD 流 + Content-Encoding: zstd 头 + CORS 头】
                             // Chromium 123+ (SystemWebViewGoogle6432+) 原生支持 zstd 解压。
                             // 严禁 return null（必致 Chromium 重新请求 → X-Requested-With → 404）。
-                            // 对 JSON 资源若 Chromium 未能 native 解压，JS 仍会 JSON.parse 崩溃，
-                            // 但至少避免了 404；且重试已大概率解决瞬态损坏问题。
-                            Log.e(TAG, "【ZSTD 解压+重试全部失败！返回原始 ZSTD 流 + Content-Encoding: zstd】: $targetUrlStr")
+                            // 【Fix H】必须包含原始响应头中的 CORS 头（Access-Control-Allow-Origin: *），
+                            // 否则 JS fetch() 会因 CORS 策略拒绝响应 → Live2D SDK 拿不到数据 → 模型加载失败。
+                            // 旧代码只返回 Content-Encoding+Cache-Control → CORS 拦截 → 模型加载失败。
+                            Log.e(TAG, "【ZSTD 解压+重试全部失败！返回原始 ZSTD 流 + Content-Encoding: zstd + CORS 头】: $targetUrlStr")
                             onRequestLogState.value(
                                 "zstd-decompress-failed",
                                 "ZSTD 全部失败，返回原始 ZSTD 流交 Chromium native 解压",
@@ -1331,12 +1419,14 @@ private fun WebView.configureForLive2D(
                                     "fallback" to "raw-zstd-with-ce-header"
                                 )
                             )
+                            val zstdHeaders = responseHeaders.toMutableMap()
+                            zstdHeaders["Content-Encoding"] = "zstd"
                             return WebResourceResponse(
                                 mimeType,
                                 encoding,
                                 200,
                                 "OK",
-                                mutableMapOf("Content-Encoding" to "zstd", "Cache-Control" to "no-cache"),
+                                zstdHeaders,
                                 java.io.ByteArrayInputStream(finalBytes)
                             )
                         }
@@ -1366,12 +1456,19 @@ private fun WebView.configureForLive2D(
                 // ⚠️ 绝对不返回 null！返回合成 503 响应阻止内核接管。
                 // 返回 null 会让内核接管请求 → 默认 Accept-Encoding: gzip, deflate, br, zstd
                 // → static.l2d.su 返回 zstd → JS JSON.parse 崩溃
+                // 【Fix N 2026-07-06】必须包含 Access-Control-Allow-Origin: * 头！
+                // 旧代码只返回 Content-Type 头 → JS fetch() 因 CORS 策略拒绝响应
+                // → Live2D SDK 拿不到错误信息 → 尝试大写 URL fallback → 404
+                // 日志证据：1.txt 行 642 aersasi_3.cdi3.json CORS 错误
                 WebResourceResponse(
                     "text/plain",
                     "utf-8",
                     503,
                     "Service Unavailable (Intercepted)",
-                    mapOf("Content-Type" to "text/plain; charset=utf-8"),
+                    mapOf(
+                        "Content-Type" to "text/plain; charset=utf-8",
+                        "Access-Control-Allow-Origin" to "*"
+                    ),
                     java.io.ByteArrayInputStream(ByteArray(0))
                 )
             }

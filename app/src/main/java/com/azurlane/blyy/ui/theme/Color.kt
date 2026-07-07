@@ -226,6 +226,35 @@ object AppColors {
             )
         )
 
+        /** 三色金属渐变 — 用于高级标题文字，模拟青金双色金属光泽 */
+        val MetallicText = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF48CAE4),
+                Color(0xFFFFFFFF),
+                Color(0xFFFFD166)
+            )
+        )
+
+        /** 暗色三色金属渐变 — 暗色模式下增强对比 */
+        val MetallicTextDark = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFF90E0EF),
+                Color(0xFFFFE599),
+                Color(0xFF48CAE4)
+            )
+        )
+
+        /** 按钮流光 — 横向扫过的白色高光带 */
+        val ButtonShimmer = Brush.linearGradient(
+            colors = listOf(
+                Color.Transparent,
+                Color.White.copy(alpha = 0.0f),
+                Color.White.copy(alpha = 0.35f),
+                Color.White.copy(alpha = 0.0f),
+                Color.Transparent
+            )
+        )
+
         /** 毛玻璃边框渐变 — 配合 GlassSurface 使用 */
         val GlassBorderLight = Brush.linearGradient(
             colors = listOf(

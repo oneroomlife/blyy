@@ -129,3 +129,11 @@ students_rendered.html
 fallback.kt
 wiki_gif.bin
 sticker_fallback.json
+
+# Python bytecode cache (regenerated automatically)
+__pycache__/
+*.pyc
+*.pyo
+
+# Local Python debug scripts (one-off inspections, not part of the repo)
+_inspect.py

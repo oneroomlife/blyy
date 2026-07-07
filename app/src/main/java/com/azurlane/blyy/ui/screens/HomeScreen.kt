@@ -603,7 +603,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             
             Spacer(modifier = Modifier.height(AppSpacing.Xxxl))
             
-            // 2. 标题（带渐变金属质感）
+            // 2. 标题（三色金属渐变 — 青→白→金，模拟金属光泽）
+            val isDark = LocalIsDark.current
             AnimatedVisibility(
                 visible = isVisible,
                 enter = fadeIn(tween(800, delayMillis = 150)) + slideInVertically(tween(800, delayMillis = 150, easing = FastOutSlowInEasing)) { 50 }
@@ -611,12 +612,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
                 Text(
                     text = "后宅空荡荡的...",
                     style = AppTypography.EmptyTitle.copy(
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.onBackground,
-                                MaterialTheme.colorScheme.primary
-                            )
-                        )
+                        brush = if (isDark) AppColors.Gradient.MetallicTextDark
+                        else AppColors.Gradient.MetallicText
                     ),
                     modifier = Modifier.padding(bottom = AppSpacing.Md)
                 )

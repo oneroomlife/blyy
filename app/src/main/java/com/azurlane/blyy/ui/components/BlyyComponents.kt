@@ -1,8 +1,15 @@
 package com.azurlane.blyy.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,13 +49,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -316,6 +326,11 @@ private fun HorizontalDivider() {
 
 /**
  * 科技面板容器
+ *
+ * 优化要点（高级化）：
+ * - 顶部 1px 内高光线，模拟玻璃材质的顶面反光
+ * - 四角 L 型描边装饰（drawBehind），强化 HUD 机械感
+ * - 底部内阴影渐变，营造面板"嵌入"层次
  */
 @Composable
 fun BlyyPanel(
@@ -338,6 +353,9 @@ fun BlyyPanel(
     val isDark = LocalIsDark.current
     val panelColor = if (isDark) AppColors.Panel.Dark else AppColors.Panel.Light.copy(alpha = 0.95f)
     val shape = chamferedShape(chamfer)
+    val cornerLenPx = with(LocalDensity.current) { 14.dp.toPx() }
+    val strokePx = with(LocalDensity.current) { 1.5.dp.toPx() }
+    val topHighlightPx = with(LocalDensity.current) { 1.dp.toPx() }
 
     Box(
         modifier = modifier
@@ -354,12 +372,51 @@ fun BlyyPanel(
                 shape = shape
             )
             .drawBehind {
+                // 左上角 L 型装饰（原设计保留并增强）
                 val path = Path().apply {
                     moveTo(0f, size.height * 0.3f)
                     lineTo(0f, 0f)
                     lineTo(size.width * 0.15f, 0f)
                 }
                 drawPath(path, accentColor.copy(alpha = 0.4f), style = Stroke(width = 2.dp.toPx()))
+
+                // 顶部内高光 — 1px 渐变线，模拟玻璃顶面反光
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.White.copy(alpha = if (isDark) 0.08f else 0.18f),
+                            Color.White.copy(alpha = if (isDark) 0.05f else 0.12f),
+                            Color.Transparent
+                        )
+                    ),
+                    topLeft = Offset(0f, 0f),
+                    size = androidx.compose.ui.geometry.Size(size.width, topHighlightPx)
+                )
+
+                // 右下角 L 型装饰 — 与左上角呼应，对称构图
+                val cornerPath = Path().apply {
+                    moveTo(size.width, size.height - cornerLenPx)
+                    lineTo(size.width, size.height)
+                    lineTo(size.width - cornerLenPx, size.height)
+                }
+                drawPath(
+                    cornerPath,
+                    AppColors.Accent.Gold.copy(alpha = 0.35f),
+                    style = Stroke(width = strokePx)
+                )
+
+                // 底部内阴影渐变 — 营造面板下沉感
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = if (isDark) 0.12f else 0.04f)
+                        )
+                    ),
+                    topLeft = Offset(0f, size.height * 0.85f),
+                    size = androidx.compose.ui.geometry.Size(size.width, size.height * 0.15f)
+                )
             }
     ) {
         content()
@@ -367,7 +424,12 @@ fun BlyyPanel(
 }
 
 /**
- * 主操作按钮 — 切角 + 渐变 + 按压反馈
+ * 主操作按钮 — 切角 + 渐变 + 按压反馈 + 流光扫过
+ *
+ * 优化要点（高级化）：
+ * - 顶部 1.5px 高光描边，模拟玻璃按钮顶面反光
+ * - 按压时触发的横向流光扫过动画（drawWithContent + BlendMode.Screen）
+ * - 按压时阴影减弱（模拟物理下沉），松开回弹
  */
 @Composable
 fun BlyyPrimaryButton(
@@ -390,6 +452,18 @@ fun BlyyPrimaryButton(
     )
     val isWatch = isWatchScreen()
 
+    // 流光扫过动画 — 按压时触发一次
+    val shimmerTransition = rememberInfiniteTransition(label = "btnShimmer")
+    val shimmerX by shimmerTransition.animateFloat(
+        initialValue = -1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2800, easing = LinearEasing, delayMillis = 1200),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmerX"
+    )
+
     Box(
         modifier = modifier
             .scale(scale)
@@ -411,6 +485,41 @@ fun BlyyPrimaryButton(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (enabled) 0.35f else 0.12f),
                 shape = BlyyShapes.Button
             )
+            // 顶部高光描边 + 流光扫过
+            .drawWithContent {
+                drawContent()
+                // 顶部 1.5px 高光线
+                drawRect(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.White.copy(alpha = 0.35f),
+                            Color.Transparent
+                        )
+                    ),
+                    topLeft = Offset(0f, 0f),
+                    size = androidx.compose.ui.geometry.Size(size.width, 1.5.dp.toPx())
+                )
+                // 流光扫过 — 仅 enabled 时显示
+                if (enabled) {
+                    val shimmerWidth = size.width * 0.4f
+                    val startX = shimmerX * size.width - shimmerWidth / 2
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.0f),
+                                Color.White.copy(alpha = 0.25f),
+                                Color.White.copy(alpha = 0.0f),
+                                Color.Transparent
+                            ),
+                            startX = startX,
+                            endX = startX + shimmerWidth
+                        ),
+                        blendMode = BlendMode.Screen
+                    )
+                }
+            }
             .clickable(
                 interactionSource = interactionSource,
                 indication = ripple(color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.2f)),
@@ -499,6 +608,11 @@ fun BlyySecondaryButton(
 
 /**
  * 标签 Chip — 筛选/分类用
+ *
+ * 优化要点（高级化）：
+ * - 选中态背景色与文字色用 animateColorAsState 平滑过渡，避免硬切
+ * - 选中态边框改为渐变描边（青→金），与整体 HUD 语言一致
+ * - 选中态追加一层极淡的内高光，强化"激活"质感
  */
 @Composable
 fun BlyyChip(
@@ -514,9 +628,19 @@ fun BlyyChip(
         animationSpec = AppAnimation.Press.light(),
         label = "chipScale"
     )
-    val bgColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-    val borderColor = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent
+    // 颜色平滑过渡 — 替代旧的硬切 bgColor/borderColor
+    val bgColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "chipBg"
+    )
+    val textColor by animateColorAsState(
+        targetValue = if (selected) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "chipText"
+    )
     val isWatch = isWatchScreen()
 
     Box(
@@ -527,7 +651,21 @@ fun BlyyChip(
             .background(bgColor)
             .border(
                 width = if (selected) AppSpacing.Border.Normal else AppSpacing.Border.Thin,
-                color = borderColor,
+                brush = if (selected) {
+                    Brush.linearGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                        )
+                    )
+                } else {
+                    Brush.linearGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f),
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.1f)
+                        )
+                    )
+                },
                 shape = RoundedCornerShape(AppSpacing.Corner.Sm)
             )
             .clickable(
@@ -541,7 +679,7 @@ fun BlyyChip(
         Text(
             text = label,
             style = AppTypography.LabelMedium,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            color = textColor
         )
     }
 }
@@ -867,6 +1005,10 @@ fun BlyySettingsRow(
 
 /**
  * 增强版分段面板 — 带图标标题
+ *
+ * 优化要点（高级化）：
+ * - 标题图标包裹圆形渐变背景徽章，强化标题视觉锚点
+ * - 装饰线改为三段渐变（实→虚→透明），层次更细腻
  */
 @Composable
 fun BlyySectionPanel(
@@ -883,12 +1025,34 @@ fun BlyySectionPanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = accentColor
-            )
+            // 图标徽章 — 圆形渐变背景 + 描边，替代裸图标
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                accentColor.copy(alpha = 0.25f),
+                                accentColor.copy(alpha = 0.08f),
+                                Color.Transparent
+                            )
+                        ),
+                        shape = CircleShape
+                    )
+                    .border(
+                        width = AppSpacing.Border.Thin,
+                        color = accentColor.copy(alpha = 0.4f),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = accentColor
+                )
+            }
             Text(
                 text = title,
                 style = AppTypography.LabelLarge,
@@ -903,7 +1067,8 @@ fun BlyySectionPanel(
                         .background(
                             Brush.horizontalGradient(
                                 colors = listOf(
-                                    accentColor.copy(alpha = 0.3f),
+                                    accentColor.copy(alpha = 0.4f),
+                                    accentColor.copy(alpha = 0.15f),
                                     Color.Transparent
                                 )
                             )
@@ -911,7 +1076,11 @@ fun BlyySectionPanel(
                 )
             }
         }
-        BlyyPanel(content = content)
+        BlyyPanel {
+            Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
+                content()
+            }
+        }
     }
 }
 

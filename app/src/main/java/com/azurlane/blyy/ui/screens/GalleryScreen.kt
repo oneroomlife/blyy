@@ -524,7 +524,8 @@ private fun AdaptiveGalleryTopBar(
                 onFilterClick = onFilterClick,
                 hasActiveFilters = hasActiveFilters,
                 activeFilterCount = activeFilterCount,
-                onSubmitSearch = onSubmitSearch
+                onSubmitSearch = onSubmitSearch,
+                entityLabel = entityLabel
             )
         } else {
             // Classic 风格：档案切换器整合到标题卡片中
@@ -543,7 +544,8 @@ private fun AdaptiveGalleryTopBar(
                 onSubmitSearch = onSubmitSearch,
                 archiveType = archiveType,
                 onSwitchArchive = onSwitchArchive,
-                isRefreshing = isRefreshing
+                isRefreshing = isRefreshing,
+                entityLabel = entityLabel
             )
         }
 
@@ -581,7 +583,8 @@ private fun GallerySearchBar(
     onFilterClick: () -> Unit,
     hasActiveFilters: Boolean,
     activeFilterCount: Int,
-    onSubmitSearch: (String) -> Unit
+    onSubmitSearch: (String) -> Unit,
+    entityLabel: String = "舰娘"
 ) {
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
@@ -662,7 +665,7 @@ private fun GallerySearchBar(
                 Box(modifier = Modifier.weight(1f)) {
                     if (searchInput.isEmpty()) {
                         Text(
-                            text = "搜索舰娘...",
+                            text = "搜索$entityLabel...",
                             style = AppTypography.BodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                         )
@@ -724,7 +727,14 @@ private fun GallerySearchBar(
 
 /**
  * 经典风格船坞搜索栏 — 双层卡片结构
- * 标题卡片（带舰娘总数 + 筛选入口） + 独立搜索卡片
+ * 标题卡片（带舰娘总数 + 档案切换器） + 独立搜索卡片
+ *
+ * 设计优化：
+ * - 标题卡片使用 surfaceContainerHigh 背景 + outlineVariant 边框，与 ClassicTopBar 配色协调
+ * - 标题左侧添加主色装饰条，增强视觉锚点
+ * - 搜索框添加搜索图标圆形背景装饰，与 Command Center 风格视觉一致
+ * - 未聚焦时保留淡边框，避免突兀；聚焦时主色边框高亮
+ * - 暗色下提高对比度，确保文字清晰可读
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -743,32 +753,37 @@ private fun ClassicGallerySearchBar(
     onSubmitSearch: (String) -> Unit,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType = com.azurlane.blyy.viewmodel.ArchiveType.DOCK,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
-    isRefreshing: Boolean = false
+    isRefreshing: Boolean = false,
+    entityLabel: String = "舰娘"
 ) {
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
 
-    val filterButtonScale by animateFloatAsState(
-        targetValue = if (hasActiveFilters) 1.08f else 1f,
-        animationSpec = AppAnimation.Specs.scale(),
-        label = "ClassicFilterScale"
-    )
-
-    // 聚焦时搜索框边框高亮
+    // 聚焦时搜索框边框高亮（未聚焦时保留淡边框，避免突兀）
     val searchBorderAlpha by animateFloatAsState(
-        targetValue = if (isSearchFocused) 1f else 0f,
+        targetValue = if (isSearchFocused) 1f else 0.4f,
         animationSpec = AppAnimation.Specs.fast(),
         label = "SearchBorderAlpha"
     )
+    // 搜索图标圆形背景透明度动画
+    val searchIconBgAlpha by animateFloatAsState(
+        targetValue = if (isSearchFocused) 0.4f else 0.2f,
+        animationSpec = AppAnimation.Specs.fast(),
+        label = "SearchIconBgAlpha"
+    )
 
     Column {
-        // 标题卡片 — 主色弱化背景 + 舰娘总数 + 档案切换器 + 筛选入口
+        // 标题卡片 — surfaceContainerHigh 背景 + 主色装饰条 + 档案切换器
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AppSpacing.Screen.Horizontal),
             shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isDark) 0.28f else 0.45f),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.9f else 0.7f),
+            border = androidx.compose.foundation.BorderStroke(
+                width = AppSpacing.Border.Thin,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.5f else 0.4f)
+            ),
             shadowElevation = AppSpacing.Elevation.Sm
         ) {
             Row(
@@ -777,25 +792,40 @@ private fun ClassicGallerySearchBar(
                     .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // 左侧主色装饰条 — 增强视觉锚点
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height(if (isWatch) 28.dp else 32.dp)
+                        .background(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                                )
+                            )
+                        )
+                )
+                Spacer(modifier = Modifier.width(AppSpacing.Md))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = title,
-                        style = AppTypography.HeadlineSmall,
+                        style = AppTypography.TitleLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(AppSpacing.Xxs))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "共 $totalCount 位舰娘",
+                            text = "共 $totalCount 位$entityLabel",
                             style = AppTypography.LabelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.9f else 0.85f)
                         )
                         if (filteredCount != totalCount) {
                             Spacer(modifier = Modifier.width(AppSpacing.Sm))
                             Surface(
                                 shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.25f else 0.15f)
                             ) {
                                 Text(
                                     text = "$filteredCount/$totalCount",
@@ -813,61 +843,6 @@ private fun ClassicGallerySearchBar(
                     archiveType = archiveType,
                     onSwitchArchive = onSwitchArchive
                 )
-
-                Spacer(modifier = Modifier.width(AppSpacing.Sm))
-
-                // 筛选入口 — 带激活计数徽章
-                Box {
-                    Surface(
-                        onClick = onFilterClick,
-                        shape = CircleShape,
-                        color = if (hasActiveFilters) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                        },
-                        modifier = Modifier
-                            .size(if (isWatch) 36.dp else 40.dp)
-                            .scale(filterButtonScale)
-                    ) {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FilterList,
-                                contentDescription = "筛选",
-                                tint = if (hasActiveFilters) {
-                                    MaterialTheme.colorScheme.onPrimary
-                                } else {
-                                    MaterialTheme.colorScheme.primary
-                                },
-                                modifier = Modifier.size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
-                            )
-                        }
-                    }
-                    // 激活筛选数量徽章
-                    if (activeFilterCount > 0) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier
-                                .size(16.dp)
-                                .align(Alignment.TopEnd)
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "$activeFilterCount",
-                                    style = AppTypography.LabelSmallBold,
-                                    color = MaterialTheme.colorScheme.onError
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
 
@@ -889,14 +864,14 @@ private fun ClassicGallerySearchBar(
         // 标题与搜索框之间的呼吸间距
         Spacer(modifier = Modifier.height(AppSpacing.Md))
 
-        // 搜索框卡片 — 聚焦时边框高亮 + 阴影增强
+        // 搜索框卡片 — 聚焦时边框高亮 + 阴影增强 + 搜索图标圆形背景
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AppSpacing.Screen.Horizontal)
                 .height(if (isWatch) 40.dp else 48.dp),
             shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (isSearchFocused) 0.95f else 0.85f),
+            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (isSearchFocused) 0.98f else 0.9f),
             shadowElevation = if (isSearchFocused) AppSpacing.Elevation.Md else AppSpacing.Elevation.Sm
         ) {
             Box(
@@ -904,7 +879,7 @@ private fun ClassicGallerySearchBar(
                     .fillMaxSize()
                     .border(
                         width = AppSpacing.Border.Thin,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = searchBorderAlpha * 0.5f),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = searchBorderAlpha * 0.6f),
                         shape = RoundedCornerShape(AppSpacing.Corner.Lg)
                     )
             ) {
@@ -914,21 +889,32 @@ private fun ClassicGallerySearchBar(
                         .padding(horizontal = AppSpacing.Padding.InputHorizontal),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isSearchFocused) 1f else 0.6f),
-                        modifier = Modifier.size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
-                    )
+                    // 搜索图标 — 带圆形背景装饰，与 Command Center 视觉一致
+                    Box(
+                        modifier = Modifier
+                            .size(if (isWatch) 28.dp else 32.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = searchIconBgAlpha),
+                                shape = CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
+                        )
+                    }
 
                     Spacer(modifier = Modifier.width(AppSpacing.Md))
 
                     Box(modifier = Modifier.weight(1f)) {
                         if (searchInput.isEmpty()) {
                             Text(
-                                text = "搜索舰娘...",
+                                text = "搜索$entityLabel...",
                                 style = AppTypography.BodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.6f)
                             )
                         }
                         BasicTextField(
@@ -971,6 +957,16 @@ private fun ClassicGallerySearchBar(
                             )
                         }
                     }
+
+                    Spacer(modifier = Modifier.width(AppSpacing.Xs))
+
+                    // 筛选按钮 — 带激活计数徽章（与 Command Center 搜索栏位置一致）
+                    ModernFilterButton(
+                        hasActiveFilters = hasActiveFilters,
+                        activeFilterCount = activeFilterCount,
+                        onClick = onFilterClick,
+                        isWatch = isWatch
+                    )
                 }
             }
         }
@@ -984,11 +980,19 @@ private fun ModernFilterButton(
     onClick: () -> Unit,
     isWatch: Boolean = false
 ) {
+    val isDark = LocalIsDark.current
     val buttonScale by animateFloatAsState(
         targetValue = if (hasActiveFilters) 1.05f else 1f,
         animationSpec = AppAnimation.Specs.scale(),
         label = "FilterButtonScale"
     )
+
+    // 未激活时背景色：暗色下使用 surfaceContainerHigh 提高对比度，避免过于暗淡
+    val inactiveBgColor = if (isDark) {
+        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    }
 
     Box {
         Surface(
@@ -997,7 +1001,7 @@ private fun ModernFilterButton(
             color = if (hasActiveFilters) {
                 MaterialTheme.colorScheme.primary
             } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                inactiveBgColor
             },
             modifier = Modifier
                 .size(if (isWatch) 36.dp else 40.dp)
@@ -1731,6 +1735,7 @@ private fun CompactArchiveSwitcher(
 ) {
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
     val accentColor = MaterialTheme.colorScheme.primary
 
     val tabs = listOf(
@@ -1738,12 +1743,30 @@ private fun CompactArchiveSwitcher(
         com.azurlane.blyy.viewmodel.ArchiveType.STUDENT to "学生"
     )
 
+    // 根据 UI 风格切换容器配色：
+    // - Command Center：HUD 玻璃面板色（AppColors.Panel）
+    // - Classic：Material Design surfaceContainerHigh，与 ClassicTopBar 协调
+    val containerColor = if (isCommandCenter) {
+        if (isDark) AppColors.Panel.Dark.copy(alpha = 0.6f) else AppColors.Panel.Light.copy(alpha = 0.6f)
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.85f else 0.7f)
+    }
+    val containerBorderColor = if (isCommandCenter) {
+        accentColor.copy(alpha = 0.3f)
+    } else {
+        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+    }
+    // 选中态：Command Center 用 primary + White 文字；Classic 用 primaryContainer + onPrimaryContainer
+    val selectedBgColor = if (isCommandCenter) accentColor else MaterialTheme.colorScheme.primaryContainer
+    val selectedTextColor = if (isCommandCenter) Color.White else MaterialTheme.colorScheme.onPrimaryContainer
+    val unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+
     Surface(
         shape = RoundedCornerShape(AppSpacing.Corner.Full),
-        color = if (isDark) AppColors.Panel.Dark.copy(alpha = 0.6f) else AppColors.Panel.Light.copy(alpha = 0.6f),
+        color = containerColor,
         border = androidx.compose.foundation.BorderStroke(
             width = AppSpacing.Border.Thin,
-            color = accentColor.copy(alpha = 0.3f)
+            color = containerBorderColor
         )
     ) {
         Row(
@@ -1751,12 +1774,8 @@ private fun CompactArchiveSwitcher(
         ) {
             tabs.forEach { (type, label) ->
                 val isSelected = archiveType == type
-                val targetColor = if (isSelected) accentColor else Color.Transparent
-                val textColor = if (isSelected) {
-                    Color.White
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                val targetColor = if (isSelected) selectedBgColor else Color.Transparent
+                val textColor = if (isSelected) selectedTextColor else unselectedTextColor
                 val scale by animateFloatAsState(
                     targetValue = if (isSelected) 1f else 0.95f,
                     animationSpec = AppAnimation.Specs.scale(),

@@ -5,9 +5,13 @@ import android.content.pm.PackageManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.azurlane.blyy.util.NetworkDriveLink
+import com.azurlane.blyy.util.NetworkDriveLinkProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,7 +28,8 @@ data class AboutState(
     val isCheckingUpdate: Boolean = false,
     val updateStatus: UpdateStatus = UpdateStatus.Idle,
     val latestVersion: String = "",
-    val downloadUrl: String = ""
+    val downloadUrl: String = "",
+    val driveLink: NetworkDriveLink? = null
 )
 
 enum class UpdateChannel(val displayName: String) {
@@ -47,7 +52,8 @@ sealed class AboutIntent {
 
 @HiltViewModel
 class AboutViewModel @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val driveLinkProvider: NetworkDriveLinkProvider
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AboutState())
@@ -75,7 +81,15 @@ class AboutViewModel @Inject constructor(
     }
 
     private fun selectChannel(channel: UpdateChannel) {
-        _state.update { it.copy(selectedChannel = channel, updateStatus = UpdateStatus.Idle) }
+        _state.update {
+            it.copy(
+                selectedChannel = channel,
+                updateStatus = UpdateStatus.Idle,
+                driveLink = null,
+                downloadUrl = "",
+                latestVersion = ""
+            )
+        }
     }
 
     private fun checkUpdate() {
@@ -83,8 +97,18 @@ class AboutViewModel @Inject constructor(
             _state.update { it.copy(isCheckingUpdate = true, updateStatus = UpdateStatus.Checking) }
 
             try {
-                val result = withContext(Dispatchers.IO) {
-                    fetchLatestVersion()
+                // 并行获取：release 信息 + 网盘链接（旧实现串行，最坏 30s+26s=56s）
+                val (result, driveLink) = coroutineScope {
+                    val releaseDeferred = async(Dispatchers.IO) { fetchLatestVersion() }
+                    val driveDeferred = async {
+                        try {
+                            driveLinkProvider.getLink()
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to load drive link: ${e.message}")
+                            null
+                        }
+                    }
+                    releaseDeferred.await() to driveDeferred.await()
                 }
 
                 if (result != null) {
@@ -96,14 +120,15 @@ class AboutViewModel @Inject constructor(
                         it.copy(
                             isCheckingUpdate = false,
                             latestVersion = latestVersion,
-                            downloadUrl = downloadUrl
+                            downloadUrl = downloadUrl,
+                            driveLink = driveLink
                         )
                     }
 
                     if (isNewerVersion(latestVersion)) {
                         _state.update {
                             it.copy(updateStatus = UpdateStatus.UpdateAvailable(
-                                latestVersion, 
+                                latestVersion,
                                 changelog,
                                 downloadUrl.ifEmpty { GITHUB_RELEASE_PAGE }
                             ))
@@ -115,7 +140,9 @@ class AboutViewModel @Inject constructor(
                     _state.update {
                         it.copy(
                             isCheckingUpdate = false,
-                            updateStatus = UpdateStatus.Error("无法获取更新信息，请稍后重试")
+                            updateStatus = UpdateStatus.Error("无法获取更新信息，请稍后重试"),
+                            driveLink = null,
+                            downloadUrl = ""
                         )
                     }
                 }
@@ -130,7 +157,9 @@ class AboutViewModel @Inject constructor(
                 _state.update {
                     it.copy(
                         isCheckingUpdate = false,
-                        updateStatus = UpdateStatus.Error(errorMessage)
+                        updateStatus = UpdateStatus.Error(errorMessage),
+                        driveLink = null,
+                        downloadUrl = ""
                     )
                 }
             }
@@ -153,8 +182,8 @@ class AboutViewModel @Inject constructor(
             connection.requestMethod = "GET"
             connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
             connection.setRequestProperty("User-Agent", "BLYY-Android-App")
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
+            connection.connectTimeout = 5000
+            connection.readTimeout = 6000
 
             val responseCode = connection.responseCode
             Log.d(TAG, "Response code: $responseCode")
