@@ -130,7 +130,7 @@ class Live2DViewModel @Inject constructor(
         sb.appendLine("设备厂商: ${Build.MANUFACTURER}")
         sb.appendLine("Android 版本: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
         sb.appendLine("设备时间: ${dateFormat.format(now)}")
-        sb.appendLine("WebView UA: ${try { android.webkit.WebView(context).settings.userAgentString } catch (_: Exception) { "unknown" }}")
+        sb.appendLine("WebView UA: Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
         sb.appendLine()
 
         // 网络信息

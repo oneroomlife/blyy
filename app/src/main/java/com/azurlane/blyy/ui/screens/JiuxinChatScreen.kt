@@ -107,6 +107,7 @@ import com.azurlane.blyy.ui.components.BlyyConfirmDialog
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -118,7 +119,7 @@ private object JuusColors {
     val Primary = Color(0xFF20A0FF)        // JuusTalk 主色蓝
     val PrimaryLight = Color(0xFF85D0FF)   // 浅蓝强调
     val PrimaryBg = Color(0xFFEBF4FB)      // 聊天背景浅蓝
-    val UserBubble = Color(0xFF20A0FF)     // 用户气泡蓝
+    val UserBubble = Color(0xFF1565C0)     // 用户气泡蓝（WCAG AA 5.7:1 on white text）
     val AiBubble = Color.White             // AI气泡白
     val AiBubbleBorder = Color(0xFFE5E9F2) // AI气泡边框
     val AiName = Color(0xFF20A0FF)         // AI名称蓝
@@ -170,6 +171,76 @@ private object JuusColors {
         val TypingDot = Color(0xFF85D0FF)
         val ErrorBg = Color(0xFF2A1A1A)
         val ErrorText = Color(0xFFFF6B6B)
+    }
+}
+
+// ── 头像 URL 复合格式编解码 ──
+// 格式: primary||fallback  例如: file:///data/.../ship_xxx.jpg||https://webstatic.cn/xxx.png
+// 无 fallback 时为普通 URL，兼容旧数据
+private const val AVATAR_DELIMITER = "||"
+
+private fun encodeAvatarUrl(primary: String, fallback: String?): String {
+    if (fallback.isNullOrBlank() || fallback == primary) return primary
+    return "$primary$AVATAR_DELIMITER$fallback"
+}
+
+private fun decodeAvatarUrl(url: String): Pair<String, String?> {
+    if (url.isBlank()) return "" to null
+    val idx = url.indexOf(AVATAR_DELIMITER)
+    return if (idx >= 0) {
+        url.substring(0, idx) to url.substring(idx + AVATAR_DELIMITER.length).takeIf { it.isNotBlank() }
+    } else {
+        url to null
+    }
+}
+
+/**
+ * 健壮头像加载组件：优先加载本地文件头像，加载失败时自动回退到网络 URL。
+ *
+ * - 支持 file://（本地文件）、file:/（asset）、content://（相册）、https://（网络）等所有 URI
+ * - 支持 [encodeAvatarUrl] 编码的复合 URL，自动解析 primary/fallback
+ * - 两个 URL 均失败时显示 [fallbackContent]
+ *
+ * @param url 头像 URL（可为复合格式 primary||fallback）
+ * @param modifier 尺寸与裁剪修饰符
+ * @param fallbackContent 两个 URL 均失败时显示的内容（通常为 Icon）
+ */
+@Composable
+fun RobustAvatar(
+    url: String,
+    modifier: Modifier = Modifier,
+    contentScale: ContentScale = ContentScale.Crop,
+    fallbackContent: @Composable () -> Unit
+) {
+    val (primary, fallback) = remember(url) { decodeAvatarUrl(url) }
+    // 当前正在尝试加载的 URL，先尝试 primary，失败后切换到 fallback
+    var currentTarget by remember(url) { mutableStateOf(primary) }
+    // 两个 URL 均失败时为 true
+    var allFailed by remember(url) { mutableStateOf(false) }
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        if (currentTarget.isNotBlank() && !allFailed) {
+            AsyncImage(
+                model = currentTarget,
+                contentDescription = null,
+                modifier = modifier,
+                contentScale = contentScale,
+                onState = { state ->
+                    if (state is AsyncImagePainter.State.Error) {
+                        if (fallback != null && currentTarget != fallback) {
+                            // primary 失败，切换到 fallback（网络 URL）
+                            currentTarget = fallback
+                        } else {
+                            // 无 fallback 或 fallback 也失败
+                            allFailed = true
+                        }
+                    }
+                }
+            )
+        }
+        if (currentTarget.isBlank() || allFailed) {
+            fallbackContent()
+        }
     }
 }
 
@@ -418,31 +489,18 @@ private fun UserConfigDialog(
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 // 头像选择
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    val previewAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-                    Box(
+                    RobustAvatar(
+                        url = avatarUrl,
                         modifier = Modifier
                             .size(64.dp)
                             .clip(CircleShape)
                             .background((if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.1f))
                             .border(1.dp, (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.3f), CircleShape)
                             .clickable { showAvatarPicker = true },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (avatarUrl.isNotBlank()) {
-                            AsyncImage(
-                                model = avatarUrl,
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                                onState = { previewAvatarState.value = it }
-                            )
-                        }
-                        val showPreviewFallback = avatarUrl.isBlank() ||
-                            previewAvatarState.value is AsyncImagePainter.State.Error
-                        if (showPreviewFallback) {
+                        fallbackContent = {
                             Icon(Icons.Rounded.Person, null, modifier = Modifier.size(32.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f))
                         }
-                    }
+                    )
                     Text("点击更换头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
@@ -578,34 +636,15 @@ private fun TypingIndicator(
         verticalAlignment = Alignment.Top
     ) {
         // AI头像
-        val avatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-        Box(
+        RobustAvatar(
+            url = avatarUrl,
             modifier = Modifier.size(36.dp).clip(CircleShape)
                 .background(bubbleBg)
                 .border(1.dp, avatarBorder, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            if (avatarUrl.isNotBlank()) {
-                AsyncImage(
-                    model = avatarUrl,
-                    contentDescription = null,
-                    modifier = Modifier.size(36.dp).clip(CircleShape),
-                    contentScale = ContentScale.Crop,
-                    onState = { avatarState.value = it }
-                )
+            fallbackContent = {
+                Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
             }
-            val showFallback = avatarUrl.isBlank() ||
-                avatarState.value is AsyncImagePainter.State.Error ||
-                avatarState.value is AsyncImagePainter.State.Loading
-            if (showFallback) {
-                Icon(
-                    Icons.Rounded.SmartToy,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                    tint = nameColor
-                )
-            }
-        }
+        )
         Spacer(modifier = Modifier.width(8.dp))
         Column {
             Text(
@@ -724,11 +763,11 @@ private fun HistoryPanel(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.55f)
                                 )
                             }
-                            IconButton(onClick = { onRenameSession(session.id) }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Rounded.Edit, contentDescription = "重命名", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.55f))
+                            IconButton(onClick = { onRenameSession(session.id) }, modifier = Modifier.size(48.dp)) {
+                                Icon(Icons.Rounded.Edit, contentDescription = "重命名", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.55f))
                             }
-                            IconButton(onClick = { onDeleteSession(session.id) }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Rounded.Delete, contentDescription = "删除", modifier = Modifier.size(16.dp), tint = (if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText).copy(alpha = 0.6f))
+                            IconButton(onClick = { onDeleteSession(session.id) }, modifier = Modifier.size(48.dp)) {
+                                Icon(Icons.Rounded.Delete, contentDescription = "删除", modifier = Modifier.size(20.dp), tint = (if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText).copy(alpha = 0.6f))
                             }
                         }
                     }
@@ -793,35 +832,18 @@ private fun MessageBubble(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 // 用户头像
-                val userAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-                Box(
+                RobustAvatar(
+                    url = userAvatarUrl,
                     modifier = Modifier.size(36.dp).clip(CircleShape)
                         .background(bubbleColor.copy(alpha = 0.15f))
                         .combinedClickable(
                             onClick = {},
                             onLongClick = onUserAvatarLongClick
                         ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (userAvatarUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = userAvatarUrl, contentDescription = null,
-                            modifier = Modifier.fillMaxSize().clip(CircleShape),
-                            contentScale = ContentScale.Crop,
-                            onState = { userAvatarState.value = it }
-                        )
+                    fallbackContent = {
+                        Icon(Icons.Rounded.Person, contentDescription = null, modifier = Modifier.size(20.dp), tint = bubbleColor)
                     }
-                    val showUserFallback = userAvatarUrl.isBlank() ||
-                        userAvatarState.value is AsyncImagePainter.State.Error
-                    if (showUserFallback) {
-                        Icon(
-                            Icons.Rounded.Person,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = bubbleColor
-                        )
-                    }
-                }
+                )
             }
         }
 
@@ -838,28 +860,15 @@ private fun MessageBubble(
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
-                val avatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-                Box(
+                RobustAvatar(
+                    url = jiuxinAvatarUrl,
                     modifier = Modifier.size(36.dp).clip(CircleShape)
                         .background(bubbleBg)
                         .border(1.dp, avatarBorder, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (jiuxinAvatarUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = jiuxinAvatarUrl, contentDescription = null,
-                            modifier = Modifier.size(36.dp).clip(CircleShape),
-                            contentScale = ContentScale.Crop,
-                            onState = { avatarState.value = it }
-                        )
-                    }
-                    val showFallback = jiuxinAvatarUrl.isBlank() ||
-                        avatarState.value is AsyncImagePainter.State.Error ||
-                        avatarState.value is AsyncImagePainter.State.Loading
-                    if (showFallback) {
+                    fallbackContent = {
                         Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
                     }
-                }
+                )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
                     Text(
@@ -902,28 +911,15 @@ private fun MessageBubble(
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
-                val voiceAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-                Box(
+                RobustAvatar(
+                    url = message.avatarUrl,
                     modifier = Modifier.size(36.dp).clip(CircleShape)
                         .background(bubbleBg)
                         .border(1.dp, bubbleBorder, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (message.avatarUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = message.avatarUrl, contentDescription = null,
-                            modifier = Modifier.size(36.dp).clip(CircleShape),
-                            contentScale = ContentScale.Crop,
-                            onState = { voiceAvatarState.value = it }
-                        )
-                    }
-                    val showVoiceFallback = message.avatarUrl.isBlank() ||
-                        voiceAvatarState.value is AsyncImagePainter.State.Error ||
-                        voiceAvatarState.value is AsyncImagePainter.State.Loading
-                    if (showVoiceFallback) {
+                    fallbackContent = {
                         Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = voiceAccent)
                     }
-                }
+                )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
                     Text(
@@ -973,34 +969,15 @@ private fun MessageBubble(
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
-                val stickerAvatarState = remember { mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty) }
-                Box(
+                RobustAvatar(
+                    url = message.avatarUrl,
                     modifier = Modifier.size(36.dp).clip(CircleShape)
                         .background(bubbleBg)
                         .border(1.dp, avatarBorder, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (message.avatarUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = remember(message.avatarUrl) {
-                                ImageRequest.Builder(context)
-                                    .data(message.avatarUrl)
-                                    .crossfade(true)
-                                    .build()
-                            },
-                            contentDescription = null,
-                            modifier = Modifier.size(36.dp).clip(CircleShape),
-                            contentScale = ContentScale.Crop,
-                            onState = { stickerAvatarState.value = it }
-                        )
-                    }
-                    val showStickerAvatarFallback = message.avatarUrl.isBlank() ||
-                        stickerAvatarState.value is AsyncImagePainter.State.Error ||
-                        stickerAvatarState.value is AsyncImagePainter.State.Loading
-                    if (showStickerAvatarFallback) {
+                    fallbackContent = {
                         Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
                     }
-                }
+                )
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
@@ -1166,7 +1143,18 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val isDark = LocalIsDark.current
-    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.GetContent()) { uri: Uri? -> uri?.let { try { context.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }; onAvatarSelected(it.toString()) } }
+    val scope = rememberCoroutineScope()
+    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                // 复制到内部存储，避免 content:// URI 重启后丢失权限
+                val filePath = viewModel.copyAvatarToInternalStorage(it)
+                if (filePath != null) {
+                    onAvatarSelected(filePath)
+                }
+            }
+        }
+    }
     var avatarTab by remember { mutableStateOf(0) }
 
     BlyyBottomSheet(onDismissRequest = onDismiss) {
@@ -1185,9 +1173,19 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     items(filteredShips, key = { it.name }) { ship ->
-                        val isSelected = ship.avatarUrl == currentAvatarUrl
+                        // 优先使用本地高清头像，匹配不到回退网络 URL
+                        val effectiveAvatar = remember(ship.name, ship.avatarUrl) {
+                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.avatarUrl)
+                        }
+                        val isSelected = effectiveAvatar == currentAvatarUrl
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else Color.LightGray.copy(alpha = 0.3f), CircleShape).clickable { onAvatarSelected(ship.avatarUrl) }, contentAlignment = Alignment.Center) { AsyncImage(model = ship.avatarUrl, contentDescription = null, modifier = Modifier.size(52.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
+                            Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else Color.LightGray.copy(alpha = 0.3f), CircleShape).clickable {
+                                // 选中舰娘头像时，复制 asset 到内部存储，确保 file:// 路径可靠加载
+                                scope.launch {
+                                    val reliablePath = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl)
+                                    onAvatarSelected(reliablePath)
+                                }
+                            }, contentAlignment = Alignment.Center) { RobustAvatar(url = effectiveAvatar, modifier = Modifier.size(52.dp).clip(CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(20.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f)) }) }
                             Text(text = ship.name, style = AppTypography.LabelSmall.copy(fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp))
                         }
                     }
@@ -1195,10 +1193,10 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
             } else {
                 Column(modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     if (currentAvatarUrl.isNotBlank()) {
-                        Box(modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.3f), CircleShape), contentAlignment = Alignment.Center) { AsyncImage(model = currentAvatarUrl, contentDescription = null, modifier = Modifier.size(120.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
+                        RobustAvatar(url = currentAvatarUrl, modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.3f), CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(48.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f)) })
                         Spacer(modifier = Modifier.height(AppSpacing.Md)); Text("当前头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(modifier = Modifier.height(AppSpacing.Lg))
                     }
-                    TextButton(onClick = { imagePickerLauncher.launch("image/*") }) {
+                    TextButton(onClick = { imagePickerLauncher.launch(arrayOf("image/*")) }) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                             Icon(Icons.Rounded.AddPhotoAlternate, null)
                             Text("从相册选择图片")

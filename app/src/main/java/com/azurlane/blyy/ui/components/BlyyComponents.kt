@@ -2,7 +2,6 @@ package com.azurlane.blyy.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -330,7 +329,6 @@ private fun HorizontalDivider() {
  * 优化要点（高级化）：
  * - 顶部 1px 内高光线，模拟玻璃材质的顶面反光
  * - 四角 L 型描边装饰（drawBehind），强化 HUD 机械感
- * - 底部内阴影渐变，营造面板"嵌入"层次
  */
 @Composable
 fun BlyyPanel(
@@ -404,18 +402,6 @@ fun BlyyPanel(
                     cornerPath,
                     AppColors.Accent.Gold.copy(alpha = 0.35f),
                     style = Stroke(width = strokePx)
-                )
-
-                // 底部内阴影渐变 — 营造面板下沉感
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Black.copy(alpha = if (isDark) 0.12f else 0.04f)
-                        )
-                    ),
-                    topLeft = Offset(0f, size.height * 0.85f),
-                    size = androidx.compose.ui.geometry.Size(size.width, size.height * 0.15f)
                 )
             }
     ) {
@@ -632,13 +618,13 @@ fun BlyyChip(
     val bgColor by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 250, easing = AppAnimation.Easings.Standard),
         label = "chipBg"
     )
     val textColor by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.primary
         else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = 250, easing = AppAnimation.Easings.Standard),
         label = "chipText"
     )
     val isWatch = isWatchScreen()

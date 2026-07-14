@@ -1,7 +1,7 @@
 package com.azurlane.blyy.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
+import com.azurlane.blyy.ui.theme.AppAnimation
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,6 +65,7 @@ import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
 import com.azurlane.blyy.viewmodel.SecretaryShipViewModel
 import kotlinx.coroutines.delay
@@ -176,7 +178,7 @@ private fun FlipCardAnimation(onFlipComplete: () -> Unit) {
         initialValue = 0.9f,
         targetValue = 1.1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(600, easing = FastOutSlowInEasing),
+            animation = tween(600, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "scale"
@@ -232,6 +234,11 @@ private fun RevealedShipCard(
         label = "reveal"
     )
     val rarityGradient = remember(ship.rarity) { AppColors.Rarity.getRarityGradient(ship.rarity) }
+    val context = LocalContext.current
+    // 优先使用本地高清头像
+    val effectiveAvatar = remember(ship.name, ship.avatarUrl) {
+        LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.avatarUrl)
+    }
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -249,7 +256,7 @@ private fun RevealedShipCard(
                 )
         ) {
             AsyncImage(
-                model = ship.avatarUrl,
+                model = effectiveAvatar,
                 contentDescription = ship.name,
                 modifier = Modifier
                     .fillMaxSize()

@@ -58,6 +58,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,14 +85,18 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
+import kotlinx.coroutines.launch
 
 @Composable
 fun JiuxinConfigScreen(
     onBack: () -> Unit,
     viewModel: JiuxinViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val apiKey by viewModel.apiKey.collectAsStateWithLifecycle()
     val apiUrl by viewModel.apiUrl.collectAsStateWithLifecycle()
     val systemPrompt by viewModel.systemPrompt.collectAsStateWithLifecycle()
@@ -241,18 +246,15 @@ fun JiuxinConfigScreen(
                 BlyySectionPanel(title = "人格与名称", icon = Icons.Rounded.Psychology, accentColor = MaterialTheme.colorScheme.secondary) {
                     Column(modifier = Modifier.fillMaxWidth().padding(AppSpacing.Lg), verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
                         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
-                            Box(
+                            RobustAvatar(
+                                url = avatarUrl,
                                 modifier = Modifier.size(56.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
                                     .border(AppSpacing.Border.Thin, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), CircleShape)
                                     .clickable { showAvatarPicker = true },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (avatarUrl.isNotBlank()) {
-                                    AsyncImage(model = avatarUrl, contentDescription = null, modifier = Modifier.size(56.dp).clip(CircleShape), contentScale = ContentScale.Crop)
-                                } else {
+                                fallbackContent = {
                                     Icon(Icons.Rounded.Person, null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f))
                                 }
-                            }
+                            )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("啾信头像", style = AppTypography.TitleSmall, fontWeight = FontWeight.Medium)
                                 Text(text = if (avatarUrl.isNotBlank()) "已选择头像" else "点击选择舰娘头像或上传图片", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -306,17 +308,13 @@ fun JiuxinConfigScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
                         ) {
-                            if (voiceShipAvatar.isNotBlank()) {
-                                AsyncImage(
-                                    model = voiceShipAvatar, contentDescription = null,
-                                    modifier = Modifier.size(40.dp).clip(CircleShape),
-                                    contentScale = ContentScale.Crop
-                                )
-                            } else {
-                                Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f)), contentAlignment = Alignment.Center) {
+                            RobustAvatar(
+                                url = voiceShipAvatar,
+                                modifier = Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.3f)),
+                                fallbackContent = {
                                     Icon(Icons.Rounded.SmartToy, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.tertiary)
                                 }
-                            }
+                            )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("语音舰娘", style = AppTypography.TitleSmall, fontWeight = FontWeight.Medium)
                                 Text(
@@ -367,7 +365,11 @@ fun JiuxinConfigScreen(
             onDismiss = { showVoiceShipPicker = false },
             onShipSelected = { ship ->
                 viewModel.saveVoiceShipName(ship.name)
-                viewModel.saveVoiceShipAvatar(ship.avatarUrl)
+                // 选中语音舰娘时，复制 asset 到内部存储，确保 file:// 路径可靠加载
+                scope.launch {
+                    val reliableAvatar = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl)
+                    viewModel.saveVoiceShipAvatar(reliableAvatar)
+                }
                 showVoiceShipPicker = false
             }
         )
@@ -380,7 +382,18 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.GetContent()) { uri: Uri? -> uri?.let { try { context.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) { }; onAvatarSelected(it.toString()) } }
+    val scope = rememberCoroutineScope()
+    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                // 复制到内部存储，避免 content:// URI 重启后丢失权限
+                val filePath = viewModel.copyAvatarToInternalStorage(it)
+                if (filePath != null) {
+                    onAvatarSelected(filePath)
+                }
+            }
+        }
+    }
     var avatarTab by remember { mutableStateOf(0) }
 
     BlyyBottomSheet(onDismissRequest = onDismiss) {
@@ -399,9 +412,19 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     items(filteredShips, key = { it.name }) { ship ->
-                        val isSelected = ship.avatarUrl == currentAvatarUrl
+                        // 优先使用本地高清头像，匹配不到回退网络 URL
+                        val effectiveAvatar = remember(ship.name, ship.avatarUrl) {
+                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.avatarUrl)
+                        }
+                        val isSelected = effectiveAvatar == currentAvatarUrl
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), CircleShape).clickable { onAvatarSelected(ship.avatarUrl) }, contentAlignment = Alignment.Center) { AsyncImage(model = ship.avatarUrl, contentDescription = null, modifier = Modifier.size(52.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
+                            Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), CircleShape).clickable {
+                                // 选中舰娘头像时，复制 asset 到内部存储，确保 file:// 路径可靠加载
+                                scope.launch {
+                                    val reliablePath = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl)
+                                    onAvatarSelected(reliablePath)
+                                }
+                            }, contentAlignment = Alignment.Center) { RobustAvatar(url = effectiveAvatar, modifier = Modifier.size(52.dp).clip(CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }) }
                             Text(text = ship.name, style = AppTypography.LabelSmall.copy(fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp))
                         }
                     }
@@ -409,10 +432,10 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
             } else {
                 Column(modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     if (currentAvatarUrl.isNotBlank()) {
-                        Box(modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), CircleShape), contentAlignment = Alignment.Center) { AsyncImage(model = currentAvatarUrl, contentDescription = null, modifier = Modifier.size(120.dp).clip(CircleShape), contentScale = ContentScale.Crop) }
+                        RobustAvatar(url = currentAvatarUrl, modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)) })
                         Spacer(modifier = Modifier.height(AppSpacing.Md)); Text("当前头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(modifier = Modifier.height(AppSpacing.Lg))
                     }
-                    BlyyPrimaryButton(text = "从相册选择图片", onClick = { imagePickerLauncher.launch("image/*") }, icon = Icons.Rounded.AddPhotoAlternate, modifier = Modifier.fillMaxWidth(0.7f))
+                    BlyyPrimaryButton(text = "从相册选择图片", onClick = { imagePickerLauncher.launch(arrayOf("image/*")) }, icon = Icons.Rounded.AddPhotoAlternate, modifier = Modifier.fillMaxWidth(0.7f))
                     Spacer(modifier = Modifier.height(AppSpacing.Md))
                     Text("支持 JPG、PNG 格式，建议使用正方形图片", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
                     if (currentAvatarUrl.isNotBlank()) { Spacer(modifier = Modifier.height(AppSpacing.Lg)); Text("清除头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.clickable { onAvatarSelected("") }) }
@@ -432,6 +455,7 @@ private fun VoiceShipPickerSheet(
 ) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().height(480.dp)) {
@@ -476,8 +500,12 @@ private fun VoiceShipPickerSheet(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 items(filteredShips, key = { it.name }) { ship ->
-                    val isSelected = ship.name == currentShipName
-                    Row(
+                        val isSelected = ship.name == currentShipName
+                        // 优先使用本地高清头像
+                        val effectiveAvatar = remember(ship.name, ship.avatarUrl) {
+                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.avatarUrl)
+                        }
+                        Row(
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(AppSpacing.Corner.Md))
                             .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color.Transparent)
                             .clickable { onShipSelected(ship) }
@@ -485,11 +513,13 @@ private fun VoiceShipPickerSheet(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
                     ) {
-                        AsyncImage(
-                            model = ship.avatarUrl, contentDescription = null,
+                        RobustAvatar(
+                            url = effectiveAvatar,
                             modifier = Modifier.size(40.dp).clip(CircleShape)
                                 .border(if (isSelected) 2.dp else 1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), CircleShape),
-                            contentScale = ContentScale.Crop
+                            fallbackContent = {
+                                Icon(Icons.Rounded.SmartToy, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(text = ship.name, style = AppTypography.TitleSmall, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium, color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)

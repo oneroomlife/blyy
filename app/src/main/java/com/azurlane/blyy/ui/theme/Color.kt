@@ -304,7 +304,7 @@ object AppColors {
         val Pink: Color = Color(0xFFFF69B4)
         val PinkLight: Color = Color(0xFFFFB6C1)
         val PinkDark: Color = Color(0xFFFF1493)
-        val Green: Color = Color(0xFF4CAF50)
+        val Green: Color = Color(0xFF2E7D32)
     }
 
     object NeutralLight {

@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.EnterTransition
@@ -29,10 +30,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -109,6 +107,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -143,7 +142,6 @@ import com.azurlane.blyy.ui.screens.StudentGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
 import com.azurlane.blyy.ui.screens.AboutScreen
 import com.azurlane.blyy.ui.screens.AssistantScreen
-import com.azurlane.blyy.ui.screens.Live2DScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
@@ -170,7 +168,6 @@ import com.azurlane.blyy.SecretaryOverlayService
 import com.azurlane.blyy.util.AppUpdateChecker
 import com.azurlane.blyy.util.UpdateInfo
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.GlobalScope
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -223,9 +220,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 标准 edge-to-edge：系统栏透明覆盖在内容之上，由 WindowInsets 处理避让
         enableEdgeToEdge()
-        
-        hideSystemBars()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -249,27 +245,35 @@ class MainActivity : ComponentActivity() {
             val dynamicColorEnabled by playerSettings.dynamicColorEnabled.collectAsStateWithLifecycle(
                 initialValue = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
             )
+            val hideStatusBar by playerSettings.hideStatusBar.collectAsStateWithLifecycle(
+                initialValue = true
+            )
             val systemDark = isSystemInDarkTheme()
             BlyyTheme(
                 darkTheme = if (forceDarkTheme) true else systemDark,
                 uiStyle = uiStyle,
                 dynamicColor = dynamicColorEnabled
             ) {
-                KeepSystemBarsHidden()
+                // 沉浸式状态栏：用现代 WindowInsetsControllerCompat 实现 sticky immersive
+                // 用户可从屏幕顶部下滑临时呼出状态栏，松手后自动隐藏
+                DisposableEffect(hideStatusBar) {
+                    val window = this@MainActivity.window
+                    val controller = WindowCompat.getInsetsController(window, window.decorView)
+                    if (hideStatusBar) {
+                        controller.hide(WindowInsetsCompat.Type.statusBars())
+                        controller.systemBarsBehavior =
+                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    } else {
+                        controller.show(WindowInsetsCompat.Type.statusBars())
+                    }
+                    onDispose { }
+                }
                 // 等待UI样式加载完成后再渲染，避免旧UI模式下新UI短暂闪现
                 if (uiStyleReady) {
                     AppContent()
                 }
             }
         }
-    }
-    
-    private fun hideSystemBars() {
-        val window = this.window
-        val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.hide(WindowInsetsCompat.Type.statusBars())
-        controller.hide(WindowInsetsCompat.Type.navigationBars())
-        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
     /**
@@ -295,8 +299,8 @@ class MainActivity : ComponentActivity() {
         if (OverlayPermissionHelper.hasOverlayPermission(this)) {
             Log.d("SecretaryOverlay", "startOverlayService: 权限已授予，启动服务")
             
-            // 保存状态
-            GlobalScope.launch {
+            // 保存状态（绑定 Activity 生命周期，避免 GlobalScope 泄漏）
+            lifecycleScope.launch {
                 playerSettings.setSecretaryOverlayEnabled(true)
             }
             
@@ -320,8 +324,8 @@ class MainActivity : ComponentActivity() {
      * 停止系统悬浮窗服务
      */
     fun stopOverlayService() {
-        // 保存状态
-        GlobalScope.launch {
+        // 保存状态（绑定 Activity 生命周期，避免 GlobalScope 泄漏）
+        lifecycleScope.launch {
             playerSettings.setSecretaryOverlayEnabled(false)
         }
         
@@ -403,12 +407,12 @@ fun AppContent() {
 
     val bottomBarOffset by animateFloatAsState(
         targetValue = if (showBottomBar && isBottomBarVisible) 0f else 300f,
-        animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow),
+        animationSpec = AppAnimation.Springs.Gentle,
         label = "bottomBarOffset"
     )
     val bottomBarAlpha by animateFloatAsState(
         targetValue = if (showBottomBar && isBottomBarVisible) 1f else 0f,
-        animationSpec = tween(durationMillis = 200),
+        animationSpec = tween(durationMillis = AppAnimation.Duration.Fast, easing = AppAnimation.Easings.Standard),
         label = "bottomBarAlpha"
     )
 
@@ -472,10 +476,23 @@ fun AppContent() {
                     currentRoute = currentDestination?.route,
                     onNavigate = { route ->
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        // 先关闭抽屉，等待关闭动画完成后再导航，避免菜单与页面切换动画冲突
-                        scope.launch {
-                            drawerState.close()
-                            navController.navigate(route) { launchSingleTop = true }
+                        // Live2D 改为直接跳转浏览器查看，避免应用内 WebView 的 WAF 拦截等问题
+                        if (route == "live2d") {
+                            scope.launch { drawerState.close() }
+                            try {
+                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://l2d.su/cn/"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(browserIntent)
+                            } catch (e: Exception) {
+                                Log.e("MainActivity", "No browser available to open Live2D", e)
+                                Toast.makeText(context, "未找到可用的浏览器应用", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            // 先关闭抽屉，等待关闭动画完成后再导航，避免菜单与页面切换动画冲突
+                            scope.launch {
+                                drawerState.close()
+                                navController.navigate(route) { launchSingleTop = true }
+                            }
                         }
                     },
                     onClose = { 
@@ -494,15 +511,19 @@ fun AppContent() {
                     startDestination = Screen.Home.route,
                     modifier = Modifier.fillMaxSize(),
                     enterTransition = {
+                        // Material Motion — Container Transform 风格：横向滑入 + 淡入
+                        // 注：slideInHorizontally 需 FiniteAnimationSpec<IntOffset>，
+                        // AppAnimation.Springs.Gentle 是 spring<Float> 无法直接复用，
+                        // 故内联 spring 与 Gentle 同参（dampingRatio=0.9, stiffness=MediumLow）
                         slideInHorizontally(
                             initialOffsetX = { it / 3 },
                             animationSpec = spring(
-                                dampingRatio = 0.85f,
+                                dampingRatio = 0.9f,
                                 stiffness = Spring.StiffnessMediumLow
                             )
                         ) + fadeIn(
                             tween(
-                                durationMillis = 300,
+                                durationMillis = AppAnimation.Duration.Normal,
                                 delayMillis = 50,
                                 easing = AppAnimation.Easings.EmphasizedDecelerate
                             )
@@ -512,12 +533,12 @@ fun AppContent() {
                         slideOutHorizontally(
                             targetOffsetX = { -it / 5 },
                             animationSpec = tween(
-                                durationMillis = 300,
+                                durationMillis = AppAnimation.Duration.Normal,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         ) + fadeOut(
                             tween(
-                                durationMillis = 200,
+                                durationMillis = AppAnimation.Duration.Fast,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         )
@@ -526,12 +547,12 @@ fun AppContent() {
                         slideInHorizontally(
                             initialOffsetX = { -it / 5 },
                             animationSpec = spring(
-                                dampingRatio = 0.85f,
+                                dampingRatio = 0.9f,
                                 stiffness = Spring.StiffnessMediumLow
                             )
                         ) + fadeIn(
                             tween(
-                                durationMillis = 300,
+                                durationMillis = AppAnimation.Duration.Normal,
                                 delayMillis = 50,
                                 easing = AppAnimation.Easings.EmphasizedDecelerate
                             )
@@ -541,12 +562,12 @@ fun AppContent() {
                         slideOutHorizontally(
                             targetOffsetX = { it / 3 },
                             animationSpec = tween(
-                                durationMillis = 300,
+                                durationMillis = AppAnimation.Duration.Normal,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         ) + fadeOut(
                             tween(
-                                durationMillis = 200,
+                                durationMillis = AppAnimation.Duration.Fast,
                                 easing = AppAnimation.Easings.EmphasizedAccelerate
                             )
                         )
@@ -768,11 +789,6 @@ fun AppContent() {
                             onBack = { navController.popBackStack() },
                             onNavigateToAssistantConfig = { navController.navigate("assistant_config") },
                             onNavigateToJiuxinConfig = { navController.navigate("jiuxin_config") }
-                        )
-                    }
-                    composable("live2d") {
-                        Live2DScreen(
-                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable("assistant") {
@@ -1029,36 +1045,42 @@ private fun RowScope.ModernNavigationItem(
     val isWatch = isWatchScreen()
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
     val accentColor = MaterialTheme.colorScheme.primary
+    val haptic = LocalHapticFeedback.current
 
+    // 选中态缩放 — 统一 AppAnimation token（Snappy 弹性）
     val iconScale by animateFloatAsState(
         targetValue = if (isSelected) 1.15f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
+        animationSpec = AppAnimation.Specs.scale(),
         label = "IconScale"
     )
 
+    // 指示器淡入淡出 — 统一 normal token
     val indicatorAlpha by animateFloatAsState(
         targetValue = if (isSelected) 1f else 0f,
-        animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
+        animationSpec = AppAnimation.Specs.normal(),
         label = "IndicatorAlpha"
     )
 
-    // 选中态光晕呼吸 — 让选中项"活"起来
-    val infiniteTransition = rememberInfiniteTransition(label = "navItemGlow")
-    val glowPulse by infiniteTransition.animateFloat(
-        initialValue = 0.7f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1800, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "glowPulse"
-    )
+    // 选中态光晕呼吸 — gating：仅在 isSelected=true 时挂载 rememberInfiniteTransition，
+    // 未选中项移出组合树，零 CPU/GPU 开销（4 个 tab 仅 1 个跑无限动画，省 75% 开销）。
+    // 两个分支均返回 State<Float>，由 `by` 委托读取。
+    val glowPulse by if (isSelected) {
+        rememberInfiniteTransition(label = "navItemGlow").animateFloat(
+            initialValue = 0.72f,
+            targetValue = 1f,
+            animationSpec = AppAnimation.Repeating.glow(duration = 2000),
+            label = "glowPulse"
+        )
+    } else {
+        remember { mutableStateOf(1f) }
+    }
 
     Surface(
-        onClick = onClick,
+        onClick = {
+            // 轻量触觉反馈 — 商业级导航手感
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
         modifier = Modifier
             .weight(1f)
             .fillMaxWidth(),
@@ -1081,8 +1103,8 @@ private fun RowScope.ModernNavigationItem(
                                 .background(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
-                                            accentColor.copy(alpha = 0.22f * indicatorAlpha * glowPulse),
-                                            accentColor.copy(alpha = 0.08f * indicatorAlpha),
+                                            accentColor.copy(alpha = 0.24f * indicatorAlpha * glowPulse),
+                                            accentColor.copy(alpha = 0.10f * indicatorAlpha),
                                             Color.Transparent
                                         )
                                     ),
@@ -1092,9 +1114,9 @@ private fun RowScope.ModernNavigationItem(
                                     width = 1.dp,
                                     brush = Brush.sweepGradient(
                                         colors = listOf(
-                                            accentColor.copy(alpha = 0.6f * indicatorAlpha),
-                                            AppColors.Accent.Gold.copy(alpha = 0.25f * indicatorAlpha),
-                                            accentColor.copy(alpha = 0.3f * indicatorAlpha)
+                                            accentColor.copy(alpha = 0.65f * indicatorAlpha * glowPulse),
+                                            AppColors.Accent.Gold.copy(alpha = 0.28f * indicatorAlpha),
+                                            accentColor.copy(alpha = 0.32f * indicatorAlpha)
                                         )
                                     ),
                                     shape = CircleShape
@@ -1133,8 +1155,10 @@ private fun RowScope.ModernNavigationItem(
             // 文字与指示器使用 AnimatedVisibility 平滑出入，避免布局跳变
             AnimatedVisibility(
                 visible = isSelected,
-                enter = fadeIn(tween(200)) + expandVertically(tween(250)),
-                exit = fadeOut(tween(150)) + shrinkVertically(tween(200))
+                enter = fadeIn(tween(AppAnimation.Duration.Fast)) +
+                    expandVertically(tween(AppAnimation.Duration.Normal)),
+                exit = fadeOut(tween(AppAnimation.Duration.Instant)) +
+                    shrinkVertically(tween(AppAnimation.Duration.Fast))
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -1151,7 +1175,7 @@ private fun RowScope.ModernNavigationItem(
 
                     Spacer(modifier = Modifier.height(2.dp))
 
-                    // 选中指示条 — 加宽并带光晕
+                    // 选中指示条 — 呼吸感与图标光晕同步，增强"活"的视觉律动
                     Box(
                         modifier = Modifier
                             .padding(horizontal = AppSpacing.Sm)
@@ -1163,9 +1187,9 @@ private fun RowScope.ModernNavigationItem(
                                     Brush.horizontalGradient(
                                         colors = listOf(
                                             Color.Transparent,
-                                            accentColor,
-                                            AppColors.Accent.Gold.copy(alpha = 0.8f),
-                                            accentColor,
+                                            accentColor.copy(alpha = glowPulse),
+                                            AppColors.Accent.Gold.copy(alpha = 0.8f * glowPulse),
+                                            accentColor.copy(alpha = glowPulse),
                                             Color.Transparent
                                         )
                                     )
@@ -1399,7 +1423,7 @@ private fun ModernDrawerSheet(
                     IconButton(
                         onClick = onClose,
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(48.dp) // 触摸目标 ≥48dp（WCAG/Material 可访问性）
                             .then(
                                 if (isCommandCenter) {
                                     Modifier
@@ -1532,10 +1556,7 @@ private fun ModernDrawerItem(
 ) {
     val scale by animateFloatAsState(
         targetValue = if (isSelected) 1.02f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
+        animationSpec = AppAnimation.Specs.scale(),
         label = "itemScale"
     )
     val isWatch = isWatchScreen()
@@ -1553,7 +1574,7 @@ private fun ModernDrawerItem(
         } else {
             Color.Transparent
         },
-        shadowElevation = if (isSelected) 4.dp else 0.dp
+        shadowElevation = if (isSelected) AppElevation.Level3 else AppElevation.Level0
     ) {
         Row(
             modifier = Modifier
@@ -1669,23 +1690,18 @@ private fun UpdateAvailableDialog(
     val driveLink = updateInfo.driveLink
 
     // 图标呼吸脉冲动画 — 吸引注意力，让更新提示更有"活力"
+    // 共享同一 infiniteTransition 与 glow token，两个 animateFloat 同步呼吸
     val infiniteTransition = rememberInfiniteTransition(label = "updateIconPulse")
     val pulseAlpha by infiniteTransition.animateFloat(
         initialValue = if (isDark) 0.2f else 0.12f,
         targetValue = if (isDark) 0.5f else 0.35f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 1200),
         label = "pulseAlpha"
     )
     val iconScale by infiniteTransition.animateFloat(
         initialValue = 0.95f,
         targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 1200),
         label = "iconScale"
     )
 

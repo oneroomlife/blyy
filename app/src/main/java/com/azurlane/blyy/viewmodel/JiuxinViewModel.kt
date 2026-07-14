@@ -3,6 +3,7 @@ package com.azurlane.blyy.viewmodel
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -18,6 +19,7 @@ import com.azurlane.blyy.data.model.VoiceTagMapping
 import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.data.model.StickerResource
+import com.azurlane.blyy.util.LocalAvatarResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +37,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -310,6 +313,94 @@ class JiuxinViewModel @Inject constructor(
     fun saveJiuxinName(name: String) { viewModelScope.launch { settings.setAiName(name) } }
     fun saveAvatarUrl(url: String) {
         viewModelScope.launch { settings.setAiAvatarUrl(normalizeUrl(url)) }
+    }
+
+    /**
+     * 将相册选择的 content:// URI 图片复制到应用内部存储，返回 file:// 路径。
+     *
+     * 解决 content:// URI 在应用重启后可能丢失读取权限的问题：
+     * - 某些 ContentProvider 不支持 takePersistableUriPermission
+     * - 部分 ROM 的相册应用返回的 URI 带有临时 token，会话结束即失效
+     *
+     * 复制到 filesDir/avatars/ 目录后，file:// 路径始终可靠可用。
+     */
+    suspend fun copyAvatarToInternalStorage(uri: Uri): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val avatarDir = File(context.filesDir, "avatars").apply { mkdirs() }
+                val destFile = File(avatarDir, "avatar_${System.currentTimeMillis()}.jpg")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                } ?: run {
+                    Log.e(TAG, "openInputStream returned null for $uri")
+                    return@withContext null
+                }
+                "file://${destFile.absolutePath}"
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to copy avatar to internal storage", e)
+                null
+            }
+        }
+    }
+
+    /**
+     * 解析舰娘头像并复制到内部存储，返回可靠的 file:// 路径。
+     *
+     * 解决 file:///android_asset/ URI 在某些设备/Coil 版本上加载失败的问题：
+     * - 将 asset 文件复制到 filesDir/avatars/ 目录
+     * - 返回的 file:// 路径可被 Coil 的 FileUriFetcher 稳定加载
+     * - 若 LocalAvatarResolver 未匹配到本地资源，回退到网络 URL
+     *
+     * @param shipName 舰娘名称
+     * @param networkUrl 网络头像 URL（作为回退）
+     * @return 复合格式头像 URL（primary||fallback），本地文件优先，网络 URL 作为回退
+     */
+    suspend fun resolveAndCopyShipAvatar(shipName: String, networkUrl: String): String {
+        val normalizedNetworkUrl = normalizeUrl(networkUrl)
+        val assetUri = LocalAvatarResolver.resolve(context, shipName)
+        if (assetUri == null) {
+            return normalizedNetworkUrl
+        }
+
+        // 从 URI 提取 asset 路径：Uri.Builder().scheme("file").path("/android_asset/xxx")
+        // 生成的字符串为 "file:/android_asset/xxx"（单斜杠），需用 Uri.parse().path 获取解码路径
+        val uriPath = Uri.parse(assetUri).path
+        val assetPath = uriPath?.removePrefix("/android_asset/")
+        if (assetPath.isNullOrBlank()) {
+            Log.e(TAG, "Cannot extract asset path from: $assetUri")
+            return normalizedNetworkUrl
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val avatarDir = File(context.filesDir, "avatars").apply { mkdirs() }
+                // 用舰娘名作为文件名，避免重复复制
+                val safeFileName = shipName.replace(Regex("[^\\w.·\\-()μ★]"), "_")
+                val destFile = File(avatarDir, "ship_$safeFileName.jpg")
+
+                // 如果已复制过且文件存在，直接复用
+                if (!destFile.exists()) {
+                    context.assets.open(assetPath).use { input ->
+                        destFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                }
+                val localPath = "file://${destFile.absolutePath}"
+                // 复合格式：本地文件优先，网络 URL 作为回退
+                if (normalizedNetworkUrl.isNotBlank() && normalizedNetworkUrl != localPath) {
+                    "$localPath||$normalizedNetworkUrl"
+                } else {
+                    localPath
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to copy ship avatar from assets: $assetPath", e)
+                // 复制失败时直接使用网络 URL
+                normalizedNetworkUrl
+            }
+        }
     }
     fun saveVoiceEnabled(enabled: Boolean) { viewModelScope.launch { settings.setAiVoiceEnabled(enabled) } }
     fun saveVoiceRandomChance(chance: Float) { viewModelScope.launch { settings.setAiVoiceRandomChance(chance) } }
@@ -1164,13 +1255,27 @@ class JiuxinViewModel @Inject constructor(
 
     /**
      * 规范化 URL：处理协议相对 URL (//xxx)、缺少协议等情况
-     * 注意：content:// 和 file:// 开头的本地 URI 不做任何处理
+     * 注意：content:// 和 file: 开头的本地 URI 不做任何处理
+     *
+     * file: URI 有两种形式：
+     * - file:///path（三斜杠，有 authority）— 标准 file URI
+     * - file:/path（单斜杠，无 authority）— Uri.Builder().scheme("file").path(...) 生成
+     * 两者都是本地文件 URI，不应被当作网络 URL 处理。
+     *
+     * 复合格式 (primary||fallback) 的两部分各自独立规范化。
      */
     private fun normalizeUrl(url: String): String {
         val trimmed = url.trim()
         if (trimmed.isBlank()) return ""
-        // 本地 content:// URI（相册选择等）和 file:// URI 不做处理
-        if (trimmed.startsWith("content://") || trimmed.startsWith("file://")) return trimmed
+        // 复合格式：分别规范化 primary 和 fallback
+        val delimiterIdx = trimmed.indexOf("||")
+        if (delimiterIdx >= 0) {
+            val primary = normalizeUrl(trimmed.substring(0, delimiterIdx))
+            val fallback = normalizeUrl(trimmed.substring(delimiterIdx + 2))
+            return if (fallback.isBlank()) primary else "$primary||$fallback"
+        }
+        // 本地 content:// URI（相册选择等）和 file: URI 不做处理
+        if (trimmed.startsWith("content://") || trimmed.startsWith("file:")) return trimmed
         if (trimmed.startsWith("//")) return "https:$trimmed"
         if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://") && trimmed.contains(".")) {
             return "https://$trimmed"

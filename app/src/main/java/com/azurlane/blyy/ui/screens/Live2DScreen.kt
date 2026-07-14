@@ -5,8 +5,10 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.util.Log
@@ -57,6 +59,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.rounded.Adb
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.StayCurrentPortrait
@@ -171,17 +174,18 @@ private const val TAG = "Live2DScreen"
  * OkHttp 使用完全独立的 HTTP/1.1 实现，chunked 解码更健壮，可绕过 HttpURLConnection 的 bug。
  *
  * 重试使用 OkHttp 而非 HttpURLConnection，显著提升大 .moc3 文件加载成功率。
+ *
+ * 【P0 修复 2026-07-07】原代码用 java.time.Duration 重载（需 API 26+），API 24-25 走
+ * TODO("VERSION.SDK_INT < O") 分支抛 NotImplementedError 闪退。改用 TimeUnit 重载，
+ * 全 API 级别可用。connectTimeout 对齐 Fix P 约定（8s 快速失败），readTimeout 保留 60s
+ * 以容纳大 .moc3 文件（5.4MB jinshi_2.moc3）的完整读取。
  */
 private val zstdRetryClient: OkHttpClient by lazy {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        OkHttpClient.Builder()
-            .connectTimeout(java.time.Duration.ofSeconds(15))
-            .readTimeout(java.time.Duration.ofSeconds(60))
-            .retryOnConnectionFailure(true)
-            .build()
-    } else {
-        TODO("VERSION.SDK_INT < O")
-    }
+    OkHttpClient.Builder()
+        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
 }
 
 /**
@@ -263,12 +267,14 @@ fun Live2DScreen(
 
     // 页面加载完成后延迟切换到 Ready，给 WebGL canvas 时间渲染首帧
     LaunchedEffect(isContentReady) {
-        if (isContentReady && loadPhase == Live2DLoadPhase.Loading) {
+        if (isContentReady && loadPhase != Live2DLoadPhase.SslWarning && loadPhase != Live2DLoadPhase.Ready) {
+            // 允许从 Error 恢复：瞬态错误后页面实际加载完成
             // 确保进度条达到 100% 并停留片刻
             loadProgress = COMPLETE_PROGRESS
             delay(200L)
             loadPhase = Live2DLoadPhase.Ready
-            viewModel.updateLoadState { it.copy(phase = Live2DLoadPhase.Ready, progress = COMPLETE_PROGRESS) }
+            errorMessage = ""
+            viewModel.updateLoadState { it.copy(phase = Live2DLoadPhase.Ready, progress = COMPLETE_PROGRESS, errorMessage = "") }
         }
     }
 
@@ -332,7 +338,8 @@ fun Live2DScreen(
                     viewModel.updateLoadState { it.copy(progress = loadProgress) }
                 },
                 onPageVisible = {
-                    if (loadPhase == Live2DLoadPhase.Loading) {
+                    if (loadPhase == Live2DLoadPhase.Loading || loadPhase == Live2DLoadPhase.Error) {
+                        // 允许从 Error 恢复：瞬态网络错误后页面实际加载成功
                         loadProgress = maxOf(loadProgress, VISIBLE_PAGE_PROGRESS)
                         isContentReady = true
                         viewModel.updateLoadState {
@@ -341,7 +348,8 @@ fun Live2DScreen(
                     }
                 },
                 onLoadFinished = {
-                    if (loadPhase != Live2DLoadPhase.Error && loadPhase != Live2DLoadPhase.SslWarning) {
+                    if (loadPhase != Live2DLoadPhase.SslWarning) {
+                        // 允许从 Error 恢复：延迟错误报告窗口外页面加载完成
                         loadProgress = COMPLETE_PROGRESS
                         isContentReady = true
                         viewModel.updateLoadState {
@@ -491,6 +499,16 @@ fun Live2DScreen(
                             val report = viewModel.generateErrorReport(context)
                             copyToClipboard(context, "Live2D错误报告", report)
                             Toast.makeText(context, "错误信息已复制", Toast.LENGTH_SHORT).show()
+                        },
+                        onOpenInBrowser = {
+                            try {
+                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(LIVE2D_URL))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(browserIntent)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "No browser available to open $LIVE2D_URL", e)
+                                Toast.makeText(context, "未找到可用的浏览器应用", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     )
                 }
@@ -794,6 +812,16 @@ private fun WebView.configureForLive2D(
     // 导致状态机与卡住检测 watchdog 不同步（曾表现为"stuck at 100%"）。
     var pendingRetry = false
 
+    // ── 瞬态网络错误延迟报告机制 ──
+    // 主帧 onReceivedError 可能因瞬态 DNS/网络抖动触发（如 ERR_HOST_LOOKUP），
+    // 但 Chromium 会自动恢复并继续加载。延迟 1.5s 报告错误，给恢复留出窗口；
+    // 若 onPageCommitVisible/onPageFinished 在此期间触发，取消待处理错误。
+    var pendingError: String? = null
+    val pendingErrorRunnable = Runnable {
+        pendingError?.let { onLoadFailedState.value(it) }
+        pendingError = null
+    }
+
     webViewClient = object : WebViewClient() {
 
         /**
@@ -853,6 +881,23 @@ private fun WebView.configureForLive2D(
                     ),
                     java.io.ByteArrayInputStream(ByteArray(0))
                 )
+            }
+
+            // 【核心修复】：主帧请求交由 Chromium 原生网络栈处理，绝对不拦截！
+            //
+            // 根因：HttpURLConnection 使用 Java TLS 指纹（JA3/JA4），l2d.su 的 WAF 据此判定为
+            // 非浏览器 → 返回 403。旧代码拦截主帧后遇到 403 return null → Chromium 重发请求，
+            // 但 Chromium 重发的请求可能丢失 loadUrl 中 X-Requested-With="" 覆盖 → WAF 再次 403
+            // → net::ERR_HTTP_RESPONSE_CODE_FAILURE。
+            //
+            // 交由 Chromium 原生处理的三大优势：
+            // 1. 真实浏览器 TLS 指纹 — 通过 WAF JA3/JA4 校验
+            // 2. loadUrl(url, MAIN_REQUEST_HEADERS) 的 X-Requested-With="" 覆盖对主帧导航生效
+            // 3. settings.userAgentString 已设为纯净 Chrome Mobile UA
+            //
+            // 子资源请求仍由下方 HttpURLConnection 拦截，处理 ZSTD 解压 / CDN 熔断等逻辑。
+            if (request.isForMainFrame) {
+                return null
             }
 
             return try {
@@ -1035,18 +1080,9 @@ private fun WebView.configureForLive2D(
                 }
 
                 // 【防线 4：子资源 403 不再返回 null，避免内核接管！】
-                // 仅主帧 403 返回 null 触发 onReceivedHttpError → 自动重试流程；
-                // 子资源 403 必须自行构造 WebResourceResponse 返回，禁止内核接管
+                // 主帧请求已在入口处交由 Chromium 原生处理（见 isForMainFrame 早退），
+                // 此处仅需处理子资源 403：必须自行构造 WebResourceResponse 返回，禁止内核接管
                 // （否则内核发出 zstd → static.l2d.su 返回 zstd 二进制 → JSON.parse 崩溃）
-                if (responseCode == 403 && request.isForMainFrame) {
-                    Log.e(TAG, "【主帧 403 交回原生触发重试】: $urlStr")
-                    onRequestLogState.value(
-                        "intercept-403-main",
-                        "主帧 403，交回原生处理以触发重试",
-                        mapOf("url" to urlStr, "statusCode" to "403", "mainFrame" to "true")
-                    )
-                    return null
-                }
 
                 // 同步服务器 Cookie（如 cf_clearance）
                 connection.headerFields?.get("Set-Cookie")?.forEach { cookieStr ->
@@ -1535,6 +1571,9 @@ private fun WebView.configureForLive2D(
         override fun onPageCommitVisible(view: WebView?, url: String?) {
             // 重试期间忽略 Cloudflare 拦截页的首帧可见信号
             if (url.isWebPageUrl() && !pendingRetry) {
+                // 页面首帧可见 → 取消任何待处理的瞬态错误报告
+                view?.removeCallbacks(pendingErrorRunnable)
+                pendingError = null
                 onRequestLogState.value("page-visible", "页面首帧可见", mapOf("url" to (url ?: "")))
                 onPageVisibleState.value()
             }
@@ -1570,7 +1609,9 @@ private fun WebView.configureForLive2D(
                         onLoadFailedState.value("Cloudflare 持续拦截，请切换网络后重试")
                     }
                 } else {
-                    // 真实页面加载完成
+                    // 真实页面加载完成 → 取消任何待处理的瞬态错误报告
+                    view?.removeCallbacks(pendingErrorRunnable)
+                    pendingError = null
                     onRequestLogState.value("page-finished", "页面加载完成", mapOf("url" to (url ?: "")))
                     onLoadFinishedState.value()
 
@@ -1635,7 +1676,11 @@ private fun WebView.configureForLive2D(
                         "description" to (error?.description?.toString() ?: "")
                     )
                 )
-                onLoadFailedState.value(errMsg)
+                // 延迟报告错误：瞬态 DNS/网络抖动（如 ERR_HOST_LOOKUP）后 Chromium 常自动恢复。
+                // 若 1.5s 内 onPageCommitVisible/onPageFinished 触发，取消错误报告。
+                pendingError = errMsg
+                view?.removeCallbacks(pendingErrorRunnable)
+                view?.postDelayed(pendingErrorRunnable, 1500)
             }
         }
 
@@ -2059,7 +2104,8 @@ private fun LoadingOverlay(progress: Int) {
 private fun ErrorOverlay(
     message: String,
     onRetry: () -> Unit,
-    onCopyError: () -> Unit
+    onCopyError: () -> Unit,
+    onOpenInBrowser: () -> Unit
 ) {
     val isDark = LocalIsDark.current
     val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
@@ -2095,6 +2141,21 @@ private fun ErrorOverlay(
                     }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                onClick = onOpenInBrowser,
+                shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+                color = MaterialTheme.colorScheme.secondaryContainer
+            ) {
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Rounded.OpenInBrowser, null, Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("在浏览器中打开", style = AppTypography.ButtonText, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                }
+            }
         }
     }
 }
@@ -2114,7 +2175,8 @@ private fun SslWarningOverlay(
 ) {
     val isDark = LocalIsDark.current
     val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
-    val warningColor = Color(0xFFFF9800)
+    // 浅色模式用更深的橙色确保 WCAG AA 对比度（Orange 500 在浅背景仅 ~2:1，Orange 900 达 ~5:1）
+    val warningColor = if (isDark) Color(0xFFFF9800) else Color(0xFFE65100)
 
     Box(
         modifier = Modifier.fillMaxSize().background(bgColor),

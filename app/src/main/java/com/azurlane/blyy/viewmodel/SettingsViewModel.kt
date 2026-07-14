@@ -51,6 +51,10 @@ class SettingsViewModel @Inject constructor(
             android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
         )
 
+    /** 沉浸式：是否隐藏状态栏，默认开启 */
+    val hideStatusBar: StateFlow<Boolean> = settings.hideStatusBar
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     val autoCheckUpdateEnabled: StateFlow<Boolean> = settings.autoCheckUpdateEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
@@ -82,6 +86,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setDynamicColorEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setDynamicColorEnabled(enabled) }
+    }
+
+    fun setHideStatusBar(hide: Boolean) {
+        viewModelScope.launch { settings.setHideStatusBar(hide) }
     }
 
     fun setAutoCheckUpdateEnabled(enabled: Boolean) {

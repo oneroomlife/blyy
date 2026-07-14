@@ -5,7 +5,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -63,13 +65,13 @@ fun GuessHistoryScreen(
     onNavigateToAssistantConfig: () -> Unit = {},
     viewModel: GuessHistoryViewModel = hiltViewModel()
 ) {
-    val state by viewModel.uiState.collectAsState()
-    val uploadStatuses by viewModel.uploadStatuses.collectAsState()
-    val userUid by viewModel.userUid.collectAsState()
-    val userServer by viewModel.userServer.collectAsState()
-    val configPromptRecord by viewModel.configPromptRecord.collectAsState()
-    val nicknamePromptRecord by viewModel.nicknamePromptRecord.collectAsState()
-    val suggestedNickname by viewModel.suggestedNickname.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val uploadStatuses by viewModel.uploadStatuses.collectAsStateWithLifecycle()
+    val userUid by viewModel.userUid.collectAsStateWithLifecycle()
+    val userServer by viewModel.userServer.collectAsStateWithLifecycle()
+    val configPromptRecord by viewModel.configPromptRecord.collectAsStateWithLifecycle()
+    val nicknamePromptRecord by viewModel.nicknamePromptRecord.collectAsStateWithLifecycle()
+    val suggestedNickname by viewModel.suggestedNickname.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -248,6 +250,7 @@ private fun FilterChipItem(
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HistoryRecordCard(
     record: GuessHistory,
@@ -265,7 +268,10 @@ private fun HistoryRecordCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
         shape = RoundedCornerShape(AppSpacing.Corner.Md),
         colors = CardDefaults.cardColors(
             containerColor = if (isSelected) {

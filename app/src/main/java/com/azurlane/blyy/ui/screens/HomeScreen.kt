@@ -53,6 +53,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.util.UnstableApi
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.ui.components.BlyyTopBar
@@ -146,11 +149,15 @@ fun HomeScreen(
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 val shader = remember { RuntimeShader(FLUID_SHADER) }
+                // 生命周期绑定：后台/非可见时暂停 produceState，避免无效 CPU/GPU 开销
+                val lifecycleOwner = LocalLifecycleOwner.current
                 // Throttle to ~30fps to reduce CPU/GPU load while keeping fluid motion
-                val time by produceState(0f) {
-                    while (true) {
-                        value = System.currentTimeMillis() / 1000f
-                        delay(33)
+                val time by produceState(0f, lifecycleOwner) {
+                    lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        while (true) {
+                            this@produceState.value = System.currentTimeMillis() / 1000f
+                            delay(33)
+                        }
                     }
                 }
                 Canvas(modifier = Modifier.fillMaxSize()) {
@@ -376,19 +383,16 @@ private fun OathAmbientBackground() {
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.06f,
         targetValue = 0.14f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(4000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 4000),
         label = "OathGlow"
     )
 
-    // 次级光晕呼吸（相位偏移）
+    // 次级光晕呼吸（相位偏移 — 保留 delay 防止与主光晕同步）
     val secondaryGlowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.03f,
         targetValue = 0.08f,
         animationSpec = infiniteRepeatable(
-            animation = tween(3500, easing = FastOutSlowInEasing, delayMillis = 1200),
+            animation = tween(3500, delayMillis = 1200, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "OathGlow2"
@@ -399,7 +403,7 @@ private fun OathAmbientBackground() {
         initialValue = 0.02f,
         targetValue = 0.06f,
         animationSpec = infiniteRepeatable(
-            animation = tween(5000, easing = FastOutSlowInEasing, delayMillis = 800),
+            animation = tween(5000, delayMillis = 800, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "GoldGlow"
@@ -499,10 +503,7 @@ private fun OathFloatingParticles() {
     val time by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(60000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
+        animationSpec = AppAnimation.Repeating.rotate(duration = 60000),
         label = "ParticleTime"
     )
 
@@ -596,7 +597,7 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 1. 悬浮艺术装置（图标区）
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800)) + slideInVertically(tween(800, easing = FastOutSlowInEasing)) { 100 }
+                enter = fadeIn(tween(800)) + slideInVertically(tween(800, easing = AppAnimation.Easings.Standard)) { 100 }
             ) {
                 PremiumFloatingArtwork()
             }
@@ -607,7 +608,7 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             val isDark = LocalIsDark.current
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 150)) + slideInVertically(tween(800, delayMillis = 150, easing = FastOutSlowInEasing)) { 50 }
+                enter = fadeIn(tween(800, delayMillis = 150)) + slideInVertically(tween(800, delayMillis = 150, easing = AppAnimation.Easings.Standard)) { 50 }
             ) {
                 Text(
                     text = "后宅空荡荡的...",
@@ -622,7 +623,7 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 3. 描述文本
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 300)) + slideInVertically(tween(800, delayMillis = 300, easing = FastOutSlowInEasing)) { 50 }
+                enter = fadeIn(tween(800, delayMillis = 300)) + slideInVertically(tween(800, delayMillis = 300, easing = AppAnimation.Easings.Standard)) { 50 }
             ) {
                 Text(
                     text = "在船坞中长按舰娘头像可以与其誓约\n构建属于你们的专属避风港",
@@ -638,7 +639,7 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 4. 高级交互按钮
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 450)) + slideInVertically(tween(800, delayMillis = 450, easing = FastOutSlowInEasing)) { 50 }
+                enter = fadeIn(tween(800, delayMillis = 450)) + slideInVertically(tween(800, delayMillis = 450, easing = AppAnimation.Easings.Standard)) { 50 }
             ) {
                 PremiumInteractiveButton(
                     text = "去挑选舰娘",
@@ -657,21 +658,15 @@ private fun PremiumFloatingArtwork() {
     val offsetY by infiniteTransition.animateFloat(
         initialValue = -15f,
         targetValue = 15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(3500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.float(duration = 3500),
         label = "FloatingOffset"
     )
-    
+
     // 外环缓慢旋转（体现机械/罗盘感）
     val rotation by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(20000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
+        animationSpec = AppAnimation.Repeating.rotate(duration = 20000),
         label = "RingRotation"
     )
 
@@ -679,10 +674,7 @@ private fun PremiumFloatingArtwork() {
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.1f,
         targetValue = 0.4f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 2500),
         label = "CoreGlow"
     )
 

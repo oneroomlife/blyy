@@ -6,12 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.EaseInOutSine
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -70,6 +66,7 @@ import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyySecondaryButton
 import com.azurlane.blyy.ui.components.BlyySectionPanel
 import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
@@ -139,10 +136,7 @@ private fun AppHeaderSection(currentVersion: String) {
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.2f,
         targetValue = 0.6f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
         label = "glowAlpha"
     )
 
@@ -366,10 +360,7 @@ private fun CheckUpdateSection(
                 val dotAlpha by infiniteTransition.animateFloat(
                     initialValue = 0.3f,
                     targetValue = 1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(800, easing = EaseInOutSine),
-                        repeatMode = RepeatMode.Reverse
-                    ),
+                    animationSpec = AppAnimation.Repeating.breathing(duration = 800),
                     label = "dotAlpha"
                 )
                 BlyyPanel(

@@ -60,6 +60,10 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import coil.compose.AsyncImage
@@ -74,6 +78,7 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.*
+import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.PlayerUiState
 import com.azurlane.blyy.viewmodel.PlayerViewModel
 import com.azurlane.blyy.viewmodel.PlayMode
@@ -109,9 +114,9 @@ fun VoiceScreen(
     voiceViewModel: VoiceViewModel = hiltViewModel(),
     playerViewModel: PlayerViewModel = hiltViewModel(),
 ) {
-    val voiceState by voiceViewModel.state.collectAsState()
-    val playerState by playerViewModel.uiState.collectAsState()
-    val playbackError by voiceViewModel.playbackError.collectAsState()
+    val voiceState by voiceViewModel.state.collectAsStateWithLifecycle()
+    val playerState by playerViewModel.uiState.collectAsStateWithLifecycle()
+    val playbackError by voiceViewModel.playbackError.collectAsStateWithLifecycle()
 
     VoiceScreenContent(
         voiceState = voiceState,
@@ -145,6 +150,11 @@ fun VoiceScreenContent(
     val clipboardManager = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // 优先使用本地高清头像，匹配不到时回退到网络 URL
+    val effectiveAvatarUrl = remember(voiceState.shipName, voiceState.avatarUrl) {
+        LocalAvatarResolver.resolveOrDefault(context, voiceState.shipName, voiceState.avatarUrl)
+    }
 
     LaunchedEffect(playbackError) {
         playbackError?.let {
@@ -215,8 +225,11 @@ fun VoiceScreenContent(
     
     fun toggleFavorite(voice: VoiceLine) {
         val activeUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
+        // 修复 P0：原代码先调用 toggle 再读 playerState.favorites，StateFlow 是否同步更新
+        // 会导致 isFav 时序颠倒、Toast 提示与实际状态相反。改为先捕获旧状态再翻转。
+        val wasFavorited = activeUrl in playerState.favorites
         playerViewModel.toggleFavorite(activeUrl)
-        val isFav = activeUrl !in playerState.favorites
+        val isFav = !wasFavorited
         Toast.makeText(context, if (isFav) "已收藏并置顶" else "已取消收藏", Toast.LENGTH_SHORT).show()
     }
     
@@ -228,14 +241,14 @@ fun VoiceScreenContent(
                 shipName = voiceState.shipName,
                 scene = voice.scene,
                 dialogue = voice.dialogue,
-                avatarUrl = voiceState.avatarUrl
+                avatarUrl = effectiveAvatarUrl
             )
         )
         Toast.makeText(context, "已加入稍后播放", Toast.LENGTH_SHORT).show()
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        AnimatedBackground(avatarUrl = voiceState.avatarUrl)
+        AnimatedBackground(avatarUrl = effectiveAvatarUrl)
 
         Scaffold(
             containerColor = Color.Transparent,
@@ -314,6 +327,7 @@ fun VoiceScreenContent(
                     item {
                         ShipHeader(
                             state = voiceState,
+                            effectiveAvatarUrl = effectiveAvatarUrl,
                             sharedTransitionScope = sharedTransitionScope,
                             animatedContentScope = animatedContentScope
                         )
@@ -510,13 +524,17 @@ private fun AnimatedBackground(avatarUrl: String) {
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val shader = remember { RuntimeShader(FLUID_SHADER_VOICE) }
+        // 生命周期绑定：后台/非可见时暂停 produceState，避免无效 CPU/GPU 开销
+        val lifecycleOwner = LocalLifecycleOwner.current
         // Throttle to ~30fps to reduce CPU/GPU load while keeping fluid motion
-        val time by produceState(0f) {
+        val time by produceState(0f, lifecycleOwner) {
             val startTime = System.nanoTime()
-            while (true) {
-                val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
-                value = elapsed
-                delay(33)
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val elapsed = (System.nanoTime() - startTime) / 1_000_000_000f
+                    this@produceState.value = elapsed
+                    delay(33)
+                }
             }
         }
         Box(modifier = Modifier.fillMaxSize()) {
@@ -586,6 +604,7 @@ private fun AnimatedBackground(avatarUrl: String) {
 @Composable
 private fun ShipHeader(
     state: VoiceViewState,
+    effectiveAvatarUrl: String,
     sharedTransitionScope: SharedTransitionScope,
     animatedContentScope: AnimatedContentScope
 ) {
@@ -620,7 +639,7 @@ private fun ShipHeader(
             shape = CircleShape
         ) {
             AsyncImage(
-                model = state.avatarUrl,
+                model = effectiveAvatarUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -906,7 +925,7 @@ private fun GlassPlayerControlBar(
     val transition = updateTransition(targetState = isCollapsed to collapseToRight, label = "CollapseTransition")
     
     val expandedAlpha by transition.animateFloat(
-        transitionSpec = { tween(durationMillis = 200, easing = FastOutSlowInEasing) },
+        transitionSpec = { tween(durationMillis = 200, easing = AppAnimation.Easings.Standard) },
         label = "ExpandedAlpha"
     ) { (collapsed, _) ->
         if (collapsed) 0f else 1f
@@ -920,7 +939,7 @@ private fun GlassPlayerControlBar(
     }
     
     val collapsedAlpha by transition.animateFloat(
-        transitionSpec = { tween(durationMillis = 250, easing = FastOutSlowInEasing) },
+        transitionSpec = { tween(durationMillis = 250, easing = AppAnimation.Easings.Standard) },
         label = "CollapsedAlpha"
     ) { (collapsed, _) ->
         if (collapsed) 1f else 0f
@@ -1055,30 +1074,21 @@ private fun CollapsedPlayerBar(
     val glowScale by infiniteTransition.animateFloat(
         initialValue = 1f,
         targetValue = 1.3f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
         label = "GlowScale"
     )
-    
+
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.3f,
         targetValue = 0.6f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
         label = "GlowAlpha"
     )
-    
+
     val iconRotation by infiniteTransition.animateFloat(
         initialValue = -5f,
         targetValue = 5f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.float(duration = 1500),
         label = "IconRotation"
     )
 
@@ -1189,7 +1199,7 @@ private fun ExpandedPlayerBar(
     val hasContent = playerState.currentMediaItem != null
     val animatedAlpha by animateFloatAsState(
         targetValue = if (hasContent) 1f else 0f,
-        animationSpec = tween(300, easing = FastOutSlowInEasing),
+        animationSpec = tween(300, easing = AppAnimation.Easings.Standard),
         label = "ExpandedBarAlpha"
     )
 
@@ -1461,10 +1471,7 @@ private fun PlayLaterQueueItem(
                         val pulseAlpha by infiniteTransition.animateFloat(
                             initialValue = 0.4f,
                             targetValue = 1f,
-                            animationSpec = infiniteRepeatable(
-                                animation = tween(800, easing = FastOutSlowInEasing),
-                                repeatMode = RepeatMode.Reverse
-                            ),
+                            animationSpec = AppAnimation.Repeating.breathing(duration = 800),
                             label = "pulseAlpha"
                         )
                         Box(
@@ -1708,10 +1715,7 @@ private fun ModernPlayButton(
     val glowAlpha by infiniteTransition.animateFloat(
         initialValue = 0.2f,
         targetValue = 0.4f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
+        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
         label = "GlowAlpha"
     )
 
@@ -1760,7 +1764,7 @@ private fun ModernPlayerSlider(
     
     val sliderAlpha by animateFloatAsState(
         targetValue = if (hasContent) 1f else 0f,
-        animationSpec = tween(300, easing = FastOutSlowInEasing),
+        animationSpec = tween(300, easing = AppAnimation.Easings.Standard),
         label = "SliderAlpha"
     )
     

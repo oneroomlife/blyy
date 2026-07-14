@@ -49,6 +49,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -60,7 +62,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
-import coil.compose.SubcomposeAsyncImage
+import coil.compose.AsyncImagePainter
 import coil.request.ImageRequest
 import com.azurlane.blyy.data.model.StudentGalleryImage
 import com.azurlane.blyy.data.model.StudentGalleryTab
@@ -554,12 +556,19 @@ private fun GalleryImageItem(
                     .build()
             }
 
-            SubcomposeAsyncImage(
+            // 用 AsyncImage + onState 替代 SubcomposeAsyncImage，避免 Subcomposition 性能开销
+            var imageState by remember(image.url) {
+                mutableStateOf<AsyncImagePainter.State>(AsyncImagePainter.State.Empty)
+            }
+            AsyncImage(
                 model = request,
                 contentDescription = image.description.ifBlank { "画廊图片" },
                 modifier = Modifier.fillMaxSize(),
                 contentScale = if (isEmoji) ContentScale.Fit else ContentScale.Crop,
-                loading = {
+                onState = { imageState = it }
+            )
+            when (imageState) {
+                is AsyncImagePainter.State.Loading -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -572,8 +581,8 @@ private fun GalleryImageItem(
                             color = accentColor.copy(alpha = 0.6f)
                         )
                     }
-                },
-                error = {
+                }
+                is AsyncImagePainter.State.Error -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -588,7 +597,8 @@ private fun GalleryImageItem(
                         )
                     }
                 }
-            )
+                else -> {}
+            }
 
             // 表情类型不显示描述遮罩
             if (!isEmoji && image.description.isNotBlank()) {
@@ -963,7 +973,15 @@ private fun VideoPlayerOverlay(
         val dataSourceFactory = DefaultDataSource.Factory(context, resolvingFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
+        // 音频属性 — 标记为电影类型，让系统正确路由音频并与其他应用协调焦点
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
+
         ExoPlayer.Builder(context)
+            .setAudioAttributes(audioAttributes, true)  // true = 自动管理音频焦点
+            .setHandleAudioBecomingNoisy(true)           // 耳机拔出时自动暂停
             .setMediaSourceFactory(mediaSourceFactory)
             .build().also { player ->
                 player.setMediaItem(MediaItem.fromUri(videoUrl))

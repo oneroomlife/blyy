@@ -51,6 +51,7 @@ class PlayerSettingsDataStore @Inject constructor(
         private val UI_STYLE_KEY = stringPreferencesKey("ui_style")
         private val FORCE_DARK_THEME_KEY = booleanPreferencesKey("force_dark_theme")
         private val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
+        private val HIDE_STATUS_BAR_KEY = booleanPreferencesKey("hide_status_bar")
 
         // Live2D 证书信任（仅限 l2d.su 域名）
         private val LIVE2D_SSL_TRUSTED_KEY = booleanPreferencesKey("live2d_ssl_trusted")
@@ -156,6 +157,9 @@ class PlayerSettingsDataStore @Inject constructor(
         prefs[DYNAMIC_COLOR_KEY] ?: (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
     }
 
+    /** 沉浸式：隐藏状态栏，默认开启。用户可从屏幕顶部下滑临时呼出（sticky immersive） */
+    val hideStatusBar: Flow<Boolean> = context.dataStore.data.map { it[HIDE_STATUS_BAR_KEY] ?: true }
+
     /** Live2D 域名证书信任标记，仅对 l2d.su 生效 */
     val live2dSslTrusted: Flow<Boolean> = context.dataStore.data.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
 
@@ -221,6 +225,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[DYNAMIC_COLOR_KEY] = enabled
+        }
+    }
+
+    suspend fun setHideStatusBar(hide: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[HIDE_STATUS_BAR_KEY] = hide
         }
     }
 

@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.AutoMode
+import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.PersonSearch
@@ -69,6 +70,7 @@ fun SettingsScreen(
     val uiStyle by viewModel.uiStyle.collectAsStateWithLifecycle()
     val forceDark by viewModel.forceDarkTheme.collectAsStateWithLifecycle()
     val dynamicColor by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
+    val hideStatusBar by viewModel.hideStatusBar.collectAsStateWithLifecycle()
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
@@ -134,6 +136,17 @@ fun SettingsScreen(
                         },
                         checked = dynamicColor,
                         onCheckedChange = viewModel::setDynamicColorEnabled
+                    )
+                    BlyySettingsRow(
+                        icon = Icons.Rounded.Fullscreen,
+                        title = "沉浸式状态栏",
+                        description = if (hideStatusBar) {
+                            "已隐藏状态栏，从屏幕顶部下滑可临时呼出"
+                        } else {
+                            "显示系统状态栏"
+                        },
+                        checked = hideStatusBar,
+                        onCheckedChange = viewModel::setHideStatusBar
                     )
                 }
 

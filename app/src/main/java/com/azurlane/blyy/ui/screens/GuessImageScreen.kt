@@ -68,7 +68,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -98,6 +98,7 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.GameStyles
 import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.viewmodel.GuessGameUiState
 import com.azurlane.blyy.viewmodel.GuessResult
 import com.azurlane.blyy.viewmodel.GuessShipViewModel
@@ -113,7 +114,7 @@ fun GuessByImageScreen(
     onHistory: () -> Unit = {},
     playerViewModel: PlayerViewModel = hiltViewModel()
 ) {
-    val state by viewModel.uiState.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.startImageGame()
@@ -476,9 +477,11 @@ private fun ImageCard(
         label = "scale"
     )
 
+    // 修复 P0：原 targetValue 两分支均为 1f（死代码，动画无效）。
+    // 改为揭示全图时轻微放大（1.05f），强化"揭示"的视觉反馈。
     val imageScale by animateFloatAsState(
-        targetValue = if (showFullImage && cropRegion != null) 1f else 1f,
-        animationSpec = tween(durationMillis = 300, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        targetValue = if (showFullImage && cropRegion != null) 1.05f else 1f,
+        animationSpec = tween(durationMillis = 300, easing = AppAnimation.Easings.Standard),
         label = "imageScale"
     )
 
@@ -566,10 +569,14 @@ private fun CroppedImage(
                 .graphicsLayer {
                     val cropWidth = cropRegion.endX - cropRegion.startX
                     val cropHeight = cropRegion.endY - cropRegion.startY
-                    scaleX = 1f / cropWidth
-                    scaleY = 1f / cropHeight
-                    translationX = -cropRegion.startX * size.width / cropWidth
-                    translationY = -cropRegion.startY * size.height / cropHeight
+                    // 修复 P0：cropWidth/cropHeight 为 0 时除零导致 scaleX/Y 为 Infinity/NaN，
+                    // 渲染异常或崩溃。退化区域用 1f 占位（不缩放、不裁剪）。
+                    val sx = if (cropWidth > 0f) 1f / cropWidth else 1f
+                    val sy = if (cropHeight > 0f) 1f / cropHeight else 1f
+                    scaleX = sx
+                    scaleY = sy
+                    translationX = if (cropWidth > 0f) -cropRegion.startX * size.width / cropWidth else 0f
+                    translationY = if (cropHeight > 0f) -cropRegion.startY * size.height / cropHeight else 0f
                 },
             contentScale = ContentScale.Fit
         )

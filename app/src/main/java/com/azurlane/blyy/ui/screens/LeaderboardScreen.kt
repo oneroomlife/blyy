@@ -15,6 +15,7 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -45,9 +46,9 @@ fun LeaderboardScreen(
     onNavigateToAssistantConfig: () -> Unit = {},
     viewModel: LeaderboardViewModel = hiltViewModel()
 ) {
-    val state by viewModel.uiState.collectAsState()
-    val userUid by viewModel.userUid.collectAsState()
-    val userServer by viewModel.userServer.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val userUid by viewModel.userUid.collectAsStateWithLifecycle()
+    val userServer by viewModel.userServer.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.refresh()
@@ -294,7 +295,8 @@ private fun LeaderboardRankCard(
                         rank.toString(),
                         style = AppTypography.LabelLarge,
                         fontWeight = FontWeight.Bold,
-                        color = if (isTop3) Color.White else MaterialTheme.colorScheme.onSurface
+                        // 前3名金/银/铜背景为浅色，白字对比度不足 4.5:1，改用深色确保 WCAG AA
+                        color = if (isTop3) Color.Black else MaterialTheme.colorScheme.onSurface
                     )
                 }
 

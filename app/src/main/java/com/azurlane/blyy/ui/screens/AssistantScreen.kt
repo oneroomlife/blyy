@@ -2,6 +2,8 @@ package com.azurlane.blyy.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -202,12 +204,17 @@ fun AssistantScreen(
                 }
 
                 // ── 查询结果展示（按当前模式显示，互不混淆） ──
-                when (state.queryMode) {
-                    QueryMode.USER_DETAIL -> state.userDetail?.let { detail ->
-                        UserDetailResult(detail = detail)
-                    }
-                    QueryMode.BUILD_RECORD -> state.buildRecords?.let { records ->
-                        BuildRecordResult(records = records)
+                // P0 修复：用 weight(1f) 限定结果区高度，避免 LazyColumn 在无限高度父容器中
+                // 抛 IllegalArgumentException: Vertically scrolling component was measured with
+                // an infinity maximum height constraints
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when (state.queryMode) {
+                        QueryMode.USER_DETAIL -> state.userDetail?.let { detail ->
+                            UserDetailResult(detail = detail)
+                        }
+                        QueryMode.BUILD_RECORD -> state.buildRecords?.let { records ->
+                            BuildRecordResult(records = records)
+                        }
                     }
                 }
             }
@@ -297,6 +304,7 @@ private fun UserDetailResult(detail: UserDetailData) {
     val c = detail.combat_overview
 
     Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Md)
     ) {
         // ── 指挥官信息 ──
@@ -376,9 +384,9 @@ private fun UserDetailResult(detail: UserDetailData) {
  */
 @Composable
 private fun BuildRecordResult(records: BuildRecordData) {
-    BlyyPanel(modifier = Modifier.fillMaxWidth()) {
+    BlyyPanel(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
-            modifier = Modifier.padding(AppSpacing.Md),
+            modifier = Modifier.fillMaxSize().padding(AppSpacing.Md),
             verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
         ) {
             // 头部信息 — 卡片风格

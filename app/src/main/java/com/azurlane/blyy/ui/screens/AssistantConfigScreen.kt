@@ -35,6 +35,10 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -298,7 +302,9 @@ private fun EnhancedOutlinedTextField(
                 accentColor.copy(alpha = 0.1f)
             )
         )
-        val isFocused = value.isNotEmpty()
+        // 修复 P0：原 isFocused = value.isNotEmpty() 用"是否有内容"判断焦点态，
+        // 导致空输入聚焦时无高亮、有内容失焦时仍高亮。改为追踪真实焦点。
+        var isFocused by remember { mutableStateOf(false) }
         val borderBrush = if (isFocused) borderColorFocused else borderColorUnfocused
 
         Box(
@@ -315,7 +321,9 @@ private fun EnhancedOutlinedTextField(
             OutlinedTextField(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { isFocused = it.isFocused },
                 singleLine = true,
                 placeholder = { Text(placeholder, style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)) },
                 textStyle = AppTypography.BodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),

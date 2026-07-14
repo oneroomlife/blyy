@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.HeartBroken
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material3.*
@@ -134,6 +135,7 @@ fun ShipCard(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             ShipImage(
+                shipName = ship.name,
                 avatarUrl = ship.avatarUrl,
                 borderUrl = ship.borderUrl,
                 contentDescription = ship.name
@@ -332,10 +334,10 @@ private fun ShipCardDropdownMenu(
         
         onOathClick?.let {
             DropdownMenuItem(
-                text = { 
+                text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
-                            if (ship.isFavorite) Icons.Rounded.Favorite else Icons.Rounded.Favorite,
+                            if (ship.isFavorite) Icons.Rounded.HeartBroken else Icons.Rounded.Favorite,
                             contentDescription = null,
                             modifier = Modifier.size(AppSpacing.Icon.Md),
                             tint = if (ship.isFavorite) MaterialTheme.colorScheme.error else AppColors.Favorite.Gold
@@ -376,14 +378,19 @@ private fun ShipCardDropdownMenu(
 
 @Composable
 private fun ShipImage(
+    shipName: String,
     avatarUrl: String,
     borderUrl: String?,
     contentDescription: String
 ) {
     val context = LocalContext.current
-    val request = remember(avatarUrl) {
+    // 优先使用本地高清头像，匹配不到时回退到网络 URL
+    val effectiveAvatar = remember(shipName, avatarUrl) {
+        com.azurlane.blyy.util.LocalAvatarResolver.resolveOrDefault(context, shipName, avatarUrl)
+    }
+    val request = remember(effectiveAvatar) {
         ImageRequest.Builder(context)
-            .data(avatarUrl)
+            .data(effectiveAvatar)
             .crossfade(true)
             .build()
     }
@@ -430,7 +437,7 @@ private fun RarityGlow(rarityColor: Color, rarityGradient: Brush) {
         initialValue = 0.06f,
         targetValue = 0.22f,
         animationSpec = infiniteRepeatable(
-            animation = tween<Float>(3500, easing = FastOutSlowInEasing),
+            animation = tween<Float>(3500, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "GlowAlpha"
@@ -440,7 +447,7 @@ private fun RarityGlow(rarityColor: Color, rarityGradient: Brush) {
         initialValue = 0.15f,
         targetValue = 0.4f,
         animationSpec = infiniteRepeatable(
-            animation = tween<Float>(2800, easing = FastOutSlowInEasing),
+            animation = tween<Float>(2800, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "EdgeGlowAlpha"
@@ -488,7 +495,7 @@ private fun BoxScope.OathSpecialEffect() {
         initialValue = 0.08f,
         targetValue = 0.22f,
         animationSpec = infiniteRepeatable(
-            animation = tween<Float>(3200, easing = FastOutSlowInEasing),
+            animation = tween<Float>(3200, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "PinkGlowAlpha"
@@ -498,7 +505,7 @@ private fun BoxScope.OathSpecialEffect() {
         initialValue = 0.3f,
         targetValue = 0.6f,
         animationSpec = infiniteRepeatable(
-            animation = tween<Float>(2000, easing = FastOutSlowInEasing),
+            animation = tween<Float>(2000, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "BorderGlowAlpha"
@@ -541,7 +548,7 @@ private fun BoxScope.OathSpecialEffect() {
     val sparklePhase by infiniteTransition.animateFloat(
         initialValue = 0f, targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween<Float>(2000, easing = FastOutSlowInEasing),
+            animation = tween<Float>(2000, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Restart
         ), label = "Sparkle"
     )
@@ -644,7 +651,7 @@ private fun BoxScope.FavoriteBadgeAnimated() {
         initialValue = 0.25f,
         targetValue = 0.55f,
         animationSpec = infiniteRepeatable(
-            animation = tween<Float>(2200, easing = FastOutSlowInEasing),
+            animation = tween<Float>(2200, easing = AppAnimation.Easings.Standard),
             repeatMode = RepeatMode.Reverse
         ),
         label = "GlowAlpha"
