@@ -1,6 +1,7 @@
 package com.azurlane.blyy.ui.screens
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
@@ -35,9 +36,12 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
@@ -45,15 +49,25 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.BrokenImage
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Psychology
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Visibility
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,6 +75,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -75,6 +91,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusEvent
@@ -85,6 +102,10 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -101,74 +122,84 @@ import com.azurlane.blyy.R
 import com.azurlane.blyy.data.model.ChatMessage
 import com.azurlane.blyy.data.model.ChatMessageType
 import com.azurlane.blyy.data.model.ChatSession
+import com.azurlane.blyy.data.model.GroupPosition
+import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.data.model.getGroupPosition
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyPanel
+import com.azurlane.blyy.ui.components.BlyySectionPanel
+import com.azurlane.blyy.ui.components.StableOutlinedTextField
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.JuusPalette
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalAvatarResolver
+import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// ── JuusTalk 设计规范色彩系统 ──
+// ── JUUSTAGRAM 设计规范色彩系统（映射到 JuusPalette） ──
+// 来源：UI_work/juustagram-messaging-ui/docs/design-spec.md
+// 主色 #5BA4E6，气泡 incoming=#FFFFFF / outgoing=#5BA4E6
 private object JuusColors {
-    val Primary = Color(0xFF20A0FF)        // JuusTalk 主色蓝
-    val PrimaryLight = Color(0xFF85D0FF)   // 浅蓝强调
-    val PrimaryBg = Color(0xFFEBF4FB)      // 聊天背景浅蓝
-    val UserBubble = Color(0xFF1565C0)     // 用户气泡蓝（WCAG AA 5.7:1 on white text）
-    val AiBubble = Color.White             // AI气泡白
-    val AiBubbleBorder = Color(0xFFE5E9F2) // AI气泡边框
-    val AiName = Color(0xFF20A0FF)         // AI名称蓝
-    val VoiceBubble = Color(0xFFFFF5F8)    // 语音气泡粉底
-    val VoiceBorder = Color(0xFFF9D5E5)    // 语音边框粉
-    val VoiceAccent = Color(0xFFFF69B4)    // 语音强调粉
-    val FooterBg = Color.White             // 底栏白
-    val FooterBorder = Color(0xFFE5E9F2)   // 底栏边框
-    val InputBg = Color(0xFFF5F7FA)        // 输入框背景
-    val InputBorder = Color(0xFFD1D9E6)    // 输入框边框
-    val InputFocusBorder = Color(0xFF20A0FF) // 输入框聚焦边框
-    val SendActive = Color(0xFF20A0FF)     // 发送按钮激活
-    val SendInactive = Color(0xFFE5E9F2)   // 发送按钮未激活
-    val SendIconInactive = Color(0xFF7F8C9B) // 发送按钮未激活图标（深色，浅灰底上可读）
-    val TextPrimary = Color(0xFF2C3E50)    // 主文字
-    val TextSecondary = Color(0xFF5A6B7B)  // 辅助文字（WCAG AA 4.6:1 on 0xFFEBF4FB）
-    val TextOnPrimary = Color.White        // 主色上文字
-    val TextTime = Color(0xFF5A6B7B)       // 时间文字（WCAG AA 4.6:1 on 0xFFEBF4FB）
-    val SystemText = Color(0xFFC8C7C8)     // 系统消息文字
-    val AvatarBorder = Color(0xFFE5E9F2)   // 头像边框
-    val TypingDot = Color(0xFF85D0FF)      // 打字动画点色
-    val ErrorBg = Color(0xFFFFF0F0)        // 错误背景
-    val ErrorText = Color(0xFFFF4949)      // 错误文字
+    val Primary = JuusPalette.Primary              // #5BA4E6
+    val PrimaryLight = JuusPalette.PrimaryLight    // #D6EBFF
+    val PrimaryBg = JuusPalette.Bg                 // #F0F4F8
+    val UserBubble = JuusPalette.BubbleOutgoing    // #5BA4E6
+    val AiBubble = JuusPalette.BubbleIncoming      // #FFFFFF
+    val AiBubbleBorder = JuusPalette.Border        // #E4E8EC
+    val AiName = JuusPalette.Primary               // #5BA4E6
+    val VoiceBubble = Color(0xFFFFF5F8)            // 语音气泡粉底（保留）
+    val VoiceBorder = Color(0xFFF9D5E5)            // 语音边框粉（保留）
+    val VoiceAccent = Color(0xFFFF69B4)            // 语音强调粉（保留）
+    val FooterBg = JuusPalette.Glass85             // 毛玻璃 85% 白
+    val FooterBorder = JuusPalette.Divider         // #EDEFF2
+    val InputBg = JuusPalette.Bg                   // #F0F4F8
+    val InputBorder = JuusPalette.BorderLight      // #EFF2F5
+    val InputFocusBorder = JuusPalette.Primary     // #5BA4E6
+    val SendActive = JuusPalette.Primary           // #5BA4E6
+    val SendInactive = JuusPalette.BorderLight     // #EFF2F5
+    val SendIconInactive = JuusPalette.TextSecondary // #555566
+    val TextPrimary = JuusPalette.TextPrimary      // #1A1A2E
+    val TextSecondary = JuusPalette.TextSecondary  // #555566
+    val TextOnPrimary = JuusPalette.TextOnPrimary  // #FFFFFF
+    val TextTime = JuusPalette.TextTertiary        // #8899AA
+    val SystemText = JuusPalette.TextTertiary      // #8899AA
+    val AvatarBorder = JuusPalette.BorderLight     // #EFF2F5
+    val TypingDot = JuusPalette.Primary            // #5BA4E6
+    val ErrorBg = Color(0xFFFFF0F0)                // 错误背景（保留）
+    val ErrorText = Color(0xFFFF4949)              // 错误文字（保留）
 
     // 深色模式
     object Dark {
-        val PrimaryBg = Color(0xFF0D1B2A)
-        val UserBubble = Color(0xFF1565C0)
-        val AiBubble = Color(0xFF243559)
-        val AiBubbleBorder = Color(0xFF2A3F5F)
-        val AiName = Color(0xFF85D0FF)
+        val PrimaryBg = JuusPalette.Dark.Bg
+        val UserBubble = JuusPalette.Dark.BubbleOutgoing
+        val AiBubble = JuusPalette.Dark.BubbleIncoming
+        val AiBubbleBorder = JuusPalette.Dark.Border
+        val AiName = JuusPalette.Dark.Primary
         val VoiceBubble = Color(0xFF2A1A28)
         val VoiceBorder = Color(0xFF4A2A44)
         val VoiceAccent = Color(0xFFFF69B4)
-        val FooterBg = Color(0xFF0F1D32)
-        val FooterBorder = Color(0xFF2A3F5F)
-        val InputBg = Color(0xFF152238)
-        val InputBorder = Color(0xFF2A3F5F)
-        val InputFocusBorder = Color(0xFF85D0FF)
-        val SendActive = Color(0xFF85D0FF)
-        val SendInactive = Color(0xFF2A3F5F)
-        val SendIconActive = Color(0xFF0D1B2A) // 发送按钮激活图标（深色，浅蓝底上可读）
-        val TextPrimary = Color(0xFFE2EAF4)
-        val TextSecondary = Color(0xFFA8BCD0)
+        val FooterBg = JuusPalette.Dark.Glass85
+        val FooterBorder = JuusPalette.Dark.Divider
+        val InputBg = JuusPalette.Dark.Bg
+        val InputBorder = JuusPalette.Dark.Border
+        val InputFocusBorder = JuusPalette.Dark.Primary
+        val SendActive = JuusPalette.Dark.Primary
+        val SendInactive = JuusPalette.Dark.Border
+        val SendIconActive = JuusPalette.Dark.Bg
+        val TextPrimary = JuusPalette.Dark.TextPrimary
+        val TextSecondary = JuusPalette.Dark.TextSecondary
         val TextOnPrimary = Color.White
-        val TextTime = Color(0xFF8FA8BE)
-        val SystemText = Color(0xFFA0B8CE)
-        val AvatarBorder = Color(0xFF2A3F5F)
-        val TypingDot = Color(0xFF85D0FF)
+        val TextTime = JuusPalette.Dark.TextTertiary
+        val SystemText = JuusPalette.Dark.TextTertiary
+        val AvatarBorder = JuusPalette.Dark.Border
+        val TypingDot = JuusPalette.Dark.Primary
         val ErrorBg = Color(0xFF2A1A1A)
         val ErrorText = Color(0xFFFF6B6B)
     }
@@ -248,35 +279,82 @@ fun RobustAvatar(
 fun JiuxinChatScreen(
     onBack: () -> Unit,
     onNavigateToConfig: () -> Unit,
+    onNavigateToShipConfig: () -> Unit,
     viewModel: JiuxinViewModel = hiltViewModel()
 ) {
     val chatState by viewModel.chatUiState.collectAsStateWithLifecycle()
-    val jiuxinName by viewModel.jiuxinName.collectAsStateWithLifecycle()
-    val avatarUrl by viewModel.avatarUrl.collectAsStateWithLifecycle()
+    // 配置隔离：从当前会话快照读取舰娘配置，而非全局 StateFlow
+    val currentSession by viewModel.currentSession.collectAsStateWithLifecycle()
+    val jiuxinName = currentSession?.jiuxinName ?: ""
+    val avatarUrl = currentSession?.avatarUrl ?: ""
+    val voiceEnabled = currentSession?.voiceEnabled ?: true
+    val voiceShipName = currentSession?.voiceShipName ?: ""
     val userName by viewModel.userName.collectAsStateWithLifecycle()
     val userAvatarUrl by viewModel.userAvatarUrl.collectAsStateWithLifecycle()
-    val voiceEnabled by viewModel.voiceEnabled.collectAsStateWithLifecycle()
-    val voiceShipName by viewModel.voiceShipName.collectAsStateWithLifecycle()
     val currentlyPlayingId by viewModel.currentlyPlayingId.collectAsStateWithLifecycle()
-    val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    // 当前舰娘的历史会话列表（已隔离）：HistoryPanel 中仅显示当前舰娘的对话
+    // 注意：不再订阅 uniqueConversations — 该 StateFlow 仅用于会话列表界面（ConversationListScreen），
+    // 在聊天界面订阅会造成不必要的重组且从未被读取
+    val shipSessions by viewModel.currentShipSessions.collectAsStateWithLifecycle()
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    // API 配置状态：用于新建对话前的配置完整性验证（读取全局默认值）
+    val apiUrl by viewModel.apiUrl.collectAsStateWithLifecycle()
+    val apiKey by viewModel.apiKey.collectAsStateWithLifecycle()
+    // 聊天背景图片 URL（空表示使用默认纯色背景）
+    val chatBackgroundUrl by viewModel.chatBackgroundUrl.collectAsStateWithLifecycle()
     val isDark = LocalIsDark.current
 
     var showHistoryPanel by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
     var showRenameDialog by remember { mutableStateOf<String?>(null) }
     var showUserConfigDialog by remember { mutableStateOf(false) }
+    // 长按消息操作弹窗（messageId + isUserMessage）
+    var messageActionTarget by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    // 编辑重发弹窗（messageId + 原始内容）
+    var editResendTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // API 配置缺失提示（新建对话时验证）
+    var showConfigMissingDialog by remember { mutableStateOf(false) }
+    // 聊天背景选择弹窗
+    var showBackgroundPicker by remember { mutableStateOf(false) }
 
-    AdaptiveScreenBackground {
-        Column(modifier = Modifier.fillMaxSize().imePadding()) {
+    // 纯色背景（取消角色立绘背景层，避免视觉干扰和性能开销）
+    val chatBgFallback = if (isDark) JuusPalette.Dark.Bg else JuusPalette.Bg
+
+    Box(modifier = Modifier.fillMaxSize().background(chatBgFallback).imePadding()) {
+        // 自定义聊天背景图片层（半透明覆盖，保证消息气泡可读性）
+        if (chatBackgroundUrl.isNotBlank()) {
+            AsyncImage(
+                model = chatBackgroundUrl,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+            // 半透明遮罩层：确保消息气泡在复杂背景下仍可读
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(if (isDark) Color.Black.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.3f))
+            )
+        }
+        // 聊天内容层
+        Column(modifier = Modifier.fillMaxSize()) {
             JuusChatTopBar(
                 title = jiuxinName.ifBlank { "啾信" },
                 subtitle = if (voiceEnabled && voiceShipName.isNotBlank()) "语音: $voiceShipName" else "啾信对话",
                 onBack = onBack,
                 onHistoryClick = { showHistoryPanel = true },
-                onSettingsClick = onNavigateToConfig,
+                onBackgroundClick = { showBackgroundPicker = true },
+                onSettingsClick = onNavigateToShipConfig,
                 isDark = isDark
             )
+
+            // 空状态：无会话时显示引导（全部删除后不自动创建新会话）
+            if (currentSessionId.isBlank()) {
+                EmptyChatState(
+                    isDark = isDark,
+                    onBack = onBack
+                )
+            } else {
 
             val listState = rememberLazyListState()
             val density = LocalDensity.current
@@ -298,22 +376,38 @@ fun JiuxinChatScreen(
                 }
             }
 
-            // 聊天消息区域 — JuusTalk 风格浅蓝背景
-            val chatBg = if (isDark) JuusColors.Dark.PrimaryBg else JuusColors.PrimaryBg
             // 提升到 LazyColumn 外层，避免每个 item 重复读取 LocalConfiguration
             val messageMaxWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
+
+            // 消息发送者标识函数（用于分组判断：USER=发送方，AI/VOICE/STICKER=接收方，SYSTEM=独立）
+            val senderOf: (ChatMessage) -> String = { msg ->
+                when (msg.type) {
+                    ChatMessageType.USER.name -> "user"
+                    ChatMessageType.SYSTEM.name -> "system_${msg.id}" // 每条系统消息独立成组
+                    else -> "ai" // AI / VOICE / STICKER 都归为接收方
+                }
+            }
+
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
-                    .background(chatBg)
-                    .padding(horizontal = AppSpacing.Md),
+                    .fillMaxWidth(),
                 state = listState,
-                verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+                verticalArrangement = Arrangement.spacedBy(0.dp) // 间距由 item 自身控制（组间12dp/组内4dp）
             ) {
                 item { Spacer(modifier = Modifier.height(8.dp)) }
 
-                items(chatState.messages, key = { it.id }) { message ->
+                itemsIndexed(
+                    items = chatState.messages,
+                    key = { _, msg -> msg.id },
+                    contentType = { _, msg -> msg.type }
+                ) { index, message ->
+                    val groupPos = getGroupPosition(chatState.messages, index, senderOf)
+                    // 组间间距 12dp，组内间距 4dp
+                    val topPadding = when (groupPos) {
+                        GroupPosition.SINGLE, GroupPosition.FIRST -> 12.dp
+                        else -> 4.dp
+                    }
                     MessageBubble(
                         message = message,
                         jiuxinName = jiuxinName,
@@ -323,6 +417,8 @@ fun JiuxinChatScreen(
                         isDark = isDark,
                         isPlaying = currentlyPlayingId == message.id,
                         maxWidth = messageMaxWidth,
+                        groupPosition = groupPos,
+                        topPadding = topPadding,
                         onVoiceClick = remember(message.id, message.voiceUrl) {
                             {
                                 if (message.voiceUrl.isNotBlank()) {
@@ -331,11 +427,14 @@ fun JiuxinChatScreen(
                             }
                         },
                         onStickerClick = { /* 以后可以做点击查看大图或保存表情包 */ },
-                        onUserAvatarLongClick = { showUserConfigDialog = true }
+                        onMessageLongClick = {
+                            val isUser = message.type == ChatMessageType.USER.name
+                            messageActionTarget = Pair(message.id, isUser)
+                        }
                     )
                 }
 
-                // JuusTalk 风格打字动画指示器
+                // 打字动画指示器
                 if (chatState.isLoading) {
                     item {
                         TypingIndicator(
@@ -352,6 +451,7 @@ fun JiuxinChatScreen(
                         val errorText = if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText
                         Box(
                             modifier = Modifier.fillMaxWidth()
+                                .padding(horizontal = AppSpacing.Md, vertical = 6.dp)
                                 .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
                                 .background(errorBg)
                                 .padding(horizontal = 16.dp, vertical = 10.dp)
@@ -382,15 +482,18 @@ fun JiuxinChatScreen(
                             listState.animateScrollToItem(chatState.messages.size - 1)
                         }
                     }
-                }
+                },
+                onPlusClick = { showUserConfigDialog = true }
             )
+            } // end else (currentSessionId.isNotBlank())
         }
     }
 
     // ── 历史对话面板 ──
+    // 仅显示当前舰娘的历史对话（已隔离），每个舰娘只能查看对应的历史对话
     if (showHistoryPanel) {
         HistoryPanel(
-            sessions = sessions,
+            sessions = shipSessions,
             currentSessionId = currentSessionId,
             onDismiss = { showHistoryPanel = false },
             onSwitchSession = { sessionId ->
@@ -398,8 +501,17 @@ fun JiuxinChatScreen(
                 showHistoryPanel = false
             },
             onNewSession = {
-                viewModel.createNewSession()
-                showHistoryPanel = false
+                // 新建对话前验证 API 配置完整性，与会话列表行为一致
+                // 注意：这里使用 createNewSessionForCurrentShip 而非 createNewSession，
+                // 确保新会话继承当前舰娘的完整配置快照（avatarUrl/jiuxinName 等），
+                // 使 computeShipKey 一致，新会话才能出现在同一舰娘的历史面板中
+                if (apiUrl.isBlank() || apiKey.isBlank()) {
+                    showHistoryPanel = false
+                    showConfigMissingDialog = true
+                } else {
+                    viewModel.createNewSessionForCurrentShip()
+                    showHistoryPanel = false
+                }
             },
             onDeleteSession = { sessionId -> showDeleteConfirm = sessionId },
             onRenameSession = { sessionId -> showRenameDialog = sessionId }
@@ -422,8 +534,13 @@ fun JiuxinChatScreen(
     }
 
     // ── 删除确认弹窗 ──
+    // 在当前舰娘的会话列表中查找
     showDeleteConfirm?.let { sessionId ->
-        val sessionName = sessions.find { it.id == sessionId }?.name ?: "此对话"
+        val session = shipSessions.find { it.id == sessionId }
+        // 显示对话名称（name），回退到啾信名称（jiuxinName）
+        val sessionName = session?.name
+            ?.takeIf { it.isNotBlank() && !it.startsWith("对话-") }
+            ?: session?.jiuxinName ?: "此对话"
         BlyyConfirmDialog(
             title = "删除对话",
             message = "确定要删除「$sessionName」吗？此操作不可撤销。",
@@ -439,13 +556,16 @@ fun JiuxinChatScreen(
     }
 
     // ── 重命名弹窗 ──
+    // 在当前舰娘的会话列表中查找
+    // 初始值使用对话名称（name），而非啾信名称（jiuxinName），确保名称职责隔离
     showRenameDialog?.let { sessionId ->
-        var renameText by remember { mutableStateOf(sessions.find { it.id == sessionId }?.name ?: "") }
+        val targetSession = shipSessions.find { it.id == sessionId }
+        var renameText by remember(sessionId) { mutableStateOf(targetSession?.name?.takeIf { it.isNotBlank() && !it.startsWith("对话-") } ?: targetSession?.jiuxinName ?: "") }
         AlertDialog(
             onDismissRequest = { showRenameDialog = null },
             title = { Text("重命名对话") },
             text = {
-                OutlinedTextField(
+                StableOutlinedTextField(
                     value = renameText,
                     onValueChange = { renameText = it },
                     singleLine = true,
@@ -467,6 +587,69 @@ fun JiuxinChatScreen(
             }
         )
     }
+
+    // ── 长按消息操作弹窗（编辑重发 / 删除） ──
+    messageActionTarget?.let { (messageId, isUser) ->
+        val targetMessage = chatState.messages.find { it.id == messageId }
+        MessageActionSheet(
+            isUser = isUser,
+            isDark = isDark,
+            onDismiss = { messageActionTarget = null },
+            onEdit = {
+                editResendTarget = Pair(messageId, targetMessage?.content ?: "")
+                messageActionTarget = null
+            },
+            onDelete = {
+                viewModel.deleteMessage(messageId)
+                messageActionTarget = null
+            }
+        )
+    }
+
+    // ── 编辑重发弹窗 ──
+    editResendTarget?.let { (messageId, originalContent) ->
+        MessageEditSheet(
+            originalContent = originalContent,
+            isDark = isDark,
+            onDismiss = { editResendTarget = null },
+            onSend = { newContent ->
+                if (newContent.isNotBlank()) {
+                    viewModel.editAndResendMessage(messageId, newContent)
+                }
+                editResendTarget = null
+            }
+        )
+    }
+
+    // ── API 配置缺失提示弹窗（新建对话时验证） ──
+    if (showConfigMissingDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfigMissingDialog = false },
+            title = { Text("需要先配置 API") },
+            text = {
+                Text("当前配置缺少 API URL 或 API 密钥，无法发送消息。\n是否前往配置页面完成设置？")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showConfigMissingDialog = false
+                    onNavigateToConfig()
+                }) { Text("去配置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfigMissingDialog = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // ── 聊天背景选择弹窗 ──
+    if (showBackgroundPicker) {
+        BackgroundPickerSheet(
+            viewModel = viewModel,
+            currentBackgroundUrl = chatBackgroundUrl,
+            isDark = isDark,
+            onDismiss = { showBackgroundPicker = false }
+        )
+    }
 }
 
 @Composable
@@ -478,8 +661,8 @@ private fun UserConfigDialog(
     viewModel: JiuxinViewModel
 ) {
     val isDark = LocalIsDark.current
-    var name by remember { mutableStateOf(currentName) }
-    var avatarUrl by remember { mutableStateOf(currentAvatarUrl) }
+    var name by remember(currentName) { mutableStateOf(currentName) }
+    var avatarUrl by remember(currentAvatarUrl) { mutableStateOf(currentAvatarUrl) }
     var showAvatarPicker by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -504,7 +687,7 @@ private fun UserConfigDialog(
                     Text("点击更换头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
-                OutlinedTextField(
+                StableOutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("显示名称") },
@@ -536,15 +719,75 @@ private fun UserConfigDialog(
     }
 }
 
+/**
+ * 空状态：无会话时显示引导
+ *
+ * 全部会话删除后不再自动创建新会话，显示空状态引导用户返回列表新建对话
+ */
+@Composable
+private fun EmptyChatState(
+    isDark: Boolean,
+    onBack: () -> Unit
+) {
+    val primaryColor = if (isDark) JuusPalette.Dark.Primary else JuusPalette.Primary
+    val hintColor = if (isDark) JuusPalette.Dark.TextTertiary else JuusPalette.TextTertiary
+    val titleColor = if (isDark) JuusPalette.Dark.TextPrimary else JuusPalette.TextPrimary
+
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.ChatBubbleOutline,
+                contentDescription = null,
+                tint = primaryColor.copy(alpha = 0.4f),
+                modifier = Modifier.size(48.dp)
+            )
+            Text(
+                text = "暂无对话",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = titleColor
+            )
+            Text(
+                text = "返回列表新建对话",
+                fontSize = 13.sp,
+                color = hintColor
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(primaryColor)
+                    .clickable { onBack() }
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "返回列表",
+                    fontSize = 13.sp,
+                    color = Color.White,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun JuusChatTopBar(
     title: String,
     subtitle: String?,
     onBack: () -> Unit,
     onHistoryClick: () -> Unit,
+    onBackgroundClick: () -> Unit,
     onSettingsClick: () -> Unit,
     isDark: Boolean
 ) {
+    // JUUSTAGRAM 设计：毛玻璃头部 bg-white/85 + backdrop-blur(8px)
     val bgColor = if (isDark) JuusColors.Dark.FooterBg else JuusColors.FooterBg
     val contentColor = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
     val subColor = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
@@ -571,7 +814,7 @@ private fun JuusChatTopBar(
             Icon(
                 Icons.AutoMirrored.Rounded.ArrowBack,
                 contentDescription = "返回",
-                tint = accentColor
+                tint = contentColor
             )
         }
         Column(
@@ -579,13 +822,15 @@ private fun JuusChatTopBar(
                 .weight(1f)
                 .padding(start = 4.dp)
         ) {
-            Text(
-                text = title,
-                style = AppTypography.TitleMediumBold.copy(fontSize = 18.sp),
-                color = contentColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = title,
+                    style = AppTypography.TitleMediumBold.copy(fontSize = 16.sp),
+                    color = contentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (subtitle != null) {
                 Text(
                     text = subtitle,
@@ -597,27 +842,35 @@ private fun JuusChatTopBar(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBackgroundClick) {
+                Icon(
+                    Icons.Rounded.Image,
+                    contentDescription = "聊天背景",
+                    tint = subColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
             IconButton(onClick = onHistoryClick) {
                 Icon(
                     Icons.Rounded.ChatBubbleOutline,
                     contentDescription = "历史对话",
-                    tint = accentColor,
-                    modifier = Modifier.size(22.dp)
+                    tint = subColor,
+                    modifier = Modifier.size(20.dp)
                 )
             }
             IconButton(onClick = onSettingsClick) {
                 Icon(
                     Icons.Rounded.Settings,
-                    contentDescription = "设置",
-                    tint = subColor.copy(alpha = 0.7f),
-                    modifier = Modifier.size(22.dp)
+                    contentDescription = "啾信设置",
+                    tint = subColor,
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
     }
 }
 
-// ── JuusTalk 风格打字动画指示器 ──
+// ── JUUSTAGRAM 打字动画指示器（28dp 头像） ──
 @Composable
 private fun TypingIndicator(
     jiuxinName: String,
@@ -631,18 +884,18 @@ private fun TypingIndicator(
     val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
 
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Md, vertical = 4.dp),
         horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.Top
     ) {
-        // AI头像
+        // AI头像（40dp — 增大舰娘头像尺寸）
         RobustAvatar(
             url = avatarUrl,
-            modifier = Modifier.size(36.dp).clip(CircleShape)
+            modifier = Modifier.size(40.dp).clip(CircleShape)
                 .background(bubbleBg)
                 .border(1.dp, avatarBorder, CircleShape),
             fallbackContent = {
-                Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
+                Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(22.dp), tint = nameColor)
             }
         )
         Spacer(modifier = Modifier.width(8.dp))
@@ -652,13 +905,13 @@ private fun TypingIndicator(
                 style = AppTypography.LabelSmallMedium.copy(color = nameColor),
                 modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
             )
-            // 打字气泡
+            // 打字气泡 — JUUSTAGRAM 圆角 12 12 12 4
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
+                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
                     .background(bubbleBg)
-                    .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 4.dp, bottomEnd = 12.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 TypingDots(dotColor = dotColor)
             }
@@ -718,7 +971,7 @@ private fun HistoryPanel(
                         Icon(Icons.Rounded.Add, contentDescription = "新建对话", tint = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary)
                     }
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Rounded.Edit, contentDescription = "关闭")
+                        Icon(Icons.Rounded.Close, contentDescription = "关闭")
                     }
                 }
             }
@@ -739,6 +992,11 @@ private fun HistoryPanel(
                 ) {
                     items(sessions, key = { it.id }) { session ->
                         val isCurrent = session.id == currentSessionId
+                        // 显示对话名称（name），为空或为默认格式时回退到啾信名称（jiuxinName）
+                        // 名称职责隔离：对话名称可被用户重命名修改，啾信名称来自配置不可被重命名修改
+                        val displayName = session.name
+                            .takeIf { it.isNotBlank() && !it.startsWith("对话-") }
+                            ?: session.jiuxinName.ifBlank { "未命名对话" }
                         Row(
                             modifier = Modifier.fillMaxWidth()
                                 .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
@@ -749,7 +1007,7 @@ private fun HistoryPanel(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = session.name,
+                                    text = displayName,
                                     style = AppTypography.TitleSmall,
                                     fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isCurrent) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else MaterialTheme.colorScheme.onSurface,
@@ -777,6 +1035,22 @@ private fun HistoryPanel(
     }
 }
 
+// ── JUUSTAGRAM 消息分组圆角计算 ──
+// CSS 圆角顺序 (top-left, top-right, bottom-right, bottom-left) = Compose (topStart, topEnd, bottomEnd, bottomStart)
+private fun incomingBubbleShape(groupPos: GroupPosition): RoundedCornerShape = when (groupPos) {
+    GroupPosition.SINGLE -> RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp) // 12 12 12 4
+    GroupPosition.FIRST -> RoundedCornerShape(12.dp, 12.dp, 4.dp, 4.dp)   // 12 12 4 4
+    GroupPosition.MIDDLE -> RoundedCornerShape(4.dp, 12.dp, 4.dp, 4.dp)   // 4 12 4 4
+    GroupPosition.LAST -> RoundedCornerShape(4.dp, 12.dp, 12.dp, 4.dp)    // 4 12 12 4
+}
+
+private fun outgoingBubbleShape(groupPos: GroupPosition): RoundedCornerShape = when (groupPos) {
+    GroupPosition.SINGLE -> RoundedCornerShape(12.dp, 12.dp, 4.dp, 12.dp) // 12 12 4 12
+    GroupPosition.FIRST -> RoundedCornerShape(12.dp, 12.dp, 4.dp, 4.dp)   // 12 12 4 4
+    GroupPosition.MIDDLE -> RoundedCornerShape(4.dp, 4.dp, 4.dp, 12.dp)   // 4 4 4 12
+    GroupPosition.LAST -> RoundedCornerShape(4.dp, 12.dp, 4.dp, 12.dp)    // 4 12 4 12
+}
+
 @Composable
 private fun MessageBubble(
     message: ChatMessage,
@@ -787,214 +1061,221 @@ private fun MessageBubble(
     isDark: Boolean,
     isPlaying: Boolean,
     maxWidth: Dp,
+    groupPosition: GroupPosition,
+    topPadding: Dp,
     onVoiceClick: () -> Unit,
     onStickerClick: () -> Unit,
-    onUserAvatarLongClick: () -> Unit
+    onMessageLongClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    // 是否显示头像/名称（仅组首和独立消息）
+    val showAvatar = groupPosition == GroupPosition.SINGLE || groupPosition == GroupPosition.FIRST
+    // 是否显示时间戳（仅独立消息和组末条）
+    val showTimestamp = groupPosition == GroupPosition.SINGLE || groupPosition == GroupPosition.LAST
 
     when (message.type) {
         ChatMessageType.USER.name -> {
-            // ── 用户消息：JuusTalk 风格蓝色气泡 + 右侧三角 ──
+            // ── 用户消息：JUUSTAGRAM 蓝色气泡 #5BA4E6，右对齐，无头像（设计规范） ──
             val bubbleColor = if (isDark) JuusColors.Dark.UserBubble else JuusColors.UserBubble
+            val bubbleShape = outgoingBubbleShape(groupPosition)
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.widthIn(max = maxWidth), horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = userName,
-                        style = AppTypography.LabelSmallMedium.copy(color = bubbleColor),
-                        modifier = Modifier.padding(end = 2.dp, bottom = 3.dp)
-                    )
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Md, bottomEnd = AppSpacing.Corner.Xs))
+                            .clip(bubbleShape)
                             .background(bubbleColor)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = onMessageLongClick
+                            )
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Text(
                             text = message.content,
                             style = AppTypography.BodyMedium.copy(
                                 color = JuusColors.TextOnPrimary,
-                                lineHeight = 20.sp
+                                fontSize = 14.sp,
+                                lineHeight = 19.sp
                             )
                         )
                     }
-                    // 时间戳
-                    Text(
-                        text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
-                        color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
-                        modifier = Modifier.padding(end = 4.dp, top = 2.dp)
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                // 用户头像
-                RobustAvatar(
-                    url = userAvatarUrl,
-                    modifier = Modifier.size(36.dp).clip(CircleShape)
-                        .background(bubbleColor.copy(alpha = 0.15f))
-                        .combinedClickable(
-                            onClick = {},
-                            onLongClick = onUserAvatarLongClick
-                        ),
-                    fallbackContent = {
-                        Icon(Icons.Rounded.Person, contentDescription = null, modifier = Modifier.size(20.dp), tint = bubbleColor)
+                    if (showTimestamp) {
+                        Text(
+                            text = formatTime(message.timestamp),
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
+                            modifier = Modifier.padding(end = 4.dp, top = 2.dp)
+                        )
                     }
-                )
+                }
             }
         }
 
         ChatMessageType.AI.name -> {
-            // ── AI消息：JuusTalk 风格白色气泡 + 左侧三角 ──
+            // ── AI消息：JUUSTAGRAM 白色气泡，左对齐，40dp 头像仅组首显示 ──
             val bubbleBg = if (isDark) JuusColors.Dark.AiBubble else JuusColors.AiBubble
             val bubbleBorder = if (isDark) JuusColors.Dark.AiBubbleBorder else JuusColors.AiBubbleBorder
-            val nameColor = if (isDark) JuusColors.Dark.AiName else JuusColors.AiName
             val textColor = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
             val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
+            val bubbleShape = incomingBubbleShape(groupPosition)
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
-                RobustAvatar(
-                    url = jiuxinAvatarUrl,
-                    modifier = Modifier.size(36.dp).clip(CircleShape)
-                        .background(bubbleBg)
-                        .border(1.dp, avatarBorder, CircleShape),
-                    fallbackContent = {
-                        Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
-                    }
-                )
+                // 头像或占位（40dp — 增大舰娘头像尺寸）
+                if (showAvatar) {
+                    RobustAvatar(
+                        url = jiuxinAvatarUrl,
+                        modifier = Modifier.size(40.dp).clip(CircleShape)
+                            .background(bubbleBg)
+                            .border(1.dp, avatarBorder, CircleShape),
+                        fallbackContent = {
+                            Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(22.dp), tint = JuusColors.AiName)
+                        }
+                    )
+                } else {
+                    Spacer(modifier = Modifier.size(40.dp))
+                }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
-                    Text(
-                        text = jiuxinName,
-                        style = AppTypography.LabelSmallMedium.copy(color = nameColor),
-                        modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
-                    )
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
+                            .clip(bubbleShape)
                             .background(bubbleBg)
-                            .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
+                            .border(1.dp, bubbleBorder, bubbleShape)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = onMessageLongClick
+                            )
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Text(
                             text = message.content,
-                            style = AppTypography.BodyMedium.copy(color = textColor, lineHeight = 20.sp)
+                            style = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp, lineHeight = 19.sp)
                         )
                     }
-                    Text(
-                        text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
-                        color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
-                        modifier = Modifier.padding(start = 2.dp, top = 2.dp)
-                    )
+                    if (showTimestamp) {
+                        Text(
+                            text = formatTime(message.timestamp),
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
+                            modifier = Modifier.padding(start = 2.dp, top = 2.dp)
+                        )
+                    }
                 }
             }
         }
 
         ChatMessageType.VOICE.name -> {
-            // ── 语音消息：JuusTalk 风格粉色气泡 ──
+            // ── 语音消息：粉色气泡，40dp 头像仅组首显示 ──
             val bubbleBg = if (isDark) JuusColors.Dark.VoiceBubble else JuusColors.VoiceBubble
             val bubbleBorder = if (isDark) JuusColors.Dark.VoiceBorder else JuusColors.VoiceBorder
             val voiceAccent = if (isDark) JuusColors.Dark.VoiceAccent else JuusColors.VoiceAccent
             val textColor = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
             val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
+            val bubbleShape = incomingBubbleShape(groupPosition)
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
-                RobustAvatar(
-                    url = message.avatarUrl,
-                    modifier = Modifier.size(36.dp).clip(CircleShape)
-                        .background(bubbleBg)
-                        .border(1.dp, bubbleBorder, CircleShape),
-                    fallbackContent = {
-                        Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = voiceAccent)
-                    }
-                )
+                if (showAvatar) {
+                    RobustAvatar(
+                        url = message.avatarUrl,
+                        modifier = Modifier.size(40.dp).clip(CircleShape)
+                            .background(bubbleBg)
+                            .border(1.dp, bubbleBorder, CircleShape),
+                        fallbackContent = {
+                            Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(22.dp), tint = voiceAccent)
+                        }
+                    )
+                } else {
+                    Spacer(modifier = Modifier.size(40.dp))
+                }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
-                    Text(
-                        text = message.shipName,
-                        style = AppTypography.LabelSmallMedium.copy(color = voiceAccent),
-                        modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
-                    )
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
+                            .clip(bubbleShape)
                             .background(bubbleBg)
-                            .border(1.dp, bubbleBorder, RoundedCornerShape(topStart = AppSpacing.Corner.Md, topEnd = AppSpacing.Corner.Md, bottomStart = AppSpacing.Corner.Xs, bottomEnd = AppSpacing.Corner.Md))
-                            .clickable(onClick = onVoiceClick)
+                            .border(1.dp, bubbleBorder, bubbleShape)
+                            .combinedClickable(
+                                onClick = onVoiceClick,
+                                onLongClick = onMessageLongClick
+                            )
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Icon(
                                 if (isPlaying) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(20.dp),
                                 tint = voiceAccent
                             )
                             Text(
                                 text = message.dialogue.ifBlank { "语音消息" },
-                                style = AppTypography.BodyMedium.copy(color = textColor, lineHeight = 20.sp)
+                                style = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp, lineHeight = 19.sp)
                             )
                         }
                     }
-                    Text(
-                        text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
-                        color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
-                        modifier = Modifier.padding(start = 2.dp, top = 2.dp)
-                    )
+                    if (showTimestamp) {
+                        Text(
+                            text = formatTime(message.timestamp),
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
+                            modifier = Modifier.padding(start = 2.dp, top = 2.dp)
+                        )
+                    }
                 }
             }
         }
 
         ChatMessageType.STICKER.name -> {
-            // ── 表情包消息 ──
+            // ── 表情包消息：40dp 头像仅组首显示 ──
             val bubbleBg = if (isDark) JuusColors.Dark.AiBubble else JuusColors.AiBubble
             val nameColor = if (isDark) JuusColors.Dark.AiName else JuusColors.AiName
             val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
                 horizontalArrangement = Arrangement.Start,
                 verticalAlignment = Alignment.Top
             ) {
-                RobustAvatar(
-                    url = message.avatarUrl,
-                    modifier = Modifier.size(36.dp).clip(CircleShape)
-                        .background(bubbleBg)
-                        .border(1.dp, avatarBorder, CircleShape),
-                    fallbackContent = {
-                        Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp), tint = nameColor)
-                    }
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column {
-                    Text(
-                        text = message.shipName,
-                        style = AppTypography.LabelSmallMedium.copy(color = nameColor),
-                        modifier = Modifier.padding(start = 2.dp, bottom = 3.dp)
+                if (showAvatar) {
+                    RobustAvatar(
+                        url = message.avatarUrl,
+                        modifier = Modifier.size(40.dp).clip(CircleShape)
+                            .background(bubbleBg)
+                            .border(1.dp, avatarBorder, CircleShape),
+                        fallbackContent = {
+                            Icon(Icons.Rounded.SmartToy, contentDescription = null, modifier = Modifier.size(22.dp), tint = nameColor)
+                        }
                     )
+                } else {
+                    Spacer(modifier = Modifier.size(40.dp))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.widthIn(max = maxWidth)) {
                     Box(
                         modifier = Modifier
                             .widthIn(max = 160.dp)
                             .heightIn(min = 60.dp, max = 180.dp)
                             .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
                             .background(if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.03f))
-                            .clickable(onClick = onStickerClick)
+                            .combinedClickable(
+                                onClick = onStickerClick,
+                                onLongClick = onMessageLongClick
+                            )
                     ) {
-                        var isLoading by remember { mutableStateOf(true) }
-                        var isError by remember { mutableStateOf(false) }
+                        var isLoading by remember(message.id) { mutableStateOf(true) }
+                        var isError by remember(message.id) { mutableStateOf(false) }
 
                         AsyncImage(
                             model = remember(message.stickerUrl) {
@@ -1019,7 +1300,6 @@ private fun MessageBubble(
                         )
 
                         if (isError) {
-                            // 加载失败时显示表情包名称文字，而非空白或错误图标
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp, horizontal = 12.dp),
                                 contentAlignment = Alignment.Center
@@ -1034,19 +1314,21 @@ private fun MessageBubble(
                             }
                         }
                     }
-                    Text(
-                        text = formatTime(message.timestamp),
-                        style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
-                        color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
-                        modifier = Modifier.padding(start = 2.dp, top = 2.dp)
-                    )
+                    if (showTimestamp) {
+                        Text(
+                            text = formatTime(message.timestamp),
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
+                            modifier = Modifier.padding(start = 2.dp, top = 2.dp)
+                        )
+                    }
                 }
             }
         }
 
         ChatMessageType.SYSTEM.name -> {
             // ── 系统消息：居中灰色文字 ──
-            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 6.dp), contentAlignment = Alignment.Center) {
                 Text(
                     text = message.content,
                     style = AppTypography.LabelSmall.copy(
@@ -1067,65 +1349,132 @@ private fun ChatInputBar(
     onSend: () -> Unit,
     enabled: Boolean,
     isDark: Boolean,
-    onInputFocus: () -> Unit = {}
+    onInputFocus: () -> Unit = {},
+    onPlusClick: () -> Unit = {}
 ) {
+    // JUUSTAGRAM 设计：毛玻璃输入栏 bg-white/85 + backdrop-blur(8px)
+    // 布局：[+ 按钮 36dp] [圆角输入框 height 40dp] [发送按钮 36dp]
     val focusRequester = remember { FocusRequester() }
     val footerBg = if (isDark) JuusColors.Dark.FooterBg else JuusColors.FooterBg
     val footerBorder = if (isDark) JuusColors.Dark.FooterBorder else JuusColors.FooterBorder
     val inputBg = if (isDark) JuusColors.Dark.InputBg else JuusColors.InputBg
-    val inputBorder = if (isDark) JuusColors.Dark.InputBorder else JuusColors.InputBorder
-    val inputFocusBorder = if (isDark) JuusColors.Dark.InputFocusBorder else JuusColors.InputFocusBorder
     val sendActive = if (isDark) JuusColors.Dark.SendActive else JuusColors.SendActive
     val sendInactive = if (isDark) JuusColors.Dark.SendInactive else JuusColors.SendInactive
     val textColor = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
     val hintColor = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
+    val plusIconColor = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
+    val canSend = inputText.isNotBlank() && enabled
+
+    // 使用 TextFieldValue 精确控制光标位置，避免 String 状态下重组导致的光标跳变
+    var textFieldValue by remember {
+        mutableStateOf(TextFieldValue(inputText))
+    }
+    // 同步外部状态变更（如清空、切换会话）到 textFieldValue
+    LaunchedEffect(inputText) {
+        if (textFieldValue.text != inputText) {
+            textFieldValue = TextFieldValue(
+                text = inputText,
+                selection = androidx.compose.ui.text.TextRange(inputText.length)
+            )
+        }
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(footerBg)
-            .border(width = 1.dp, color = footerBorder, shape = RoundedCornerShape(AppSpacing.Corner.None))
-            .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
+            .drawBehind {
+                // 顶部分隔线 border-t
+                val strokeWidth = 1.dp.toPx()
+                drawLine(
+                    color = footerBorder,
+                    start = Offset(0f, 0f),
+                    end = Offset(size.width, 0f),
+                    strokeWidth = strokeWidth
+                )
+            }
+            .padding(horizontal = AppSpacing.Md, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
     ) {
-        OutlinedTextField(
-            value = inputText,
-            onValueChange = onInputChange,
-            modifier = Modifier.weight(1f)
+        // JUUSTAGRAM 设计：加号按钮（圆形 36dp，bg-juustagram-bg，text-secondary）
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(inputBg)
+                .clickable(onClick = onPlusClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Rounded.Add,
+                contentDescription = "添加",
+                tint = plusIconColor,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        // JUUSTAGRAM 设计：圆角输入框（rounded-full, bg-juustagram-bg）
+        // 修复光标延迟和移位：使用 TextFieldValue + Box 叠加 placeholder 避免条件渲染布局跳变
+        val fieldShape = RoundedCornerShape(20.dp)
+        val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        androidx.compose.foundation.text.BasicTextField(
+            value = textFieldValue,
+            onValueChange = { newValue ->
+                textFieldValue = newValue
+                onInputChange(newValue.text)
+            },
+            modifier = Modifier
+                .weight(1f)
+                .heightIn(min = 40.dp, max = 120.dp)
                 .focusRequester(focusRequester)
                 .onFocusEvent { state ->
                     if (state.isFocused) onInputFocus()
-                },
-            placeholder = {
-                Text("输入消息...", style = AppTypography.BodyMedium.copy(color = hintColor))
-            },
-            textStyle = AppTypography.BodyMedium.copy(color = textColor),
-            singleLine = true,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = inputFocusBorder,
-                unfocusedBorderColor = inputBorder,
-                focusedContainerColor = inputBg,
-                unfocusedContainerColor = inputBg
+                }
+                .clip(fieldShape)
+                .background(inputBg)
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            textStyle = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp),
+            // 多行输入：允许最多 5 行，文字过长时自动换行显示，避免单行截断
+            maxLines = 5,
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(if (isDark) JuusPalette.Dark.Primary else JuusPalette.Primary),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+                imeAction = androidx.compose.ui.text.input.ImeAction.Send
             ),
-            shape = RoundedCornerShape(AppSpacing.Corner.Xl)
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                onSend = {
+                    if (canSend) {
+                        onSend()
+                        keyboardController?.hide()
+                    }
+                }
+            ),
+            decorationBox = { innerTextField ->
+                // 使用 Box 叠加 placeholder 和 innerTextField，避免条件渲染导致的布局跳变
+                androidx.compose.foundation.layout.Box(modifier = Modifier.fillMaxWidth()) {
+                    if (inputText.isEmpty()) {
+                        Text(
+                            "输入消息...",
+                            style = AppTypography.BodyMedium.copy(color = hintColor, fontSize = 14.sp)
+                        )
+                    }
+                    innerTextField()
+                }
+            }
         )
-        IconButton(
-            onClick = onSend,
-            enabled = enabled && inputText.isNotBlank(),
+        // JUUSTAGRAM 设计：发送按钮（圆形 36dp，bg-juustagram-primary，text-on-primary）
+        Box(
             modifier = Modifier
-                .size(40.dp)
+                .size(36.dp)
                 .clip(CircleShape)
-                .background(
-                    if (inputText.isNotBlank() && enabled) sendActive else sendInactive
-                )
+                .background(if (canSend) sendActive else sendInactive)
+                .clickable(enabled = canSend, onClick = onSend),
+            contentAlignment = Alignment.Center
         ) {
             Icon(
                 Icons.AutoMirrored.Rounded.Send,
                 contentDescription = "发送",
-                // 暗色模式：激活态背景为浅蓝(0xFF85D0FF)，需用深色图标；未激活态背景为深蓝，用浅色图标
-                // 浅色模式：激活态背景为蓝(0xFF20A0FF)，用白色图标；未激活态背景为浅灰，用深色图标
-                tint = if (inputText.isNotBlank() && enabled) {
+                tint = if (canSend) {
                     if (isDark) JuusColors.Dark.SendIconActive else Color.White
                 } else {
                     if (isDark) Color.White else JuusColors.SendIconInactive
@@ -1138,7 +1487,7 @@ private fun ChatInputBar(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDismiss: () -> Unit, onAvatarSelected: (String) -> Unit) {
+fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDismiss: () -> Unit, onAvatarSelected: (String) -> Unit) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -1169,20 +1518,20 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
             }
             Spacer(modifier = Modifier.height(AppSpacing.Sm))
             if (avatarTab == 0) {
-                OutlinedTextField(value = searchQuery, onValueChange = viewModel::setShipSearchQuery, modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg), placeholder = { Text("搜索舰娘...") }, singleLine = true, textStyle = AppTypography.BodyMedium, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary), shape = RoundedCornerShape(AppSpacing.Corner.Sm))
+                StableOutlinedTextField(value = searchQuery, onValueChange = viewModel::setShipSearchQuery, modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg), placeholder = { Text("搜索舰娘...") }, singleLine = true, textStyle = AppTypography.BodyMedium, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary), shape = RoundedCornerShape(AppSpacing.Corner.Sm))
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     items(filteredShips, key = { it.name }) { ship ->
                         // 优先使用本地高清头像，匹配不到回退网络 URL
-                        val effectiveAvatar = remember(ship.name, ship.avatarUrl) {
-                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.avatarUrl)
+                        val effectiveAvatar = remember(ship.name, ship.avatarUrl, ship.archiveType) {
+                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.archiveType, ship.avatarUrl)
                         }
                         val isSelected = effectiveAvatar == currentAvatarUrl
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else Color.LightGray.copy(alpha = 0.3f), CircleShape).clickable {
                                 // 选中舰娘头像时，复制 asset 到内部存储，确保 file:// 路径可靠加载
                                 scope.launch {
-                                    val reliablePath = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl)
+                                    val reliablePath = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl, ship.archiveType)
                                     onAvatarSelected(reliablePath)
                                 }
                             }, contentAlignment = Alignment.Center) { RobustAvatar(url = effectiveAvatar, modifier = Modifier.size(52.dp).clip(CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(20.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f)) }) }
@@ -1211,6 +1560,448 @@ private fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: Stri
     }
 }
 
+/**
+ * 聊天背景选择弹窗
+ *
+ * 支持两种背景来源：
+ * 1. 本地上传：从相册选择图片，复制到内部存储 backgrounds/ 目录
+ * 2. 默认纯色：清除自定义背景，恢复纯色背景
+ *
+ * 设计：底部弹窗 + 当前背景预览 + 操作按钮
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BackgroundPickerSheet(
+    viewModel: JiuxinViewModel,
+    currentBackgroundUrl: String,
+    isDark: Boolean,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val accentColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
+    val cardBg = if (isDark) JuusColors.Dark.FooterBg else JuusColors.FooterBg
+    val subColor = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        uri?.let {
+            scope.launch {
+                val filePath = viewModel.copyBackgroundToInternalStorage(it)
+                if (filePath != null) {
+                    viewModel.saveChatBackgroundUrl(filePath)
+                    Toast.makeText(context, "已设置聊天背景", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "背景图片加载失败，请重试", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().padding(AppSpacing.Lg)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
+                    Icon(Icons.Rounded.Image, contentDescription = null, tint = accentColor, modifier = Modifier.size(20.dp))
+                    Text(text = "聊天背景", style = AppTypography.TitleMediumBold)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = subColor)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AppSpacing.Md))
+
+            // 当前背景预览
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(160.dp)
+                    .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), RoundedCornerShape(AppSpacing.Corner.Lg)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (currentBackgroundUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = currentBackgroundUrl,
+                        contentDescription = "当前背景预览",
+                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(AppSpacing.Corner.Lg)),
+                        contentScale = ContentScale.Crop
+                    )
+                    // 右下角标识
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(AppSpacing.Sm)
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                            .background(Color.Black.copy(alpha = 0.5f))
+                            .padding(horizontal = AppSpacing.Sm, vertical = 2.dp)
+                    ) {
+                        Text(text = "当前背景", style = AppTypography.LabelSmall, color = Color.White)
+                    }
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
+                        Icon(
+                            Icons.Rounded.Image,
+                            contentDescription = null,
+                            tint = subColor.copy(alpha = 0.4f),
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Text(text = "默认纯色背景", style = AppTypography.BodySmall, color = subColor)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AppSpacing.Lg))
+
+            // 操作按钮：从相册选择
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AppSpacing.Corner.Md))
+                    .background(accentColor)
+                    .clickable { imagePickerLauncher.launch(arrayOf("image/*")) }
+                    .padding(vertical = AppSpacing.Md),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.AddPhotoAlternate, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                Text(text = "从相册选择背景", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            }
+
+            Spacer(modifier = Modifier.height(AppSpacing.Sm))
+
+            // 清除背景按钮（仅当有自定义背景时显示）
+            if (currentBackgroundUrl.isNotBlank()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(AppSpacing.Corner.Md))
+                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f))
+                        .clickable {
+                            viewModel.saveChatBackgroundUrl("")
+                            Toast.makeText(context, "已恢复默认背景", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(vertical = AppSpacing.Md),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                    Text(text = "恢复默认背景", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AppSpacing.Sm))
+            Text(
+                text = "建议使用竖屏比例的图片，背景会自适应铺满整个聊天界面",
+                style = AppTypography.BodySmall,
+                color = subColor.copy(alpha = 0.7f),
+                modifier = Modifier.padding(horizontal = AppSpacing.Xs)
+            )
+        }
+    }
+}
+
+// ── 长按消息操作弹窗（精致玻璃质感设计） ──
+@Composable
+private fun MessageActionSheet(
+    isUser: Boolean,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val primaryColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
+    val errorColor = if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText
+    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
+    val textPrimary = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
+    val textSecondary = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
+    val dividerColor = if (isDark) Color(0x1AFFFFFF) else Color(0x0D000000)
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(cardBg)
+                .padding(vertical = 8.dp)
+        ) {
+            // 顶部标识条
+            Box(
+                modifier = Modifier
+                    .padding(top = 4.dp, bottom = 12.dp)
+                    .align(Alignment.CenterHorizontally)
+                    .width(32.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(dividerColor)
+            )
+            // 标题
+            Text(
+                text = "消息操作",
+                style = AppTypography.TitleMediumBold.copy(color = textPrimary),
+                modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp)
+            )
+
+            // 编辑重发（仅用户消息）
+            if (isUser) {
+                MessageActionItem(
+                    icon = Icons.Rounded.Edit,
+                    title = "编辑并重新发送",
+                    subtitle = "修改内容后重新生成回复",
+                    accentColor = primaryColor,
+                    textPrimary = textPrimary,
+                    textSecondary = textSecondary,
+                    dividerColor = dividerColor,
+                    onClick = onEdit
+                )
+            }
+
+            // 删除消息
+            MessageActionItem(
+                icon = Icons.Rounded.Delete,
+                title = "删除消息",
+                subtitle = "仅删除此条消息",
+                accentColor = errorColor,
+                textPrimary = textPrimary,
+                textSecondary = textSecondary,
+                dividerColor = dividerColor,
+                isLast = true,
+                onClick = onDelete
+            )
+
+            // 取消按钮
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .clip(RoundedCornerShape(0.dp))
+                    .background(dividerColor)
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "取消",
+                        style = AppTypography.LabelLarge.copy(color = textSecondary)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageActionItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    dividerColor: Color,
+    isLast: Boolean = false,
+    onClick: () -> Unit
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 24.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // 图标容器 — 圆角方形，带淡色背景
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(accentColor.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            // 文字
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = AppTypography.BodyLarge.copy(fontWeight = FontWeight.SemiBold, color = textPrimary)
+                )
+                Text(
+                    text = subtitle,
+                    style = AppTypography.BodySmall.copy(color = textSecondary.copy(alpha = 0.7f)),
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+        if (!isLast) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 80.dp)
+                    .height(0.5.dp)
+                    .background(dividerColor)
+            )
+        }
+    }
+}
+
+// ── 编辑重发弹窗（精致玻璃质感设计） ──
+@Composable
+private fun MessageEditSheet(
+    originalContent: String,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onSend: (String) -> Unit
+) {
+    var editContent by remember(originalContent) { mutableStateOf(originalContent) }
+    val primaryColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
+    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
+    val textPrimary = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
+    val textSecondary = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
+    val dividerColor = if (isDark) Color(0x1AFFFFFF) else Color(0x0D000000)
+    val warningBg = if (isDark) Color(0x1A5BA4E6) else Color(0x0D5BA4E6)
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(cardBg)
+                .padding(vertical = 8.dp)
+        ) {
+            // 顶部标识条
+            Box(
+                modifier = Modifier
+                    .padding(top = 4.dp, bottom = 12.dp)
+                    .align(Alignment.CenterHorizontally)
+                    .width(32.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(dividerColor)
+            )
+            // 标题行：图标 + 标题
+            Row(
+                modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(primaryColor.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Rounded.Edit,
+                        contentDescription = null,
+                        tint = primaryColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Text(
+                    text = "编辑并重新发送",
+                    style = AppTypography.TitleMediumBold.copy(color = textPrimary)
+                )
+            }
+
+            // 提示横幅
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 24.dp, end = 24.dp, bottom = 16.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(warningBg)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.Refresh,
+                    contentDescription = null,
+                    tint = primaryColor,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "发送后将删除此消息及后续回复，重新生成",
+                    style = AppTypography.BodySmall.copy(color = textSecondary)
+                )
+            }
+
+            // 编辑输入框
+            StableOutlinedTextField(
+                value = editContent,
+                onValueChange = { editContent = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 24.dp, end = 24.dp, bottom = 20.dp)
+                    .heightIn(min = 80.dp),
+                label = { Text("消息内容") },
+                textStyle = AppTypography.BodyMedium,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = primaryColor,
+                    unfocusedBorderColor = dividerColor
+                ),
+                shape = RoundedCornerShape(14.dp)
+            )
+
+            // 底部按钮区
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("取消", style = AppTypography.LabelLarge.copy(color = textSecondary))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(primaryColor)
+                        .clickable { onSend(editContent) }
+                        .padding(horizontal = 24.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.Send,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            "发送",
+                            style = AppTypography.LabelLargeBold.copy(color = Color.White)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun formatTime(timestamp: Long): String {
     val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
     return sdf.format(Date(timestamp))
@@ -1221,7 +2012,6 @@ private fun formatSessionTime(timestamp: Long): String {
     val diff = now - timestamp
     return when {
         diff < 60_000 -> "刚刚"
-        diff < 3_600_000 -> "${diff / 60_000}分钟前"
         diff < 86_400_000 -> SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
         diff < 604_800_000 -> "${diff / 86_400_000}天前"
         else -> SimpleDateFormat("yyyy/MM/dd", Locale.getDefault()).format(Date(timestamp))

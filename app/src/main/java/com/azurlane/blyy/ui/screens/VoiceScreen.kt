@@ -152,8 +152,10 @@ fun VoiceScreenContent(
     val snackbarHostState = remember { SnackbarHostState() }
 
     // 优先使用本地高清头像，匹配不到时回退到网络 URL
-    val effectiveAvatarUrl = remember(voiceState.shipName, voiceState.avatarUrl) {
-        LocalAvatarResolver.resolveOrDefault(context, voiceState.shipName, voiceState.avatarUrl)
+    // 区分档案类型：studentLink 非空表示学生档案（STUDENT），避免同名不同类型舰娘误匹配
+    val archiveType = if (voiceState.studentLink.isNotBlank()) "STUDENT" else "DOCK"
+    val effectiveAvatarUrl = remember(voiceState.shipName, voiceState.avatarUrl, archiveType) {
+        LocalAvatarResolver.resolveOrDefault(context, voiceState.shipName, archiveType, voiceState.avatarUrl)
     }
 
     LaunchedEffect(playbackError) {

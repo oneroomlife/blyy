@@ -71,11 +71,50 @@ object LocalAvatarResolver {
     }
 
     /**
+     * 解析舰娘头像（区分档案类型，避免同名不同类型舰娘误匹配）。
+     *
+     * 匹配策略：
+     * 1. 优先按 `shipName@archiveType` 精确匹配
+     * 2. 仅当 archiveType 为 "DOCK" 时，回退到不区分类型的 [resolve]（兼容现有 assets 命名，
+     *    assets 中的文件默认就是 DOCK 类型）
+     * 3. 对于其他类型（如 "STUDENT"），不回退，返回 null（学生档案有不同立绘，
+     *    不应复用 DOCK 头像，避免同名误匹配）
+     *
+     * @param archiveType 档案类型（"DOCK" 或 "STUDENT"），null/空字符串表示不区分
+     */
+    fun resolve(context: Context, shipName: String, archiveType: String?): String? {
+        if (shipName.isBlank()) return null
+        if (archiveType.isNullOrBlank()) return resolve(context, shipName)
+
+        val index = ensureIndex(context)
+        if (index.isEmpty()) return null
+
+        // 1. 优先按 "舰娘名@档案类型" 精确匹配（避免同名误匹配）
+        val typeKey = "${shipName}@$archiveType"
+        index[typeKey]?.let { return buildAssetUri(it) }
+
+        // 2. 仅 DOCK 类型回退到不区分类型的匹配（assets 默认就是 DOCK 头像）
+        // STUDENT 等其他类型不回退，避免学生档案错误显示同名 DOCK 舰娘的本地头像
+        if (archiveType == "DOCK") {
+            return resolve(context, shipName)
+        }
+
+        return null
+    }
+
+    /**
      * 返回有效的头像 URI：优先本地，回退网络 URL。
      * 便于调用方一行完成 "本地优先 → 网络兜底" 逻辑。
      */
     fun resolveOrDefault(context: Context, shipName: String, networkUrl: String): String {
         return resolve(context, shipName) ?: networkUrl
+    }
+
+    /**
+     * 返回有效的头像 URI（区分档案类型）：优先本地，回退网络 URL。
+     */
+    fun resolveOrDefault(context: Context, shipName: String, archiveType: String?, networkUrl: String): String {
+        return resolve(context, shipName, archiveType) ?: networkUrl
     }
 
     /** 懒加载构建 assets 文件名索引（线程安全双重检查锁） */

@@ -1182,6 +1182,13 @@ class ShipRepository @Inject constructor(
                     }
 
                     // 视频标签特殊处理
+                    // gamekee 视频结构（JS 渲染后）：
+                    //   <div class="video-list-item">
+                    //     <video src="...mp4" controls="controls"></video>
+                    //     <div class="video-title">回忆大厅视频</div>
+                    //   </div>
+                    // 注意：video 标签无 poster 属性，无 title/alt 属性；
+                    //       标题在同级 div.video-title 中，无单独描述元素，无封面图。
                     if (containerId == "video") {
                         container.select("video").forEach { videoEl ->
                             // 优先从 src 属性获取视频地址
@@ -1192,10 +1199,37 @@ class ShipRepository @Inject constructor(
                                 videoSrc = sourceEl?.attr("src") ?: ""
                             }
                             if (videoSrc.isNotEmpty()) {
-                                val title = videoEl.attr("title")
-                                    .ifEmpty { videoEl.attr("alt") }
-                                    .ifEmpty { "视频" }
-                                videos.add(StudentGalleryVideo(formatGamekeeUrl(videoSrc), title))
+                                // 查找包含此 video 的 .video-list-item 容器（标题的父级）
+                                val listItem = videoEl.closest(".video-list-item") ?: videoEl.parent()
+                                // 标题：从同级 div.video-title 提取
+                                var title = listItem?.select(".video-title")?.text()?.trim() ?: ""
+                                if (title.isEmpty()) {
+                                    title = videoEl.attr("title").ifEmpty { videoEl.attr("alt") }.ifEmpty { "视频" }
+                                }
+                                // 封面图：优先 poster 属性，其次从父容器找 <img>
+                                var coverUrl = videoEl.attr("poster")
+                                if (coverUrl.isEmpty()) {
+                                    val imgEl = listItem?.select("img")?.firstOrNull()
+                                    coverUrl = imgEl?.attr("src") ?: imgEl?.attr("data-src") ?: ""
+                                }
+                                // 描述：从父容器中查找描述性文本（排除 video-title 本身）
+                                var description = ""
+                                if (listItem != null) {
+                                    description = listItem.ownText().trim()
+                                    if (description.isEmpty()) {
+                                        val descEl = listItem.select("p, span.video-desc, div.video-desc, div.video-description").firstOrNull()
+                                        description = descEl?.text()?.trim() ?: ""
+                                    }
+                                }
+                                if (description.isEmpty()) {
+                                    description = videoEl.attr("title").ifEmpty { videoEl.attr("alt") }
+                                }
+                                videos.add(StudentGalleryVideo(
+                                    url = formatGamekeeUrl(videoSrc),
+                                    title = title,
+                                    description = description,
+                                    coverUrl = if (coverUrl.isNotEmpty()) formatGamekeeUrl(coverUrl) else ""
+                                ))
                             }
                         }
                     }

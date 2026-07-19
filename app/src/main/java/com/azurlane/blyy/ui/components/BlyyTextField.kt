@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.azurlane.blyy.ui.theme.AppColors
@@ -226,5 +227,79 @@ fun BlyySearchField(
         trailingIcon = if (value.isNotEmpty()) Icons.Rounded.Clear else null,
         onTrailingIconClick = if (value.isNotEmpty()) ({ onValueChange("") }) else null,
         enabled = enabled
+    )
+}
+
+/**
+ * 优化光标体验的 OutlinedTextField 封装
+ *
+ * 核心原理：维护本地 [TextFieldValue] 状态，用户输入时立即更新本地状态（光标不等待 DataStore 往返），
+ * 仅在外部值与本地值不一致时（如程序化清空、切换会话）才同步外部值。
+ *
+ * 解决问题：直接绑定 StateFlow String 值时，用户每次输入都要经 DataStore 异步往返，
+ * 导致光标位置丢失/跳变。
+ */
+@Composable
+fun StableOutlinedTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    readOnly: Boolean = false,
+    label: @Composable (() -> Unit)? = null,
+    placeholder: @Composable (() -> Unit)? = null,
+    leadingIcon: @Composable (() -> Unit)? = null,
+    trailingIcon: @Composable (() -> Unit)? = null,
+    supportingText: @Composable (() -> Unit)? = null,
+    isError: Boolean = false,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    keyboardOptions: androidx.compose.foundation.text.KeyboardOptions = androidx.compose.foundation.text.KeyboardOptions.Default,
+    keyboardActions: androidx.compose.foundation.text.KeyboardActions = androidx.compose.foundation.text.KeyboardActions.Default,
+    singleLine: Boolean = false,
+    maxLines: Int = if (singleLine) 1 else Int.MAX_VALUE,
+    minLines: Int = 1,
+    textStyle: androidx.compose.ui.text.TextStyle = androidx.compose.material3.LocalTextStyle.current,
+    colors: androidx.compose.material3.TextFieldColors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(),
+    shape: androidx.compose.ui.graphics.Shape = androidx.compose.material3.OutlinedTextFieldDefaults.shape
+) {
+    // 本地 TextFieldValue 状态：用户输入时立即更新，不等待外部 StateFlow 往返
+    var localValue by remember { mutableStateOf(TextFieldValue(value)) }
+
+    // 仅在外部值与本地文本不一致时同步（如程序化清空、切换会话等场景）
+    // 注意：不使用 LaunchedEffect(value)，因为 value 每次输入后都会从 StateFlow 回流，
+    // 导致光标被重置。仅在文本真正不同时才更新。
+    if (localValue.text != value) {
+        localValue = TextFieldValue(
+            text = value,
+            selection = androidx.compose.ui.text.TextRange(value.length)
+        )
+    }
+
+    androidx.compose.material3.OutlinedTextField(
+        value = localValue,
+        onValueChange = { tfv ->
+            localValue = tfv
+            if (tfv.text != value) {
+                onValueChange(tfv.text)
+            }
+        },
+        modifier = modifier,
+        enabled = enabled,
+        readOnly = readOnly,
+        label = label,
+        placeholder = placeholder,
+        leadingIcon = leadingIcon,
+        trailingIcon = trailingIcon,
+        supportingText = supportingText,
+        isError = isError,
+        visualTransformation = visualTransformation,
+        keyboardOptions = keyboardOptions,
+        keyboardActions = keyboardActions,
+        singleLine = singleLine,
+        maxLines = maxLines,
+        minLines = minLines,
+        textStyle = textStyle,
+        colors = colors,
+        shape = shape
     )
 }

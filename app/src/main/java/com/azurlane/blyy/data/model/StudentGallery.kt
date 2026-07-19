@@ -56,5 +56,7 @@ data class StudentGalleryImage(
 @Immutable
 data class StudentGalleryVideo(
     val url: String,
-    val title: String = ""
+    val title: String = "",
+    val description: String = "",
+    val coverUrl: String = ""
 )

@@ -13,6 +13,9 @@ import com.azurlane.blyy.data.model.ChatMessage
 import com.azurlane.blyy.data.model.ChatMessageType
 import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.data.model.JiuxinChatUiState
+import com.azurlane.blyy.data.model.JiuxinPreset
+import com.azurlane.blyy.data.model.ApiConfig
+import com.azurlane.blyy.data.model.PersonaConfig
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceTagMapping
@@ -61,13 +64,20 @@ class JiuxinViewModel @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
     companion object {
         private const val TAG = "JiuxinViewModel"
         private const val DEFAULT_MODEL = "gpt-4o-mini"
         private const val MAX_CHAT_HISTORY = 200
         private const val MAX_SESSIONS = 50
+
+        /** 语音触发关键词默认值 — 与 PlayerSettingsDataStore 默认保持一致 */
+        private const val DEFAULT_VOICE_KEYWORDS = "你好;早安;晚安;加油;辛苦了"
+
+        /** 默认皮肤名集合（用于语音随机池优先匹配）— 统一定义，避免多处硬编码不一致 */
+        private val DEFAULT_SKIN_NAMES = setOf("默认装扮", "默认", "通常", "原装")
+
+        /** 容错 JSON 实例：忽略未知字段，避免模型升级后反序列化崩溃 */
+        private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     }
 
     // Voice player
@@ -95,7 +105,7 @@ class JiuxinViewModel @Inject constructor(
     val avatarUrl = settings.aiAvatarUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val voiceEnabled = settings.aiVoiceEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val voiceRandomChance = settings.aiVoiceRandomChance.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.1f)
-    val voiceKeywords = settings.aiVoiceKeywords.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "你好;早安;晚安;加油;辛苦了")
+    val voiceKeywords = settings.aiVoiceKeywords.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DEFAULT_VOICE_KEYWORDS)
     val selectedModel = settings.aiModel.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val userName = settings.userName.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "指挥官")
     val userAvatarUrl = settings.userAvatarUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -107,6 +117,7 @@ class JiuxinViewModel @Inject constructor(
     val voiceShipAvatar = settings.aiVoiceShipAvatar.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val stickersEnabled = settings.aiStickersEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val stickerChance = settings.aiStickerChance.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.8f)
+    val chatBackgroundUrl = settings.aiChatBackgroundUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     // ── Connection Test ──
     private val _connectionTestState = MutableStateFlow<ConnectionTestState>(ConnectionTestState.Idle)
@@ -122,6 +133,99 @@ class JiuxinViewModel @Inject constructor(
 
     private val _currentSessionId = MutableStateFlow("")
     val currentSessionId: StateFlow<String> = _currentSessionId.asStateFlow()
+
+    /**
+     * 当前活动会话（派生自 [_sessions] + [_currentSessionId]）。
+     *
+     * 聊天界面和舰娘设置界面通过此 StateFlow 读取当前会话的配置快照，
+     * 而非全局 StateFlow —— 实现会话级配置隔离。
+     * 全局 StateFlow 仅作为新建会话的默认值模板，不再被聊天界面直接读取。
+     */
+    val currentSession: StateFlow<ChatSession?> = combine(_sessions, _currentSessionId) { sessions, id ->
+        sessions.firstOrNull { it.id == id }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /**
+     * 聊天状态代际计数器：每次清空/删除/切换会话时递增。
+     * 用于在 [sendMessage] 的异步 API 调用返回后，检测聊天状态是否已变更，
+     * 若已变更则丢弃过期的 AI 回复和表情包，避免已删除/已清空的内容重新出现。
+     */
+    private val _chatGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
+    // ── 啾信预设配置 ──
+    val presets: StateFlow<List<JiuxinPreset>> = settings.aiJiuxinPresets
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // ── 多套 API 配置（独立于舰娘人格，可复用） ──
+    val apiConfigs: StateFlow<List<ApiConfig>> = settings.aiApiConfigs
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // ── 多套舰娘人格配置（独立于 API 配置，可组合） ──
+    val personaConfigs: StateFlow<List<PersonaConfig>> = settings.aiPersonaConfigs
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * 按舰娘去重后的会话列表：同一舰娘的多个会话只保留最新一条。
+     *
+     * 排序规则（优先级）：
+     * 1. 用户自定义排序（[settings.aiSessionOrder]）—— 长按拖动后的顺序
+     * 2. 无自定义排序时按 updatedAt 倒序（默认）
+     *
+     * 去重 key 优先级（多级回退）：
+     * 1. presetId 非空 → 按预设 ID 分组
+     * 2. avatarUrl 非空 → 按头像 URL 分组（同一头像视为同一舰娘）
+     * 3. jiuxinName 非空且非默认格式 → 按舰娘名分组
+     * 4. 以上均无 → 统一归入 "default" 分组（避免无标识会话全部独立显示）
+     */
+    val uniqueConversations: StateFlow<List<ChatSession>> = combine(_sessions, settings.aiSessionOrder) { sessions, order ->
+        val deduped = sessions
+            .groupBy { session -> computeShipKey(session) }
+            .values
+            .map { group -> group.maxByOrNull { it.updatedAt } ?: group.first() }
+        if (order.isEmpty()) {
+            // 无自定义排序：按更新时间倒序
+            deduped.sortedByDescending { it.updatedAt }
+        } else {
+            // 有自定义排序：按 order 中 id 的顺序排列，未包含的追加到末尾（按 updatedAt 倒序）
+            val orderMap = order.withIndex().associate { it.value to it.index }
+            val ordered = deduped.filter { it.id in orderMap }
+                .sortedBy { orderMap[it.id] ?: Int.MAX_VALUE }
+            val remaining = deduped.filterNot { it.id in orderMap }
+                .sortedByDescending { it.updatedAt }
+            ordered + remaining
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * 当前舰娘的历史对话列表：仅包含与当前会话同一舰娘的会话。
+     *
+     * 用于聊天界面的历史对话面板（HistoryPanel），实现"每个舰娘只能查看对应的历史对话"的隔离。
+     * 隔离 key 与 [uniqueConversations] 一致（[computeShipKey]）。
+     *
+     * 当当前会话不存在（如全部删除后）时返回空列表。
+     */
+    val currentShipSessions: StateFlow<List<ChatSession>> = combine(_sessions, _currentSessionId) { sessions, currentId ->
+        val currentSession = sessions.firstOrNull { it.id == currentId } ?: return@combine emptyList()
+        val shipKey = computeShipKey(currentSession)
+        sessions.filter { computeShipKey(it) == shipKey }
+            .sortedByDescending { it.updatedAt }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * 计算舰娘去重 key（统一隔离标识）。
+     *
+     * 优先级（多级回退）：
+     * 1. presetId 非空 → 按预设 ID 分组
+     * 2. avatarUrl 非空 → 按头像 URL 分组（同一头像视为同一舰娘）
+     * 3. jiuxinName 非空且非默认格式（不以"对话-"开头）→ 按舰娘名分组
+     * 4. 以上均无 → 统一归入 "default" 分组
+     */
+    private fun computeShipKey(session: ChatSession): String = when {
+        session.presetId.isNotBlank() -> "preset:${session.presetId}"
+        session.avatarUrl.isNotBlank() -> "avatar:${session.avatarUrl}"
+        session.jiuxinName.isNotBlank() && !session.jiuxinName.startsWith("对话-") -> "name:${session.jiuxinName}"
+        else -> "default"
+    }
 
     // ── 语音标签映射优化 (日常口语对应专业台词标签) ──
     private val defaultVoiceTagMappings = listOf(
@@ -233,6 +337,39 @@ class JiuxinViewModel @Inject constructor(
         VoiceTagMapping("不认识", listOf("好感度-陌生"), priority = 8)
     )
 
+    /**
+     * 默认语音标签映射的关键词索引（O(1) 查找）。
+     *
+     * 用于 [buildVoiceTagMappings] 中判断用户自定义关键词是否已存在默认映射，
+     * 替代原先 `defaultVoiceTagMappings.find { it.keyword == kw }` 的 O(n) 线性扫描。
+     */
+    private val defaultVoiceTagByKeyword: Map<String, VoiceTagMapping> by lazy {
+        defaultVoiceTagMappings.associateBy { it.keyword }
+    }
+
+    /**
+     * 根据语音触发关键词列表构建完整的 voice tag mappings（去重 + 按优先级降序）。
+     *
+     * 消除三处重复代码（init / switchToSession / sendMessage），统一构建逻辑：
+     * - 默认映射全部保留
+     * - 用户自定义关键词若与默认重名则跳过（默认优先级更高，避免 distinctBy 后丢失默认映射）
+     * - 用户自定义关键词若无对应默认映射，创建 fallback 映射：sceneTags=["主界面"]，priority=1
+     *   （"主界面"是最通用的语音类别，确保用户自定义关键词能触发有意义的语音，
+     *   而非 [findBestVoice] 的保底随机池；priority=1 确保默认关键词优先匹配）
+     * - 按 priority 降序排列，确保 [findBestTagMatch] 在长度相同时优先取高优先级
+     *
+     * @param keywords 已分词的关键词列表（不含空串）
+     */
+    private fun buildVoiceTagMappings(keywords: List<String>): List<VoiceTagMapping> {
+        val userMappings = keywords.mapNotNull { kw ->
+            if (defaultVoiceTagByKeyword.containsKey(kw)) null
+            else VoiceTagMapping(keyword = kw, sceneTags = listOf("主界面"), priority = 1)
+        }
+        return (defaultVoiceTagMappings + userMappings)
+            .distinctBy { it.keyword }
+            .sortedByDescending { it.priority }
+    }
+
 
 
 
@@ -289,14 +426,7 @@ class JiuxinViewModel @Inject constructor(
         viewModelScope.launch {
             voiceKeywords.collect { keywords ->
                 val list = keywords.split(";").filter { k -> k.isNotBlank() }
-                val userMappings = list.map { keyword ->
-                    defaultVoiceTagMappings.find { it.keyword == keyword }
-                        ?: VoiceTagMapping(keyword, listOf("主界面"), priority = 1)
-                }
-                val allMappings = (defaultVoiceTagMappings + userMappings)
-                    .distinctBy { it.keyword }
-                    .sortedByDescending { it.priority }
-                _chatState.update { it.copy(voiceKeywords = list, voiceTagMappings = allMappings) }
+                _chatState.update { it.copy(voiceKeywords = list, voiceTagMappings = buildVoiceTagMappings(list)) }
             }
         }
         viewModelScope.launch {
@@ -357,9 +487,9 @@ class JiuxinViewModel @Inject constructor(
      * @param networkUrl 网络头像 URL（作为回退）
      * @return 复合格式头像 URL（primary||fallback），本地文件优先，网络 URL 作为回退
      */
-    suspend fun resolveAndCopyShipAvatar(shipName: String, networkUrl: String): String {
+    suspend fun resolveAndCopyShipAvatar(shipName: String, networkUrl: String, archiveType: String = "DOCK"): String {
         val normalizedNetworkUrl = normalizeUrl(networkUrl)
-        val assetUri = LocalAvatarResolver.resolve(context, shipName)
+        val assetUri = LocalAvatarResolver.resolve(context, shipName, archiveType)
         if (assetUri == null) {
             return normalizedNetworkUrl
         }
@@ -376,9 +506,10 @@ class JiuxinViewModel @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 val avatarDir = File(context.filesDir, "avatars").apply { mkdirs() }
-                // 用舰娘名作为文件名，避免重复复制
+                // 文件名包含 archiveType，避免同名不同类型舰娘的头像文件碰撞
                 val safeFileName = shipName.replace(Regex("[^\\w.·\\-()μ★]"), "_")
-                val destFile = File(avatarDir, "ship_$safeFileName.jpg")
+                val safeArchiveType = archiveType.replace(Regex("[^\\w]"), "_")
+                val destFile = File(avatarDir, "ship_${safeFileName}_$safeArchiveType.jpg")
 
                 // 如果已复制过且文件存在，直接复用
                 if (!destFile.exists()) {
@@ -410,6 +541,34 @@ class JiuxinViewModel @Inject constructor(
     fun saveVoiceShipAvatar(avatar: String) { viewModelScope.launch { settings.setAiVoiceShipAvatar(normalizeUrl(avatar)) } }
     fun saveStickersEnabled(enabled: Boolean) { viewModelScope.launch { settings.setAiStickersEnabled(enabled) } }
     fun saveStickerChance(chance: Float) { viewModelScope.launch { settings.setAiStickerChance(chance) } }
+    fun saveChatBackgroundUrl(url: String) { viewModelScope.launch { settings.setAiChatBackgroundUrl(url) } }
+
+    /**
+     * 复制用户选择的背景图片到内部存储，返回可靠的 file:// 路径
+     *
+     * 与 [copyAvatarToInternalStorage] 类似，但存储到 backgrounds/ 目录。
+     * 避免使用 content:// URI，因为其在应用重启后可能丢失访问权限。
+     */
+    suspend fun copyBackgroundToInternalStorage(uri: Uri): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val bgDir = File(context.filesDir, "backgrounds").apply { mkdirs() }
+                val destFile = File(bgDir, "bg_${System.currentTimeMillis()}.jpg")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                } ?: run {
+                    Log.e(TAG, "openInputStream returned null for $uri")
+                    return@withContext null
+                }
+                "file://${destFile.absolutePath}"
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to copy background to internal storage", e)
+                null
+            }
+        }
+    }
 
     fun saveUserName(name: String) { viewModelScope.launch { settings.setUserName(name) } }
     fun saveUserAvatarUrl(url: String) { viewModelScope.launch { settings.setUserAvatarUrl(normalizeUrl(url)) } }
@@ -432,6 +591,32 @@ class JiuxinViewModel @Inject constructor(
         return "$trimmed/chat/completions"
     }
 
+    /**
+     * 构建 POST JSON 请求（统一 Authorization + Content-Type + Accept 头）。
+     *
+     * 消除 [performConnectionTest] 和 [callApi] 中重复的请求头构建代码。
+     */
+    private fun buildJsonPostRequest(url: String, key: String, requestBody: okhttp3.RequestBody): Request =
+        Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $key")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "application/json")
+            .post(requestBody)
+            .build()
+
+    /**
+     * 构建 GET 请求（统一 Authorization 头）。
+     *
+     * 消除 [performFetchModels] 中重复的请求头构建代码。
+     */
+    private fun buildAuthGetRequest(url: String, key: String): Request =
+        Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $key")
+            .get()
+            .build()
+
     // ── 会话管理 ──
 
     /** 生成默认会话名称: 对话-YYYYMMDD-HHMMSS */
@@ -440,150 +625,730 @@ class JiuxinViewModel @Inject constructor(
         return "对话-${sdf.format(Date())}"
     }
 
-    /** 创建新会话 */
-    fun createNewSession() {
+    /**
+     * 持久化新会话并同步内存状态（消除 createNewSession / startChatWithApiAndPersona / ensureCurrentSession 三处重复代码）。
+     *
+     * 统一流程：
+     * 1. 将新会话插入到列表头部
+     * 2. 应用 [MAX_SESSIONS] 上限裁剪
+     * 3. 先持久化到 DataStore（确保 collector 触发时数据已就绪，避免竞态覆盖）
+     * 4. 再同步更新内存 [_sessions] / [_currentSessionId] / [_chatState]，确保 UI 和在途请求立即感知
+     *
+     * 注意：调用方需在调用前执行 [_chatGeneration.incrementAndGet]()，使在途的 sendMessage 请求返回后丢弃旧会话的回复。
+     *
+     * @param session 待激活的新会话（已包含完整配置快照）
+     */
+    private suspend fun persistAndActivateSession(session: ChatSession) {
+        val updated = listOf(session) + _sessions.value
+        val trimmed = if (updated.size > MAX_SESSIONS) updated.dropLast(1) else updated
+        // 先持久化到 DataStore：确保 collector 触发时 DataStore 已有正确数据
+        settings.setAiChatSessions(trimmed)
+        settings.setAiCurrentSessionId(session.id)
+        settings.setAiSessionMessages(session.id, emptyList())
+        // 再同步更新内存状态：确保 UI 和在途请求能立即感知新会话
+        _sessions.value = trimmed
+        _currentSessionId.value = session.id
+        _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
+    }
+
+    /**
+     * 创建新会话（可关联预设）
+     *
+     * 去重一致性保证：如果未显式指定 [presetId]，则继承当前会话的 presetId。
+     * 这确保同一舰娘的新旧会话在 [uniqueConversations] 中拥有相同的去重 key，
+     * 避免会话列表出现重复的舰娘条目。
+     */
+    fun createNewSession(presetId: String = "", sessionName: String = "") {
+        // 递增代际计数器，使在途的 sendMessage 请求返回后丢弃旧会话的回复
+        _chatGeneration.incrementAndGet()
+        // 未指定预设时，继承当前会话的 presetId，保持同一舰娘去重 key 一致
+        val effectivePresetId = presetId.ifBlank {
+            _sessions.value.firstOrNull { it.id == _currentSessionId.value }?.presetId ?: ""
+        }
         viewModelScope.launch {
-            val session = ChatSession(name = generateDefaultName())
-            val updated = listOf(session) + _sessions.value
-            // 限制最大会话数
-            val trimmed = if (updated.size > MAX_SESSIONS) updated.dropLast(1) else updated
-            settings.setAiChatSessions(trimmed)
-            settings.setAiCurrentSessionId(session.id)
-            settings.setAiSessionMessages(session.id, emptyList())
-            _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
-            Log.d(TAG, "Created new session: ${session.id} - ${session.name}")
+            val preset = if (effectivePresetId.isNotBlank()) presets.value.firstOrNull { it.id == effectivePresetId } else null
+            val effectiveName = sessionName.ifBlank {
+                // 若关联预设，使用预设名；否则使用默认名
+                preset?.name?.ifBlank { generateDefaultName() } ?: generateDefaultName()
+            }
+            // 保存完整配置快照到会话（用于会话级配置隔离和列表去重）
+            val session = ChatSession(
+                name = effectiveName,
+                presetId = effectivePresetId,
+                avatarUrl = preset?.avatarUrl ?: avatarUrl.value,
+                jiuxinName = preset?.jiuxinName ?: jiuxinName.value,
+                apiUrl = preset?.apiUrl ?: apiUrl.value,
+                apiKey = preset?.apiKey ?: apiKey.value,
+                model = preset?.model ?: selectedModel.value,
+                systemPrompt = preset?.systemPrompt ?: systemPrompt.value,
+                voiceShipName = preset?.voiceShipName ?: voiceShipName.value,
+                voiceShipAvatar = preset?.voiceShipAvatar ?: voiceShipAvatar.value,
+                voiceEnabled = preset?.voiceEnabled ?: voiceEnabled.value,
+                voiceRandomChance = preset?.voiceRandomChance ?: voiceRandomChance.value,
+                voiceKeywords = preset?.voiceKeywords ?: voiceKeywords.value,
+                stickersEnabled = preset?.stickersEnabled ?: stickersEnabled.value,
+                stickerChance = preset?.stickerChance ?: stickerChance.value
+            )
+            persistAndActivateSession(session)
+            Log.d(TAG, "Created new session: ${session.id} - ${session.name} (preset=$presetId)")
         }
     }
 
-    /** 切换到指定会话 */
+    /**
+     * 为当前舰娘创建新会话（用于历史对话面板的"+"按钮）。
+     *
+     * 与 [createNewSession] 的关键区别：继承当前会话的**完整配置快照**，
+     * 而非回退到全局 StateFlow 默认值。这确保新会话与原会话拥有相同的
+     * [computeShipKey]，从而出现在同一舰娘的历史面板中，不会在会话列表
+     * 产生"陌生"舰娘条目。
+     *
+     * 适用场景：用户在某个舰娘的聊天中打开历史面板，点击"+"希望为
+     * **同一舰娘**开启一段新对话。
+     *
+     * - 若当前会话关联了预设：委托 [createNewSession] 走预设路径（预设本身
+     *   就携带了完整配置，且 presetId 一致保证去重 key 相同）
+     * - 若当前会话无预设：直接复制当前会话的全部配置字段到新会话，
+     *   仅生成新的默认名称（"对话-时间戳"），与原会话区分
+     * - 若无当前会话：回退到 [createNewSession] 使用全局默认配置
+     */
+    fun createNewSessionForCurrentShip() {
+        val currentSession = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
+
+        // 关联预设的会话：走预设路径，presetId 一致即保证去重 key 相同
+        if (currentSession != null && currentSession.presetId.isNotBlank()) {
+            createNewSession(presetId = currentSession.presetId)
+            return
+        }
+
+        // 无当前会话：回退到全局默认
+        if (currentSession == null) {
+            createNewSession()
+            return
+        }
+
+        // 无预设但有当前会话：继承当前会话的完整配置快照
+        _chatGeneration.incrementAndGet()
+        viewModelScope.launch {
+            val session = ChatSession(
+                name = generateDefaultName(),
+                presetId = "", // 无预设
+                avatarUrl = currentSession.avatarUrl,
+                jiuxinName = currentSession.jiuxinName,
+                apiUrl = currentSession.apiUrl,
+                apiKey = currentSession.apiKey,
+                model = currentSession.model,
+                systemPrompt = currentSession.systemPrompt,
+                voiceShipName = currentSession.voiceShipName,
+                voiceShipAvatar = currentSession.voiceShipAvatar,
+                voiceEnabled = currentSession.voiceEnabled,
+                voiceRandomChance = currentSession.voiceRandomChance,
+                voiceKeywords = currentSession.voiceKeywords,
+                stickersEnabled = currentSession.stickersEnabled,
+                stickerChance = currentSession.stickerChance
+            )
+            persistAndActivateSession(session)
+            Log.d(TAG, "Created new session for current ship: ${session.id} - ${session.name} (ship=${currentSession.jiuxinName})")
+        }
+    }
+
+    // ── 啾信预设管理 ──
+
+    /**
+     * 将当前 ViewModel 中的全部配置（API + 人格 + 语音 + 表情包）保存为预设。
+     * @param presetName 预设名称（通常为舰娘名）。为空时回退到啾信名称。
+     * @param existingId 若提供，则更新该 id 对应的预设；否则新增。
+     * @return 已保存预设的 id
+     */
+    fun saveCurrentAsPreset(presetName: String, existingId: String? = null): String {
+        val now = System.currentTimeMillis()
+        val resolvedId = existingId ?: UUID.randomUUID().toString()
+        val preset = JiuxinPreset(
+            id = resolvedId,
+            name = presetName.ifBlank { jiuxinName.value.ifBlank { "未命名预设" } },
+            jiuxinName = jiuxinName.value,
+            avatarUrl = avatarUrl.value,
+            apiUrl = apiUrl.value,
+            apiKey = apiKey.value,
+            model = selectedModel.value,
+            systemPrompt = systemPrompt.value,
+            voiceShipName = voiceShipName.value,
+            voiceShipAvatar = voiceShipAvatar.value,
+            voiceEnabled = voiceEnabled.value,
+            voiceRandomChance = voiceRandomChance.value,
+            voiceKeywords = voiceKeywords.value,
+            stickersEnabled = stickersEnabled.value,
+            stickerChance = stickerChance.value,
+            createdAt = if (existingId != null) presets.value.firstOrNull { it.id == existingId }?.createdAt ?: now else now,
+            updatedAt = now
+        )
+        viewModelScope.launch {
+            val updated = if (existingId != null) {
+                presets.value.map { if (it.id == existingId) preset else it }
+            } else {
+                presets.value + preset
+            }
+            settings.setAiJiuxinPresets(updated)
+            Log.d(TAG, "Saved preset: ${preset.id} - ${preset.name}")
+        }
+        return resolvedId
+    }
+
+    /** 应用指定预设到当前配置（覆盖当前所有相关设置） */
+    fun applyPreset(preset: JiuxinPreset) {
+        viewModelScope.launch {
+            settings.setAiCustomBaseUrl(preset.apiUrl)
+            settings.setAiApiKey(preset.apiKey)
+            settings.setAiModel(preset.model)
+            settings.setAiSystemPrompt(preset.systemPrompt)
+            settings.setAiName(preset.jiuxinName)
+            settings.setAiAvatarUrl(normalizeUrl(preset.avatarUrl))
+            settings.setAiVoiceShipName(preset.voiceShipName)
+            settings.setAiVoiceShipAvatar(normalizeUrl(preset.voiceShipAvatar))
+            settings.setAiVoiceEnabled(preset.voiceEnabled)
+            settings.setAiVoiceRandomChance(preset.voiceRandomChance)
+            settings.setAiVoiceKeywords(preset.voiceKeywords)
+            settings.setAiStickersEnabled(preset.stickersEnabled)
+            settings.setAiStickerChance(preset.stickerChance)
+            Log.d(TAG, "Applied preset: ${preset.id} - ${preset.name}")
+        }
+    }
+
+    /** 删除指定预设 */
+    fun deletePreset(presetId: String) {
+        viewModelScope.launch {
+            val updated = presets.value.filter { it.id != presetId }
+            settings.setAiJiuxinPresets(updated)
+            Log.d(TAG, "Deleted preset: $presetId")
+        }
+    }
+
+    // ── API 配置管理（独立多套） ──
+
+    /**
+     * 保存当前 API 配置为新的 API 配置项
+     *
+     * @param configName 配置名称（如"OpenAI 官方"）
+     * @param existingId 非空时更新已有配置，空时新建
+     * @return 配置 ID
+     */
+    fun saveApiConfig(configName: String, existingId: String? = null): String {
+        val resolvedId = existingId ?: java.util.UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val config = ApiConfig(
+            id = resolvedId,
+            name = configName.ifBlank { "API 配置" },
+            apiUrl = apiUrl.value,
+            apiKey = apiKey.value,
+            model = selectedModel.value,
+            createdAt = if (existingId != null) apiConfigs.value.firstOrNull { it.id == existingId }?.createdAt ?: now else now,
+            updatedAt = now
+        )
+        viewModelScope.launch {
+            val updated = if (existingId != null) {
+                apiConfigs.value.map { if (it.id == existingId) config else it }
+            } else {
+                apiConfigs.value + config
+            }
+            settings.setAiApiConfigs(updated)
+            Log.d(TAG, "Saved API config: ${config.id} - ${config.name}")
+        }
+        return resolvedId
+    }
+
+    /** 应用指定 API 配置到当前全局配置 */
+    fun applyApiConfig(config: ApiConfig) {
+        viewModelScope.launch {
+            settings.setAiCustomBaseUrl(config.apiUrl)
+            settings.setAiApiKey(config.apiKey)
+            settings.setAiModel(config.model)
+            Log.d(TAG, "Applied API config: ${config.id} - ${config.name}")
+        }
+    }
+
+    /** 删除指定 API 配置 */
+    fun deleteApiConfig(configId: String) {
+        viewModelScope.launch {
+            val updated = apiConfigs.value.filter { it.id != configId }
+            settings.setAiApiConfigs(updated)
+            Log.d(TAG, "Deleted API config: $configId")
+        }
+    }
+
+    // ── 舰娘人格配置管理（独立多套） ──
+
+    /**
+     * 保存当前舰娘人格配置为新的人格配置项
+     *
+     * @param personaName 人格名称（如"标枪"）
+     * @param existingId 非空时更新已有配置，空时新建
+     * @return 配置 ID
+     */
+    fun savePersonaConfig(personaName: String, existingId: String? = null): String {
+        val resolvedId = existingId ?: java.util.UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val config = PersonaConfig(
+            id = resolvedId,
+            name = personaName.ifBlank { jiuxinName.value.ifBlank { "未命名舰娘" } },
+            jiuxinName = jiuxinName.value,
+            avatarUrl = avatarUrl.value,
+            systemPrompt = systemPrompt.value,
+            voiceShipName = voiceShipName.value,
+            voiceShipAvatar = voiceShipAvatar.value,
+            voiceEnabled = voiceEnabled.value,
+            voiceRandomChance = voiceRandomChance.value,
+            voiceKeywords = voiceKeywords.value,
+            stickersEnabled = stickersEnabled.value,
+            stickerChance = stickerChance.value,
+            createdAt = if (existingId != null) personaConfigs.value.firstOrNull { it.id == existingId }?.createdAt ?: now else now,
+            updatedAt = now
+        )
+        viewModelScope.launch {
+            val updated = if (existingId != null) {
+                personaConfigs.value.map { if (it.id == existingId) config else it }
+            } else {
+                personaConfigs.value + config
+            }
+            settings.setAiPersonaConfigs(updated)
+            Log.d(TAG, "Saved persona config: ${config.id} - ${config.name}")
+        }
+        return resolvedId
+    }
+
+    /** 应用指定舰娘人格配置到当前全局配置 */
+    fun applyPersonaConfig(config: PersonaConfig) {
+        viewModelScope.launch {
+            settings.setAiSystemPrompt(config.systemPrompt)
+            settings.setAiName(config.jiuxinName)
+            settings.setAiAvatarUrl(normalizeUrl(config.avatarUrl))
+            settings.setAiVoiceShipName(config.voiceShipName)
+            settings.setAiVoiceShipAvatar(normalizeUrl(config.voiceShipAvatar))
+            settings.setAiVoiceEnabled(config.voiceEnabled)
+            settings.setAiVoiceRandomChance(config.voiceRandomChance)
+            settings.setAiVoiceKeywords(config.voiceKeywords)
+            settings.setAiStickersEnabled(config.stickersEnabled)
+            settings.setAiStickerChance(config.stickerChance)
+            Log.d(TAG, "Applied persona config: ${config.id} - ${config.name}")
+        }
+    }
+
+    /** 删除指定舰娘人格配置 */
+    fun deletePersonaConfig(configId: String) {
+        viewModelScope.launch {
+            val updated = personaConfigs.value.filter { it.id != configId }
+            settings.setAiPersonaConfigs(updated)
+            Log.d(TAG, "Deleted persona config: $configId")
+        }
+    }
+
+    /** 一键清空当前舰娘人格所有字段（头像、名称、提示词、语音、表情包），方便重新填写 */
+    fun clearPersonaFields() {
+        viewModelScope.launch {
+            settings.setAiName("")
+            settings.setAiAvatarUrl("")
+            settings.setAiSystemPrompt("")
+            settings.setAiVoiceShipName("")
+            settings.setAiVoiceShipAvatar("")
+            settings.setAiVoiceKeywords(DEFAULT_VOICE_KEYWORDS)
+            settings.setAiVoiceEnabled(true)
+            settings.setAiVoiceRandomChance(0.35f)
+            settings.setAiStickersEnabled(true)
+            settings.setAiStickerChance(0.8f)
+            Log.d(TAG, "Cleared all persona fields")
+        }
+    }
+
+    /** 根据预设 id 创建新会话并应用预设配置 */
+    fun startChatWithPreset(presetId: String) {
+        val preset = presets.value.firstOrNull { it.id == presetId } ?: run {
+            Log.w(TAG, "Preset not found: $presetId, fallback to default new session")
+            createNewSession()
+            return
+        }
+        applyPreset(preset)
+        createNewSession(presetId = preset.id, sessionName = preset.name)
+    }
+
+    /**
+     * 根据指定的 API 配置 ID 和舰娘人格配置 ID 创建新会话
+     *
+     * 与 [startChatWithPreset] 不同，本方法支持 API 配置与舰娘人格的**自由组合**：
+     * - 用户可只选 API 配置（保持当前人格）
+     * - 用户可只选舰娘人格（保持当前 API）
+     * - 用户可两者都选（组合应用）
+     * - 用户可都不选（同 [createNewSession] 默认行为）
+     *
+     * 实现要点：
+     * 1. 同步解析最终配置（避免 StateFlow 异步更新导致会话快照取到旧值）
+     * 2. 异步持久化配置到 DataStore（让全局设置也同步更新）
+     * 3. 使用解析后的快照创建会话（保证会话级配置隔离立即生效）
+     *
+     * @param apiConfigId API 配置 ID，null 表示使用当前 API 配置
+     * @param personaConfigId 舰娘人格配置 ID，null 表示使用当前舰娘人格
+     * @param sessionName 会话名称，为空时自动生成
+     */
+    fun startChatWithApiAndPersona(
+        apiConfigId: String?,
+        personaConfigId: String?,
+        sessionName: String = ""
+    ) {
+        val api = apiConfigId?.let { id -> apiConfigs.value.firstOrNull { it.id == id } }
+        val persona = personaConfigId?.let { id -> personaConfigs.value.firstOrNull { it.id == id } }
+
+        // 解析最终配置：优先使用选择项，回退到当前全局值
+        val resolvedApiUrl = api?.apiUrl ?: apiUrl.value
+        val resolvedApiKey = api?.apiKey ?: apiKey.value
+        val resolvedModel = api?.model ?: selectedModel.value
+        val resolvedSystemPrompt = persona?.systemPrompt ?: systemPrompt.value
+        val resolvedJiuxinName = persona?.jiuxinName ?: jiuxinName.value
+        val resolvedAvatarUrl = persona?.avatarUrl?.let { normalizeUrl(it) } ?: avatarUrl.value
+        val resolvedVoiceShipName = persona?.voiceShipName ?: voiceShipName.value
+        val resolvedVoiceShipAvatar = persona?.voiceShipAvatar?.let { normalizeUrl(it) } ?: voiceShipAvatar.value
+        val resolvedVoiceEnabled = persona?.voiceEnabled ?: voiceEnabled.value
+        val resolvedVoiceRandomChance = persona?.voiceRandomChance ?: voiceRandomChance.value
+        val resolvedVoiceKeywords = persona?.voiceKeywords ?: voiceKeywords.value
+        val resolvedStickersEnabled = persona?.stickersEnabled ?: stickersEnabled.value
+        val resolvedStickerChance = persona?.stickerChance ?: stickerChance.value
+
+        // 递增代际计数器，使在途的 sendMessage 请求返回后丢弃旧会话的回复
+        _chatGeneration.incrementAndGet()
+        viewModelScope.launch {
+            // 1. 持久化选择的配置到全局设置（让全局状态与新建会话一致）
+            if (api != null) {
+                settings.setAiCustomBaseUrl(api.apiUrl)
+                settings.setAiApiKey(api.apiKey)
+                settings.setAiModel(api.model)
+            }
+            if (persona != null) {
+                settings.setAiSystemPrompt(persona.systemPrompt)
+                settings.setAiName(persona.jiuxinName)
+                settings.setAiAvatarUrl(normalizeUrl(persona.avatarUrl))
+                settings.setAiVoiceShipName(persona.voiceShipName)
+                settings.setAiVoiceShipAvatar(normalizeUrl(persona.voiceShipAvatar))
+                settings.setAiVoiceEnabled(persona.voiceEnabled)
+                settings.setAiVoiceRandomChance(persona.voiceRandomChance)
+                settings.setAiVoiceKeywords(persona.voiceKeywords)
+                settings.setAiStickersEnabled(persona.stickersEnabled)
+                settings.setAiStickerChance(persona.stickerChance)
+            }
+
+            // 2. 使用解析后的配置快照创建会话（保证会话级隔离立即生效）
+            val effectiveName = sessionName.ifBlank {
+                persona?.name?.ifBlank { resolvedJiuxinName.ifBlank { generateDefaultName() } }
+                    ?: resolvedJiuxinName.ifBlank { generateDefaultName() }
+            }
+            val session = ChatSession(
+                name = effectiveName,
+                avatarUrl = resolvedAvatarUrl,
+                jiuxinName = resolvedJiuxinName,
+                apiUrl = resolvedApiUrl,
+                apiKey = resolvedApiKey,
+                model = resolvedModel,
+                systemPrompt = resolvedSystemPrompt,
+                voiceShipName = resolvedVoiceShipName,
+                voiceShipAvatar = resolvedVoiceShipAvatar,
+                voiceEnabled = resolvedVoiceEnabled,
+                voiceRandomChance = resolvedVoiceRandomChance,
+                voiceKeywords = resolvedVoiceKeywords,
+                stickersEnabled = resolvedStickersEnabled,
+                stickerChance = resolvedStickerChance
+            )
+            persistAndActivateSession(session)
+            Log.d(TAG, "Started chat with api=${api?.name ?: "current"}, persona=${persona?.name ?: "current"}")
+        }
+    }
+
+    /**
+     * 切换到指定会话
+     *
+     * 多对话隔离核心：切换会话时自动加载该会话的配置快照（API、人格、语音等），
+     * 确保不同舰娘的对话使用各自的配置，而非共用全局配置。
+     * - 有关联预设：优先应用完整预设配置（预设可能已被更新）
+     * - 无预设但有快照：应用会话创建时保存的完整配置快照
+     * - 无任何快照：保持当前全局配置
+     *
+     * 竞态修复：先捕获旧会话 ID，使用它保存旧会话消息，
+     * 避免子协程读取到已变更的 [_currentSessionId] 导致消息保存到错误会话。
+     */
     fun switchToSession(sessionId: String) {
         if (_currentSessionId.value == sessionId) return
+        // 递增代际计数器，使在途的 sendMessage 请求返回后丢弃旧会话的回复
+        _chatGeneration.incrementAndGet()
+        // 捕获旧会话 ID：确保 saveCurrentSessionMessages 保存到正确的会话
+        val oldSessionId = _currentSessionId.value
+        // 关键：在清空消息之前先捕获当前消息列表，否则 saveCurrentSessionMessages 会保存空列表
+        val messagesToSave = _chatState.value.messages
+        // 立即清空消息并显示加载态：避免异步切换期间闪现旧会话内容
+        _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = true, inputText = "") }
         viewModelScope.launch {
-            // 先保存当前会话消息
-            saveCurrentSessionMessages()
+            // 先保存当前会话消息（使用捕获的旧会话 ID 和消息列表，避免竞态和数据丢失）
+            // 不更新时间戳：切换会话不应改变会话列表顺序
+            if (oldSessionId.isNotBlank() && messagesToSave.isNotEmpty()) {
+                settings.setAiSessionMessages(oldSessionId, messagesToSave)
+            }
+
+            // 配置隔离：不再把会话快照回写到全局 StateFlow。
+            // 聊天界面和 callApi 通过 currentSession StateFlow 读取会话快照，
+            // 全局 StateFlow 保持独立，仅作为新建会话的默认值模板。
+
+            // 先持久化新会话 ID 到 DataStore，再同步更新内存
             settings.setAiCurrentSessionId(sessionId)
-            _chatState.update { it.copy(error = null, isLoading = false) }
-            Log.d(TAG, "Switched to session: $sessionId")
+            _currentSessionId.value = sessionId
+            // 同步当前会话的语音关键词到 chatState（用于语音触发匹配）
+            val targetSession = _sessions.value.firstOrNull { it.id == sessionId }
+            if (targetSession != null) {
+                val keywords = targetSession.voiceKeywords.split(";").filter { it.isNotBlank() }
+                _chatState.update {
+                    it.copy(
+                        voiceKeywords = keywords,
+                        voiceTagMappings = buildVoiceTagMappings(keywords),
+                        error = null,
+                        isLoading = false
+                    )
+                }
+            } else {
+                _chatState.update { it.copy(error = null, isLoading = false) }
+            }
+            Log.d(TAG, "Switched to session: $sessionId (config isolated, no global writeback)")
+        }
+    }
+
+    /**
+     * 更新当前会话的配置快照（会话级隔离）。
+     *
+     * 仅修改当前 ChatSession 的字段，不写入全局 StateFlow。
+     * 聊天界面和舰娘设置界面通过 [currentSession] StateFlow 观察变更。
+     *
+     * @param updater 返回新的 ChatSession 的转换函数
+     */
+    fun updateCurrentSessionConfig(updater: (ChatSession) -> ChatSession) {
+        val currentId = _currentSessionId.value
+        if (currentId.isBlank()) return
+        viewModelScope.launch {
+            val updated = _sessions.value.map {
+                if (it.id == currentId) updater(it) else it
+            }
+            settings.setAiChatSessions(updated)
+            _sessions.value = updated
+        }
+    }
+
+    /**
+     * 应用 PersonaConfig 到当前会话（会话级隔离，不写全局）。
+     *
+     * 将人格配置的舰娘名/头像/提示词/语音/表情包字段写入当前会话快照，
+     * 不影响全局 StateFlow 和其他会话。
+     */
+    fun applyPersonaConfigToCurrentSession(config: PersonaConfig) {
+        updateCurrentSessionConfig { session ->
+            session.copy(
+                jiuxinName = config.jiuxinName.ifBlank { session.jiuxinName },
+                avatarUrl = config.avatarUrl.ifBlank { session.avatarUrl },
+                systemPrompt = config.systemPrompt,
+                voiceShipName = config.voiceShipName,
+                voiceShipAvatar = config.voiceShipAvatar,
+                voiceEnabled = config.voiceEnabled,
+                voiceRandomChance = config.voiceRandomChance,
+                voiceKeywords = config.voiceKeywords,
+                stickersEnabled = config.stickersEnabled,
+                stickerChance = config.stickerChance
+            )
+        }
+    }
+
+    /**
+     * 应用 API 配置到当前会话（会话级隔离，不写全局）。
+     */
+    fun applyApiConfigToCurrentSession(config: ApiConfig) {
+        updateCurrentSessionConfig { session ->
+            session.copy(
+                apiUrl = config.apiUrl,
+                apiKey = config.apiKey,
+                model = config.model
+            )
+        }
+    }
+
+    /**
+     * 清除当前会话的 API 配置，回退到全局默认值。
+     */
+    fun clearApiConfigForCurrentSession() {
+        updateCurrentSessionConfig { session ->
+            session.copy(apiUrl = "", apiKey = "", model = "")
+        }
+    }
+
+    /**
+     * 应用预设到当前会话（会话级隔离，不写全局）。
+     *
+     * 将完整预设配置写入当前会话快照，不影响全局 StateFlow。
+     */
+    fun applyPresetToCurrentSession(preset: JiuxinPreset) {
+        updateCurrentSessionConfig { session ->
+            session.copy(
+                presetId = preset.id,
+                jiuxinName = preset.jiuxinName,
+                avatarUrl = preset.avatarUrl,
+                apiUrl = preset.apiUrl,
+                apiKey = preset.apiKey,
+                model = preset.model,
+                systemPrompt = preset.systemPrompt,
+                voiceShipName = preset.voiceShipName,
+                voiceShipAvatar = preset.voiceShipAvatar,
+                voiceEnabled = preset.voiceEnabled,
+                voiceRandomChance = preset.voiceRandomChance,
+                voiceKeywords = preset.voiceKeywords,
+                stickersEnabled = preset.stickersEnabled,
+                stickerChance = preset.stickerChance
+            )
         }
     }
 
     /** 删除指定会话 */
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
+            // 递增代际计数器，使所有在途的 sendMessage 请求返回后能检测到状态变更并丢弃结果
+            _chatGeneration.incrementAndGet()
+
+            // 先捕获被删除会话的舰娘标识（用于自动创建新会话时继承）
+            val deletedSession = _sessions.value.firstOrNull { it.id == sessionId }
+
             val currentList = _sessions.value.toMutableList()
             currentList.removeAll { it.id == sessionId }
+            // 先持久化到 DataStore
             settings.setAiChatSessions(currentList)
             settings.deleteAiSessionMessages(sessionId)
 
-            // 如果删除的是当前会话，切换到最新的或创建新的
+            // 如果删除的是当前会话，切换到最新的；若无会话则自动创建新会话
             if (_currentSessionId.value == sessionId) {
                 if (currentList.isNotEmpty()) {
+                    // 先持久化新会话 ID，再同步更新内存，防止在途 API 回调将消息写入已删除的会话
                     settings.setAiCurrentSessionId(currentList.first().id)
+                    _currentSessionId.value = currentList.first().id
                 } else {
-                    // 没有会话了，创建新的
-                    val newSession = ChatSession(name = generateDefaultName())
+                    // 所有会话已删除：自动创建新空会话，继承当前舰娘标识和配置，保证聊天依旧存在
+                    // 继承被删除会话的舰娘标识（presetId/avatarUrl/jiuxinName）和配置快照，
+                    // 使新会话与原舰娘保持同一去重 key，用户可继续与同一舰娘对话。
+                    val newSession = ChatSession(
+                        name = generateDefaultName(),
+                        presetId = deletedSession?.presetId ?: "",
+                        avatarUrl = deletedSession?.avatarUrl ?: avatarUrl.value,
+                        jiuxinName = deletedSession?.jiuxinName ?: jiuxinName.value,
+                        apiUrl = deletedSession?.apiUrl ?: apiUrl.value,
+                        apiKey = deletedSession?.apiKey ?: apiKey.value,
+                        model = deletedSession?.model ?: selectedModel.value,
+                        systemPrompt = deletedSession?.systemPrompt ?: systemPrompt.value,
+                        voiceShipName = deletedSession?.voiceShipName ?: voiceShipName.value,
+                        voiceShipAvatar = deletedSession?.voiceShipAvatar ?: voiceShipAvatar.value,
+                        voiceEnabled = deletedSession?.voiceEnabled ?: voiceEnabled.value,
+                        voiceRandomChance = deletedSession?.voiceRandomChance ?: voiceRandomChance.value,
+                        voiceKeywords = deletedSession?.voiceKeywords ?: voiceKeywords.value,
+                        stickersEnabled = deletedSession?.stickersEnabled ?: stickersEnabled.value,
+                        stickerChance = deletedSession?.stickerChance ?: stickerChance.value
+                    )
                     settings.setAiChatSessions(listOf(newSession))
-                    settings.setAiCurrentSessionId(newSession.id)
                     settings.setAiSessionMessages(newSession.id, emptyList())
+                    settings.setAiCurrentSessionId(newSession.id)
+                    currentList.clear()
+                    currentList.add(newSession)
+                    _currentSessionId.value = newSession.id
+                    _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
                 }
-                _chatState.update { it.copy(error = null, isLoading = false) }
             }
-            Log.d(TAG, "Deleted session: $sessionId")
+            // 同步更新会话列表内存状态
+            _sessions.value = currentList
+            Log.d(TAG, "Deleted session: $sessionId, remaining: ${currentList.size}")
         }
     }
 
-    /** 重命名会话 */
+    /**
+     * 批量删除同一舰娘的所有会话
+     *
+     * 用于会话列表界面（ConversationListScreen）的长按删除：
+     * 用户长按某个舰娘的会话条目时，删除该舰娘的所有历史对话。
+     * 去重标识与 [uniqueConversations] 一同：presetId → avatarUrl → jiuxinName → "default"。
+     *
+     * @param sessionId 触发删除的会话 ID（用于确定舰娘标识）
+     */
+    fun deleteSessionsByShip(sessionId: String) {
+        viewModelScope.launch {
+            _chatGeneration.incrementAndGet()
+
+            val triggerSession = _sessions.value.firstOrNull { it.id == sessionId } ?: return@launch
+            val shipKey = computeShipKey(triggerSession)
+
+            // 找到同一舰娘的所有会话
+            val idsToDelete = _sessions.value.filter { computeShipKey(it) == shipKey }
+                .map { it.id }.toSet()
+            val currentList = _sessions.value.filterNot { it.id in idsToDelete }
+
+            // 先持久化到 DataStore
+            settings.setAiChatSessions(currentList)
+            idsToDelete.forEach { settings.deleteAiSessionMessages(it) }
+
+            // 如果当前会话被删除，切换到剩余最新会话；无剩余会话则清空当前会话 ID
+            // 注意：不自动创建新会话——会话列表界面允许空状态，用户可通过"+"按钮新建
+            if (_currentSessionId.value in idsToDelete) {
+                if (currentList.isNotEmpty()) {
+                    settings.setAiCurrentSessionId(currentList.first().id)
+                    _currentSessionId.value = currentList.first().id
+                } else {
+                    // 所有会话已删除：清空当前会话 ID，会话列表显示空状态
+                    settings.setAiCurrentSessionId("")
+                    _currentSessionId.value = ""
+                    _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false, inputText = "") }
+                }
+            }
+            _sessions.value = currentList
+            Log.d(TAG, "Deleted ${idsToDelete.size} sessions for ship key: $shipKey, remaining: ${currentList.size}")
+        }
+    }
+
+    /**
+     * 重命名会话（仅修改对话名称 [ChatSession.name]）
+     *
+     * **名称职责隔离：**
+     * - [ChatSession.name]：对话名称（历史对话面板显示），可由用户重命名修改
+     * - [ChatSession.jiuxinName]：啾信名称/聊天名称（会话列表显示），来自配置，不被重命名修改
+     *
+     * 重命名只更新 [ChatSession.name]，确保修改对话名称不会影响会话列表的聊天名称。
+     */
     fun renameSession(sessionId: String, newName: String) {
         viewModelScope.launch {
+            val trimmedName = newName.trim()
             val updated = _sessions.value.map {
-                if (it.id == sessionId) it.copy(name = newName.trim()) else it
+                if (it.id == sessionId) {
+                    it.copy(name = trimmedName)
+                } else it
             }
+            // 先持久化到 DataStore，再同步更新内存状态，确保 UI 立即刷新
             settings.setAiChatSessions(updated)
-            Log.d(TAG, "Renamed session $sessionId to: $newName")
+            _sessions.value = updated
+            Log.d(TAG, "Renamed session $sessionId to: $trimmedName")
+        }
+    }
+
+    /**
+     * 保存用户拖动排序后的会话列表顺序
+     *
+     * 用户长按拖动会话卡片后调用，将新的 id 顺序持久化到 DataStore。
+     * [uniqueConversations] 会自动按此顺序显示。
+     *
+     * @param orderedSessionIds 排序后的会话 ID 列表（去重后的列表顺序）
+     */
+    fun reorderConversations(orderedSessionIds: List<String>) {
+        viewModelScope.launch {
+            settings.setAiSessionOrder(orderedSessionIds)
+            Log.d(TAG, "Saved session order: ${orderedSessionIds.size} items")
         }
     }
 
     // ── 连接测试 ──
     fun testConnection() {
         viewModelScope.launch {
-            _connectionTestState.value = ConnectionTestState.Testing
-            try {
-                val key = settings.aiApiKey.first()
-                val baseUrl = settings.aiCustomBaseUrl.first().trim()
-                val modelStr = settings.aiModel.first()
-
-                if (baseUrl.isBlank()) {
-                    _connectionTestState.value = ConnectionTestState.Error("请先配置 API Base URL")
-                    return@launch
-                }
-                if (key.isBlank()) {
-                    _connectionTestState.value = ConnectionTestState.Error("请先配置 API Key")
-                    return@launch
-                }
-
-                val model = modelStr.ifBlank { DEFAULT_MODEL }
-                val url = buildFullApiUrl(baseUrl)
-
-                val testRequestJson = buildJsonObject {
-                    put("model", JsonPrimitive(model))
-                    put("messages", buildJsonArray {
-                        add(buildJsonObject {
-                            put("role", JsonPrimitive("user"))
-                            put("content", JsonPrimitive("Hi"))
-                        })
-                    })
-                    put("max_tokens", JsonPrimitive(5))
-                }
-
-                val requestBody = json.encodeToString(testRequestJson)
-                    .toRequestBody("application/json".toMediaType())
-
-                val request = Request.Builder()
-                    .url(url)
-                    .addHeader("Authorization", "Bearer $key")
-                    .addHeader("Content-Type", "application/json")
-                    .addHeader("Accept", "application/json")
-                    .post(requestBody)
-                    .build()
-
-                Log.d(TAG, "Testing connection to: $url, model=$model")
-
-                val result = withContext(Dispatchers.IO) {
-                    try {
-                        val response = client.newCall(request).execute()
-                        val body = response.body?.string()
-
-                        if (response.isSuccessful) {
-                            Log.d(TAG, "Connection test successful")
-                            ConnectionTestState.Success
-                        } else {
-                            val errorDetail = if (!body.isNullOrBlank()) parseErrorMessage(body) else "HTTP ${response.code}"
-                            Log.e(TAG, "Connection test failed: ${response.code} - $errorDetail")
-                            ConnectionTestState.Error("连接失败 (${response.code}): $errorDetail")
-                        }
-                    } catch (e: java.net.UnknownHostException) {
-                        ConnectionTestState.Error("无法连接服务器，请检查网络和 URL 地址")
-                    } catch (e: java.net.SocketTimeoutException) {
-                        ConnectionTestState.Error("连接超时，请检查网络或稍后重试")
-                    } catch (e: java.net.MalformedURLException) {
-                        ConnectionTestState.Error("URL 格式错误: ${e.message ?: "无效地址"}")
-                    } catch (e: java.net.ConnectException) {
-                        ConnectionTestState.Error("连接被拒绝，请检查 URL 和端口是否正确")
-                    } catch (e: javax.net.ssl.SSLException) {
-                        ConnectionTestState.Error("SSL 错误: ${e.message ?: "证书验证失败"}")
-                    } catch (e: java.io.IOException) {
-                        ConnectionTestState.Error("网络错误: ${e.message ?: "IO异常"}")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Connection test error", e)
-                        ConnectionTestState.Error("连接失败: ${e.message ?: e.javaClass.simpleName}")
-                    }
-                }
-
-                _connectionTestState.value = result
-            } catch (e: Exception) {
-                Log.e(TAG, "Connection test outer error", e)
-                _connectionTestState.value = ConnectionTestState.Error("连接失败: ${e.message ?: e.javaClass.simpleName}")
-            }
+            val key = settings.aiApiKey.first()
+            val baseUrl = settings.aiCustomBaseUrl.first().trim()
+            val modelStr = settings.aiModel.first()
+            _connectionTestState.value = performConnectionTest(baseUrl, key, modelStr)
         }
     }
 
@@ -596,33 +1361,127 @@ class JiuxinViewModel @Inject constructor(
         viewModelScope.launch {
             val key = settings.aiApiKey.first()
             val baseUrl = settings.aiCustomBaseUrl.first().trim().trimEnd('/')
-            if (key.isBlank() || baseUrl.isBlank()) return@launch
+            performFetchModels(baseUrl, key)
+        }
+    }
 
-            val url = "$baseUrl/models"
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("Authorization", "Bearer $key")
-                .get()
-                .build()
+    /**
+     * 针对当前会话快照测试连接（会话级隔离）。
+     *
+     * 读取当前会话的 apiUrl/apiKey/model，回退到全局默认值，
+     * 结果写入共享的 [connectionTestState]（同一时刻仅一个界面可见，无冲突）。
+     */
+    fun testConnectionForCurrentSession() {
+        val session = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
+        if (session == null) {
+            _connectionTestState.value = ConnectionTestState.Error("当前无活跃会话")
+            return
+        }
+        viewModelScope.launch {
+            val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
+            val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
+            val modelStr = session.model.ifBlank { settings.aiModel.first() }
+            _connectionTestState.value = performConnectionTest(baseUrl, key, modelStr)
+        }
+    }
 
-            withContext(Dispatchers.IO) {
-                try {
-                    val response = client.newCall(request).execute()
-                    val body = response.body?.string()
-                    if (response.isSuccessful && body != null) {
-                        val jsonElement = json.parseToJsonElement(body)
-                        val data = jsonElement.jsonObject["data"]?.jsonArray
-                        val modelList = data?.mapNotNull {
-                            it.jsonObject["id"]?.jsonPrimitive?.content
-                        }?.sorted() ?: emptyList()
-                        _availableModels.value = modelList
-                        Log.d(TAG, "Fetched ${modelList.size} models from $url")
-                    } else {
-                        Log.e(TAG, "Failed to fetch models: ${response.code}")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Exception fetching models", e)
+    /**
+     * 针对当前会话快照拉取模型列表（会话级隔离）。
+     *
+     * 读取当前会话的 apiUrl/apiKey，回退到全局默认值，
+     * 结果写入共享的 [availableModels]（同一时刻仅一个界面可见，无冲突）。
+     */
+    fun fetchModelsForCurrentSession() {
+        val session = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
+        if (session == null) return
+        viewModelScope.launch {
+            val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
+            val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim().trimEnd('/')
+            performFetchModels(baseUrl, key)
+        }
+    }
+
+    /** 连接测试通用实现 — 消除全局/会话级重复代码 */
+    private suspend fun performConnectionTest(baseUrl: String, key: String, modelStr: String): ConnectionTestState {
+        _connectionTestState.value = ConnectionTestState.Testing
+        if (baseUrl.isBlank()) return ConnectionTestState.Error("请先配置 API Base URL")
+        if (key.isBlank()) return ConnectionTestState.Error("请先配置 API Key")
+
+        val model = modelStr.ifBlank { DEFAULT_MODEL }
+        val url = buildFullApiUrl(baseUrl)
+
+        val testRequestJson = buildJsonObject {
+            put("model", JsonPrimitive(model))
+            put("messages", buildJsonArray {
+                add(buildJsonObject {
+                    put("role", JsonPrimitive("user"))
+                    put("content", JsonPrimitive("Hi"))
+                })
+            })
+            put("max_tokens", JsonPrimitive(5))
+        }
+
+        val requestBody = json.encodeToString(testRequestJson)
+            .toRequestBody("application/json".toMediaType())
+
+        val request = buildJsonPostRequest(url, key, requestBody)
+
+        Log.d(TAG, "Testing connection to: $url, model=$model")
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val response = client.newCall(request).execute()
+                val body = response.body?.string()
+                if (response.isSuccessful) {
+                    Log.d(TAG, "Connection test successful")
+                    ConnectionTestState.Success
+                } else {
+                    val errorDetail = if (!body.isNullOrBlank()) parseErrorMessage(body) else "HTTP ${response.code}"
+                    Log.e(TAG, "Connection test failed: ${response.code} - $errorDetail")
+                    ConnectionTestState.Error("连接失败 (${response.code}): $errorDetail")
                 }
+            } catch (e: java.net.UnknownHostException) {
+                ConnectionTestState.Error("无法连接服务器，请检查网络和 URL 地址")
+            } catch (e: java.net.SocketTimeoutException) {
+                ConnectionTestState.Error("连接超时，请检查网络或稍后重试")
+            } catch (e: java.net.MalformedURLException) {
+                ConnectionTestState.Error("URL 格式错误: ${e.message ?: "无效地址"}")
+            } catch (e: java.net.ConnectException) {
+                ConnectionTestState.Error("连接被拒绝，请检查 URL 和端口是否正确")
+            } catch (e: javax.net.ssl.SSLException) {
+                ConnectionTestState.Error("SSL 错误: ${e.message ?: "证书验证失败"}")
+            } catch (e: java.io.IOException) {
+                ConnectionTestState.Error("网络错误: ${e.message ?: "IO异常"}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Connection test error", e)
+                ConnectionTestState.Error("连接失败: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** 模型列表拉取通用实现 — 消除全局/会话级重复代码 */
+    private suspend fun performFetchModels(baseUrl: String, key: String) {
+        if (key.isBlank() || baseUrl.isBlank()) return
+        val url = "$baseUrl/models"
+        val request = buildAuthGetRequest(url, key)
+
+        withContext(Dispatchers.IO) {
+            try {
+                val response = client.newCall(request).execute()
+                val body = response.body?.string()
+                if (response.isSuccessful && body != null) {
+                    val jsonElement = json.parseToJsonElement(body)
+                    val data = jsonElement.jsonObject["data"]?.jsonArray
+                    val modelList = data?.mapNotNull {
+                        it.jsonObject["id"]?.jsonPrimitive?.content
+                    }?.sorted() ?: emptyList()
+                    _availableModels.value = modelList
+                    Log.d(TAG, "Fetched ${modelList.size} models from $url")
+                } else {
+                    Log.e(TAG, "Failed to fetch models: ${response.code}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Exception fetching models", e)
             }
         }
     }
@@ -778,6 +1637,16 @@ class JiuxinViewModel @Inject constructor(
         StickerResource("https://patchwiki.biligame.com/images/blhx/8/81/4edmny47r0ig7l0rw3g51hbcolhnc6w.png", listOf("就是这样", "没错", "对"), "就是这样")
     )
 
+    /**
+     * 表情包名称索引（O(1) 查找）。
+     *
+     * [analyzeEmotionTendency] 中多处 `stickerLibrary.find { it.name == "xxx" }` 是 O(n) 线性扫描，
+     * 每次情绪分析最坏需要扫描 100+ 项。此 Map 一次性构建索引，将每次查找降为 O(1)。
+     */
+    private val stickerByName: Map<String, StickerResource> by lazy {
+        stickerLibrary.associateBy { it.name }
+    }
+
     // ── 表情包语境匹配机制 ──
     /**
      * 根据 AI 回复文本匹配最合适的表情包
@@ -815,60 +1684,33 @@ class JiuxinViewModel @Inject constructor(
      * 返回最符合情绪的表情包，或 null 表示无法判断
      */
     private fun analyzeEmotionTendency(text: String): StickerResource? {
-        // 定义情绪关键词组（需同时满足正向/负向来避免误判）
+        // 通过 stickerByName 索引 O(1) 查找，替代原先 stickerLibrary.find { it.name == ... } 的 O(n) 扫描
         return when {
             // ── 积极情绪 ──
-            hasAny(text, "好耶", "太棒了", "太好了", "好开心", "嘻嘻", "开心") ->
-                stickerLibrary.find { it.name == "哇哈哈" }
-
-            hasAny(text, "嘿嘿", "坏笑") ->
-                stickerLibrary.find { it.name == "欸嘿嘿" }
-
-            hasAny(text, "喜欢你", "最喜欢", "好喜欢", "爱") ->
-                stickerLibrary.find { it.name == "爱情表现" }
-
-            hasAny(text, "谢谢", "感谢") ->
-                stickerLibrary.find { it.name == "点赞" }
-
-            hasAny(text, "加油", "你可以的", "一起努力") ->
-                stickerLibrary.find { it.name == "打call" }
-
-            hasAny(text, "可爱", "萌") ->
-                stickerLibrary.find { it.name == "超可爱" }
-
-            hasAny(text, "欢迎回来", "欢迎") ->
-                stickerLibrary.find { it.name == "欢迎回来" }
+            hasAny(text, "好耶", "太棒了", "太好了", "好开心", "嘻嘻", "开心") -> stickerByName["哇哈哈"]
+            hasAny(text, "嘿嘿", "坏笑") -> stickerByName["欸嘿嘿"]
+            hasAny(text, "喜欢你", "最喜欢", "好喜欢", "爱") -> stickerByName["爱情表现"]
+            hasAny(text, "谢谢", "感谢") -> stickerByName["点赞"]
+            hasAny(text, "加油", "你可以的", "一起努力") -> stickerByName["打call"]
+            hasAny(text, "可爱", "萌") -> stickerByName["超可爱"]
+            hasAny(text, "欢迎回来", "欢迎") -> stickerByName["欢迎回来"]
 
             // ── 消极情绪 ──
-            hasAny(text, "好难过", "好伤心", "好委屈", "哭") ->
-                stickerLibrary.find { it.name == "大哭" }
-
-            hasAny(text, "好生气", "气死了", "好气", "怒") ->
-                stickerLibrary.find { it.name == "极限愤怒" }
-
-            hasAny(text, "好累", "好困", "想睡觉", "困") ->
-                stickerLibrary.find { it.name == "ZZZ" }
-
-            hasAny(text, "完蛋", "糟了", "哦豁") ->
-                stickerLibrary.find { it.name == "哦豁，完蛋" }
-
-            hasAny(text, "失落", "沮丧", "低落") ->
-                stickerLibrary.find { it.name == "失落" }
+            hasAny(text, "好难过", "好伤心", "好委屈", "哭") -> stickerByName["大哭"]
+            hasAny(text, "好生气", "气死了", "好气", "怒") -> stickerByName["极限愤怒"]
+            hasAny(text, "好累", "好困", "想睡觉", "困") -> stickerByName["ZZZ"]
+            hasAny(text, "完蛋", "糟了", "哦豁") -> stickerByName["哦豁，完蛋"]
+            hasAny(text, "失落", "沮丧", "低落") -> stickerByName["失落"]
 
             // ── 傲娇 ──
-            hasAny(text, "才不是", "哼，才", "笨蛋指挥官", "笨蛋") ->
-                stickerLibrary.find { it.name == "你是笨蛋吗？" }
+            hasAny(text, "才不是", "哼，才", "笨蛋指挥官", "笨蛋") -> stickerByName["你是笨蛋吗？"]
 
             // ── 亲密 ──
-            hasAny(text, "贴贴", "抱抱你", "摸摸头", "抱") ->
-                stickerLibrary.find { it.name == "抱抱" }
-
-            hasAny(text, "害羞", "脸红", "不好意思") ->
-                stickerLibrary.find { it.name == "脸红" }
+            hasAny(text, "贴贴", "抱抱你", "摸摸头", "抱") -> stickerByName["抱抱"]
+            hasAny(text, "害羞", "脸红", "不好意思") -> stickerByName["脸红"]
 
             // ── 惊讶 ──
-            hasAny(text, "诶", "不会吧", "震惊", "？！") ->
-                stickerLibrary.find { it.name == "？！？！" }
+            hasAny(text, "诶", "不会吧", "震惊", "？！") -> stickerByName["？！？！"]
 
             else -> null
         }
@@ -895,16 +1737,6 @@ class JiuxinViewModel @Inject constructor(
     fun sendMessage(text: String) {
         if (text.isBlank()) return
 
-        // 确保有当前会话，没有则自动创建
-        val sessionId = _currentSessionId.value
-        if (sessionId.isBlank()) {
-            viewModelScope.launch {
-                val session = ChatSession(name = generateDefaultName())
-                settings.setAiChatSessions(listOf(session) + _sessions.value)
-                settings.setAiCurrentSessionId(session.id)
-            }
-        }
-
         val userMessage = ChatMessage(
             id = UUID.randomUUID().toString(),
             type = ChatMessageType.USER.name,
@@ -913,14 +1745,23 @@ class JiuxinViewModel @Inject constructor(
         )
 
         _chatState.update { it.copy(inputText = "", isLoading = true, error = null) }
-        addMessage(userMessage)
 
-        // 语音触发 + API 调用
+        // 语音触发 + API 调用（含会话确保和消息添加，全部在协程内顺序执行避免竞态）
         viewModelScope.launch {
-            var selectedShip = settings.aiVoiceShipName.first()
-            var shipAvatar = settings.aiVoiceShipAvatar.first()
-            val voiceEnabledSetting = settings.aiVoiceEnabled.first()
-            val chance = settings.aiVoiceRandomChance.first()
+            // 确保有当前会话，没有则同步创建（保存完整配置快照，避免竞态条件导致消息丢失）
+            val sessionId = ensureCurrentSession()
+            // 捕获当前代际，用于 API 返回后检测聊天状态是否已变更（清空/删除/切换）
+            val generation = _chatGeneration.get()
+
+            // 添加用户消息（确保会话已创建后再添加，避免消息丢失）
+            addMessage(userMessage)
+
+            // 配置隔离：从当前会话快照读取语音配置，回退到全局默认值
+            val currentSessionSnapshot = _sessions.value.firstOrNull { it.id == sessionId }
+            var selectedShip = currentSessionSnapshot?.voiceShipName?.ifBlank { null } ?: settings.aiVoiceShipName.first()
+            var shipAvatar = currentSessionSnapshot?.voiceShipAvatar?.ifBlank { null } ?: settings.aiVoiceShipAvatar.first()
+            val voiceEnabledSetting = currentSessionSnapshot?.voiceEnabled ?: settings.aiVoiceEnabled.first()
+            val chance = currentSessionSnapshot?.voiceRandomChance ?: settings.aiVoiceRandomChance.first()
 
             // 回退：如果 DataStore 中头像为空，从舰娘数据库查找
             if (selectedShip.isNotBlank() && shipAvatar.isBlank()) {
@@ -929,7 +1770,14 @@ class JiuxinViewModel @Inject constructor(
             }
 
             if (voiceEnabledSetting && selectedShip.isNotBlank()) {
-                val tagMappings = _chatState.value.voiceTagMappings
+                // 从会话快照读取 voiceKeywords 并重建 tagMappings（会话级隔离）
+                // 不能直接用 _chatState.value.voiceTagMappings，因为它只在 switchToSession 时同步，
+                // 用户在 JiuxinShipConfigScreen 修改关键词后 chatState 不会自动更新
+                val sessionKeywords = currentSessionSnapshot?.voiceKeywords
+                    ?.split(";")?.filter { it.isNotBlank() }
+                    ?: settings.aiVoiceKeywords.first().split(";").filter { it.isNotBlank() }
+                val tagMappings = buildVoiceTagMappings(sessionKeywords)
+
                 val matchedMapping = findBestTagMatch(text, tagMappings)
 
                 if (matchedMapping != null) {
@@ -942,6 +1790,12 @@ class JiuxinViewModel @Inject constructor(
             // 调用啾信 API
             try {
                 val aiResponse = callApi(text)
+                // 检查会话是否已被清除/删除/切换（代际计数器 + 会话 ID 双重校验）
+                if (_chatGeneration.get() != generation || _currentSessionId.value != sessionId) {
+                    Log.d(TAG, "Chat state changed during API call (gen=%d→%d, session=%s), discarding response"
+                        .format(generation, _chatGeneration.get(), _currentSessionId.value))
+                    return@launch
+                }
                 val aiMessage = ChatMessage(
                     id = UUID.randomUUID().toString(),
                     type = ChatMessageType.AI.name,
@@ -950,15 +1804,27 @@ class JiuxinViewModel @Inject constructor(
                 )
                 addMessage(aiMessage)
 
-                // 表情包逻辑：开关开启 + 概率命中 + 匹配到表情包
-                if (settings.aiStickersEnabled.first()) {
-                    val chance = settings.aiStickerChance.first()
-                    if (kotlin.random.Random.nextFloat() < chance) {
+                // 表情包逻辑：开关开启 + 概率命中 + 匹配到表情包（从会话快照读取配置）
+                val stickersEnabledSetting = currentSessionSnapshot?.stickersEnabled ?: settings.aiStickersEnabled.first()
+                if (stickersEnabledSetting) {
+                    val stickerChance = currentSessionSnapshot?.stickerChance ?: settings.aiStickerChance.first()
+                    if (kotlin.random.Random.nextFloat() < stickerChance) {
                         val sticker = findBestSticker(aiResponse)
                         if (sticker != null) {
                             // 稍微延迟发送表情包，模拟输入感
                             kotlinx.coroutines.delay(300)
-                            addStickerMessage(sticker, selectedShip.ifBlank { settings.aiName.first() }, shipAvatar.ifBlank { settings.aiAvatarUrl.first() })
+                            // 三重校验：代际 + 会话 ID + AI 消息仍存在
+                            // 防止清空/删除/切换后表情包重新出现，以及用户在 delay 期间删除 AI 消息后表情包复活
+                            if (_chatGeneration.get() != generation || _currentSessionId.value != sessionId) {
+                                Log.d(TAG, "Chat state changed before sticker, discarding")
+                                return@launch
+                            }
+                            if (!_chatState.value.messages.any { it.id == aiMessage.id }) {
+                                Log.d(TAG, "AI message was deleted during sticker delay, skipping sticker")
+                                return@launch
+                            }
+                            val stickerShipName = selectedShip.ifBlank { currentSessionSnapshot?.jiuxinName?.ifBlank { settings.aiName.first() } ?: settings.aiName.first() }
+                            addStickerMessage(sticker, stickerShipName, shipAvatar)
                         }
                     }
                 }
@@ -968,6 +1834,42 @@ class JiuxinViewModel @Inject constructor(
                 finishLoading()
             }
         }
+    }
+
+    /**
+     * 确保有当前会话，没有则创建并保存完整配置快照。
+     *
+     * 关键点：先持久化到 DataStore（会话列表、当前会话 ID、空消息列表），
+     * 再同步更新内存中的 [_sessions] 和 [_currentSessionId]。
+     * 这样当消息加载 collector 被 [_currentSessionId] 变化触发时，
+     * DataStore 中已有正确的空消息列表，不会因竞态覆盖后续 [addMessage] 添加的消息。
+     *
+     * @return 当前会话 ID
+     */
+    private suspend fun ensureCurrentSession(): String {
+        val current = _currentSessionId.value
+        if (current.isNotBlank()) return current
+
+        val session = ChatSession(
+            name = generateDefaultName(),
+            avatarUrl = avatarUrl.value,
+            jiuxinName = jiuxinName.value,
+            apiUrl = apiUrl.value,
+            apiKey = apiKey.value,
+            model = selectedModel.value,
+            systemPrompt = systemPrompt.value,
+            voiceShipName = voiceShipName.value,
+            voiceShipAvatar = voiceShipAvatar.value,
+            voiceEnabled = voiceEnabled.value,
+            voiceRandomChance = voiceRandomChance.value,
+            voiceKeywords = voiceKeywords.value,
+            stickersEnabled = stickersEnabled.value,
+            stickerChance = stickerChance.value
+        )
+        // 复用统一的会话激活逻辑（包含 MAX_SESSIONS 裁剪，修复原先 ensureCurrentSession 不裁剪的 bug）
+        persistAndActivateSession(session)
+        Log.d(TAG, "Auto-created session on sendMessage: ${session.id} - ${session.name}")
+        return session.id
     }
 
     // ── 智能语音标签匹配 ──
@@ -1006,8 +1908,6 @@ class JiuxinViewModel @Inject constructor(
         sceneTags: List<String>,
         preferredSkinName: String = ""
     ): com.azurlane.blyy.data.model.VoiceLine {
-        val defaultSkinNames = setOf("默认装扮", "默认", "通常", "原装")
-
         // 1. 策略：如果指定了偏好皮肤（如：好感度-爱强制要求“誓约”皮肤台词）
         if (preferredSkinName.isNotBlank()) {
             sceneTags.firstNotNullOfOrNull { tag ->
@@ -1024,7 +1924,7 @@ class JiuxinViewModel @Inject constructor(
             val pool = voices.filter { it.scene.contains(tag, ignoreCase = true) }
             if (pool.isNotEmpty()) {
                 // 优先考虑：默认皮肤或无皮肤台词（权重稍大），但包含所有其他换装皮肤
-                val defaultPool = pool.filter { it.skinName in defaultSkinNames || it.skinName.isEmpty() }
+                val defaultPool = pool.filter { it.skinName in DEFAULT_SKIN_NAMES || it.skinName.isEmpty() }
                 // 80% 概率触发默认/通常语音，20% 概率触发已拥有的其他皮肤语音
                 return if (defaultPool.isNotEmpty() && kotlin.random.Random.nextFloat() < 0.8f) {
                     defaultPool.random()
@@ -1035,7 +1935,7 @@ class JiuxinViewModel @Inject constructor(
         }
 
         // 3. 保底：优先从默认皮肤中随机选一条
-        val defaultVoice = voices.filter { it.skinName in defaultSkinNames }.randomOrNull()
+        val defaultVoice = voices.filter { it.skinName in DEFAULT_SKIN_NAMES }.randomOrNull()
         return defaultVoice ?: voices.random()
     }
 
@@ -1047,8 +1947,7 @@ class JiuxinViewModel @Inject constructor(
             try {
                 val (voices, _, _) = getVoicesUseCase(shipName)
                 if (voices.isNotEmpty()) {
-                    val defaultSkinNames = setOf("默认装扮", "默认", "通常")
-                    val defaultVoices = voices.filter { it.skinName in defaultSkinNames }
+                    val defaultVoices = voices.filter { it.skinName in DEFAULT_SKIN_NAMES }
                     val voice = if (defaultVoices.isNotEmpty()) defaultVoices.random() else voices.random()
                     val audioUrl = voice.getActiveAudioUrl(VoiceLanguage.CN)
                     sendVoiceMessage(shipName, audioUrl, voice.dialogue, shipAvatar)
@@ -1112,9 +2011,13 @@ class JiuxinViewModel @Inject constructor(
     }
 
     fun clearChat() {
+        // 递增代际计数器，使在途的 sendMessage 请求返回后丢弃 AI 回复和表情包
+        _chatGeneration.incrementAndGet()
+        // 捕获当前会话 ID：避免异步清空时 _currentSessionId 已被切换到新会话
+        val sessionId = _currentSessionId.value
+        // 同步清空内存消息，确保 UI 立即更新
+        _chatState.update { it.copy(messages = emptyList()) }
         viewModelScope.launch {
-            _chatState.update { it.copy(messages = emptyList()) }
-            val sessionId = _currentSessionId.value
             if (sessionId.isNotBlank()) {
                 settings.setAiSessionMessages(sessionId, emptyList())
             }
@@ -1122,6 +2025,66 @@ class JiuxinViewModel @Inject constructor(
     }
 
     fun clearError() { _chatState.update { it.copy(error = null) } }
+
+    /**
+     * 删除单条消息（包括文字、语音、表情包/绘画等所有类型）。
+     *
+     * 一次性原子删除：同步从内存 [_chatState] 和持久化 [settings] 中移除目标消息，
+     * 确保删除操作即时生效且不会因异步回调导致消息复活。
+     *
+     * 竞态修复：捕获当前 sessionId，避免删除后快速切换会话导致消息保存到错误会话。
+     * 这解决了"删除表情包后切换对话再切回，表情包复活"的问题。
+     *
+     * @param messageId 要删除的消息 ID
+     */
+    fun deleteMessage(messageId: String) {
+        // 捕获当前会话 ID：避免异步保存时 _currentSessionId 已被切换到新会话
+        val sessionId = _currentSessionId.value
+        // 同步从内存中移除，确保 UI 立即更新
+        _chatState.update { state ->
+            state.copy(messages = state.messages.filterNot { it.id == messageId })
+        }
+        // 异步持久化到 DataStore（使用捕获的 sessionId）
+        viewModelScope.launch {
+            if (sessionId.isNotBlank()) {
+                val messages = _chatState.value.messages
+                settings.setAiSessionMessages(sessionId, messages)
+                Log.d(TAG, "Deleted message: $messageId from session: $sessionId")
+            }
+        }
+    }
+
+    /**
+     * 编辑用户消息并重新发送。
+     *
+     * 删除从 [messageId] 开始的所有后续消息（包括该用户消息及其后的 AI 回复/语音/表情包），
+     * 然后以 [newContent] 作为新的用户消息发送，触发新的 AI 回复。
+     */
+    fun editAndResendMessage(messageId: String, newContent: String) {
+        if (newContent.isBlank()) return
+        val sessionId = _currentSessionId.value
+        // 找到目标消息的索引，截断该位置及之后的所有消息
+        val messages = _chatState.value.messages
+        val targetIndex = messages.indexOfFirst { it.id == messageId }
+        if (targetIndex < 0) return
+
+        // 代际+1：使正在进行的 API 调用失效（如果有的话）
+        _chatGeneration.incrementAndGet()
+        // 截断消息列表
+        val truncated = messages.subList(0, targetIndex)
+        _chatState.update { it.copy(messages = truncated, isLoading = false, error = null) }
+
+        // 持久化截断后的消息
+        viewModelScope.launch {
+            if (sessionId.isNotBlank()) {
+                settings.setAiSessionMessages(sessionId, truncated)
+                Log.d(TAG, "Truncated messages from: $messageId, session: $sessionId")
+            }
+        }
+
+        // 发送新消息（复用 sendMessage 逻辑）
+        sendMessage(newContent)
+    }
 
     override fun onCleared() { super.onCleared(); stopVoice() }
 
@@ -1140,30 +2103,44 @@ class JiuxinViewModel @Inject constructor(
         _chatState.update { it.copy(isLoading = false) }
     }
 
-    private fun saveCurrentSessionMessages() {
+    /**
+     * 保存当前会话消息到 DataStore
+     *
+     * 竞态修复：接受 [sessionId] 参数，而非从 [_currentSessionId] 读取。
+     * 调用方在切换会话前传入旧会话 ID，避免子协程读到已变更的 [_currentSessionId]
+     * 导致消息保存到错误会话（这是"删除后切换再切回，消息复活"的根因）。
+     */
+    private fun saveCurrentSessionMessages(
+        sessionId: String = _currentSessionId.value,
+        updateTimestamp: Boolean = true,
+        messages: List<ChatMessage>? = null
+    ) {
         viewModelScope.launch {
-            val sessionId = _currentSessionId.value
             if (sessionId.isNotBlank()) {
-                val messages = _chatState.value.messages
-                settings.setAiSessionMessages(sessionId, messages)
-                val updated = _sessions.value.map {
-                    if (it.id == sessionId) it.copy(updatedAt = System.currentTimeMillis()) else it
+                val msgs = messages ?: _chatState.value.messages
+                settings.setAiSessionMessages(sessionId, msgs)
+                if (updateTimestamp) {
+                    val updated = _sessions.value.map {
+                        if (it.id == sessionId) it.copy(updatedAt = System.currentTimeMillis()) else it
+                    }
+                    settings.setAiChatSessions(updated)
                 }
-                settings.setAiChatSessions(updated)
             }
         }
     }
 
     private suspend fun callApi(userMessage: String): String {
-        val key = settings.aiApiKey.first()
+        // 配置隔离：从当前会话快照读取 API 配置，回退到全局默认值
+        val session = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
+        val key = session?.apiKey?.ifBlank { settings.aiApiKey.first() } ?: settings.aiApiKey.first()
         if (key.isBlank()) throw Exception("未配置 API 密钥，请先在啾信配置中设置")
 
-        val baseUrl = settings.aiCustomBaseUrl.first().trim()
+        val baseUrl = (session?.apiUrl?.ifBlank { settings.aiCustomBaseUrl.first() } ?: settings.aiCustomBaseUrl.first()).trim()
         if (baseUrl.isBlank()) throw Exception("未配置 API URL，请先在啾信配置中设置")
 
         val url = buildFullApiUrl(baseUrl)
-        val prompt = settings.aiSystemPrompt.first()
-        val modelStr = settings.aiModel.first()
+        val prompt = session?.systemPrompt?.ifBlank { settings.aiSystemPrompt.first() } ?: settings.aiSystemPrompt.first()
+        val modelStr = session?.model?.ifBlank { settings.aiModel.first() } ?: settings.aiModel.first()
         val model = modelStr.ifBlank { DEFAULT_MODEL }
 
         val recentMessages = _chatState.value.messages.takeLast(20)
@@ -1201,13 +2178,7 @@ class JiuxinViewModel @Inject constructor(
         val requestBody = json.encodeToString(requestJson)
             .toRequestBody("application/json".toMediaType())
 
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $key")
-            .addHeader("Content-Type", "application/json")
-            .addHeader("Accept", "application/json")
-            .post(requestBody)
-            .build()
+        val request = buildJsonPostRequest(url, key, requestBody)
 
         Log.d(TAG, "Calling API: $url, model=$model, history=${recentMessages.size} messages")
 
@@ -1237,7 +2208,11 @@ class JiuxinViewModel @Inject constructor(
                 val firstChoice = choices[0].jsonObject
                 val message = firstChoice["message"]?.jsonObject
                 val content = message?.get("content")?.jsonPrimitive?.content
-                if (!content.isNullOrBlank()) return content
+                if (!content.isNullOrBlank()) {
+                    // trim 消除 API 返回内容中的前导/尾部空行和空白字符
+                    // 解决 AI 回复消息首尾出现错误空行的问题
+                    return content.trim()
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "JSON parse failed for chat response", e)

@@ -81,8 +81,82 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.net.URL
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "StudentGalleryScreen"
+
+/**
+ * 视频缩略图内存缓存 — 缓存 MediaMetadataRetriever 提取的视频首帧
+ *
+ * key = 视频 URL，value = Bitmap（可能为 null 表示提取失败，避免重复尝试）
+ */
+private val videoThumbnailCache = ConcurrentHashMap<String, Bitmap?>()
+
+/**
+ * 异步加载视频缩略图（首帧）
+ *
+ * 当 gamekee 视频无 poster/封面图时，使用 [MediaMetadataRetriever] 从视频流中
+ * 提取首帧作为封面。结果会缓存到 [videoThumbnailCache] 避免重复提取。
+ *
+ * @param videoUrl 视频 URL
+ * @return 首帧 Bitmap，提取失败返回 null
+ */
+private suspend fun loadVideoThumbnail(videoUrl: String): Bitmap? {
+    videoThumbnailCache[videoUrl]?.let { return it }
+    return withContext(Dispatchers.IO) {
+        val retriever = MediaMetadataRetriever()
+        try {
+            // gamekee CDN 需要Referer头，否则可能返回403
+            val headers = mapOf("Referer" to "https://www.gamekee.com/")
+            retriever.setDataSource(videoUrl, headers)
+            val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            videoThumbnailCache[videoUrl] = bitmap
+            Log.d(TAG, "Video thumbnail extracted: $videoUrl, success=${bitmap != null}")
+            bitmap
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to extract video thumbnail: $videoUrl — ${e.message}")
+            videoThumbnailCache[videoUrl] = null // 缓存失败结果，避免重复尝试
+            null
+        } finally {
+            try { retriever.release() } catch (_: Exception) {}
+        }
+    }
+}
+
+/**
+ * 视频缩略图加载状态
+ */
+private sealed class ThumbnailState {
+    object Loading : ThumbnailState()
+    data class Success(val bitmap: Bitmap) : ThumbnailState()
+    object Failed : ThumbnailState()
+}
+
+/**
+ * Composable 钩子：异步获取视频缩略图，自动跟随组合生命周期
+ *
+ * 返回 [ThumbnailState] 以区分加载中、成功、失败三种状态，
+ * 使 UI 能在加载中显示进度环、失败时显示渐变占位。
+ */
+@Composable
+private fun rememberVideoThumbnail(videoUrl: String): ThumbnailState {
+    return produceState<ThumbnailState>(ThumbnailState.Loading, videoUrl) {
+        // 先查缓存：命中（含 null 失败结果）则直接返回，避免重复网络请求
+        val cached = videoThumbnailCache[videoUrl]
+        value = when {
+            cached != null -> ThumbnailState.Success(cached)
+            videoThumbnailCache.containsKey(videoUrl) -> ThumbnailState.Failed
+            else -> {
+                val bitmap = loadVideoThumbnail(videoUrl)
+                if (bitmap != null) ThumbnailState.Success(bitmap) else ThumbnailState.Failed
+            }
+        }
+    }.value
+}
 
 @androidx.annotation.OptIn(UnstableApi::class)
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -290,6 +364,7 @@ fun StudentGalleryScreen(
             VideoPlayerOverlay(
                 videoUrl = video.url,
                 videoTitle = video.title,
+                videoDescription = video.description,
                 onDismiss = {
                     hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     playingVideo = null
@@ -675,6 +750,8 @@ private fun VideoItemCard(
 ) {
     val shape = if (isCommandCenter) BlyyShapes.Card else RoundedCornerShape(AppSpacing.Corner.Lg)
     val cardBg = if (isDark) AppColors.Panel.Dark.copy(alpha = 0.7f) else AppColors.Panel.Light.copy(alpha = 0.7f)
+    val thumbShape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Md)
+    val context = LocalContext.current
 
     Surface(
         modifier = Modifier
@@ -691,11 +768,11 @@ private fun VideoItemCard(
                 .padding(AppSpacing.Md),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 视频缩略图占位 — 带播放图标
+            // 视频封面图 — 优先级：coverUrl > 视频首帧缩略图 > 渐变占位
             Box(
                 modifier = Modifier
-                    .size(72.dp)
-                    .clip(if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Md))
+                    .size(96.dp)
+                    .clip(thumbShape)
                     .background(
                         Brush.linearGradient(
                             colors = listOf(
@@ -707,16 +784,68 @@ private fun VideoItemCard(
                     .border(
                         width = AppSpacing.Border.Thin,
                         color = accentColor.copy(alpha = 0.4f),
-                        shape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Md)
+                        shape = thumbShape
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.PlayCircleFilled,
-                    contentDescription = "播放",
-                    tint = accentColor,
-                    modifier = Modifier.size(36.dp)
-                )
+                when {
+                    // 1. 有显式封面 URL（poster 属性或关联 img）→ 直接用 Coil 加载
+                    video.coverUrl.isNotBlank() -> {
+                        AsyncImage(
+                            model = ImageRequest.Builder(context)
+                                .data(video.coverUrl)
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = video.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    // 2. 无封面 URL → 用 MediaMetadataRetriever 提取视频首帧
+                    else -> {
+                        val thumbState = rememberVideoThumbnail(video.url)
+                        when (thumbState) {
+                            is ThumbnailState.Success -> {
+                                Image(
+                                    bitmap = thumbState.bitmap.asImageBitmap(),
+                                    contentDescription = video.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
+                            is ThumbnailState.Loading -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White.copy(alpha = 0.6f)
+                                )
+                            }
+                            is ThumbnailState.Failed -> {
+                                // 提取失败，显示视频图标占位
+                                Icon(
+                                    imageVector = Icons.Rounded.VideoFile,
+                                    contentDescription = null,
+                                    tint = Color.White.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+                // 半透明遮罩 + 播放图标（始终覆盖在封面上）
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.25f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.PlayCircleFilled,
+                        contentDescription = "播放",
+                        tint = Color.White.copy(alpha = 0.9f),
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.width(AppSpacing.Md))
@@ -732,6 +861,16 @@ private fun VideoItemCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (video.description.isNotBlank() && video.description != video.title) {
+                    Spacer(modifier = Modifier.height(AppSpacing.Xxs))
+                    Text(
+                        text = video.description,
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Spacer(modifier = Modifier.height(AppSpacing.Xxs))
                 Row(
                     verticalAlignment = Alignment.CenterVertically
@@ -915,6 +1054,7 @@ private fun ImageViewerOverlay(
 private fun VideoPlayerOverlay(
     videoUrl: String,
     videoTitle: String,
+    videoDescription: String = "",
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1184,14 +1324,24 @@ private fun VideoPlayerOverlay(
 
                 Spacer(modifier = Modifier.width(AppSpacing.Md))
 
-                Text(
-                    text = videoTitle.ifBlank { "视频播放" },
-                    style = AppTypography.TitleMedium,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = videoTitle.ifBlank { "视频播放" },
+                        style = AppTypography.TitleMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (videoDescription.isNotBlank() && videoDescription != videoTitle) {
+                        Text(
+                            text = videoDescription,
+                            style = AppTypography.BodySmall,
+                            color = Color.White.copy(alpha = 0.7f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.width(AppSpacing.Md))
 

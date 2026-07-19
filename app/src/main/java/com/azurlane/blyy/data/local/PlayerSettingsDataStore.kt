@@ -14,6 +14,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.viewmodel.PlayMode
+import android.util.Log
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -21,6 +22,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** 容错 JSON 实例：忽略未知字段，避免模型升级后反序列化崩溃导致数据"静默消失" */
+private val lenientJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+    coerceInputValues = true
+}
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "player_settings")
 
@@ -86,7 +94,17 @@ class PlayerSettingsDataStore @Inject constructor(
         // 历史对话会话管理
         private val AI_CHAT_SESSIONS_KEY = stringPreferencesKey("ai_chat_sessions")
         private val AI_CURRENT_SESSION_ID_KEY = stringPreferencesKey("ai_current_session_id")
-        
+
+        // 啾信预设配置列表（多套 API + 舰娘人格）
+        private val AI_JIUXIN_PRESETS_KEY = stringPreferencesKey("ai_jiuxin_presets")
+        // 会话列表自定义排序（用户长按拖动后的顺序，存储 session id 列表）
+        private val AI_SESSION_ORDER_KEY = stringPreferencesKey("ai_session_order")
+        // 聊天背景图片 URL（空字符串表示使用默认纯色背景）
+        private val AI_CHAT_BACKGROUND_URL_KEY = stringPreferencesKey("ai_chat_background_url")
+        // 多套 API 配置列表（独立于舰娘人格，可复用）
+        private val AI_API_CONFIGS_KEY = stringPreferencesKey("ai_api_configs")
+        // 多套舰娘人格配置列表（独立于 API 配置，可组合）
+        private val AI_PERSONA_CONFIGS_KEY = stringPreferencesKey("ai_persona_configs")
         // 用户（指挥官）配置
         private val USER_NAME_KEY = stringPreferencesKey("user_name")
         private val USER_AVATAR_URL_KEY = stringPreferencesKey("user_avatar_url")
@@ -363,8 +381,8 @@ class PlayerSettingsDataStore @Inject constructor(
 
     val aiApiKey: Flow<String> = context.dataStore.data.map { it[AI_API_KEY_KEY] ?: "" }
     val aiCustomBaseUrl: Flow<String> = context.dataStore.data.map { it[AI_CUSTOM_BASE_URL_KEY] ?: "" }
-    val aiSystemPrompt: Flow<String> = context.dataStore.data.map { it[AI_SYSTEM_PROMPT_KEY] ?: "这里是人格提示词" }
-    val aiName: Flow<String> = context.dataStore.data.map { it[AI_NAME_KEY] ?: "舰娘名称" }
+    val aiSystemPrompt: Flow<String> = context.dataStore.data.map { it[AI_SYSTEM_PROMPT_KEY] ?: "" }
+    val aiName: Flow<String> = context.dataStore.data.map { it[AI_NAME_KEY] ?: "" }
     val aiAvatarUrl: Flow<String> = context.dataStore.data.map { it[AI_AVATAR_URL_KEY] ?: "" }
     val aiVoiceEnabled: Flow<Boolean> = context.dataStore.data.map { it[AI_VOICE_ENABLED_KEY] ?: true }
     val aiVoiceRandomChance: Flow<Float> = context.dataStore.data.map {
@@ -384,7 +402,7 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setAiName(name: String) { context.dataStore.edit { it[AI_NAME_KEY] = name } }
     suspend fun setAiAvatarUrl(url: String) { context.dataStore.edit { it[AI_AVATAR_URL_KEY] = url } }
     suspend fun setAiVoiceEnabled(enabled: Boolean) { context.dataStore.edit { it[AI_VOICE_ENABLED_KEY] = enabled } }
-    suspend fun setAiVoiceRandomChance(chance: Float) { context.dataStore.edit { it[AI_VOICE_RANDOM_CHANCE_KEY] = chance } }
+    suspend fun setAiVoiceRandomChance(chance: Float) { context.dataStore.edit { it[AI_VOICE_RANDOM_CHANCE_KEY] = chance.coerceIn(0f, 1f) } }
     suspend fun setAiVoiceKeywords(keywords: String) { context.dataStore.edit { it[AI_VOICE_KEYWORDS_KEY] = keywords } }
     suspend fun setAiChatHistory(history: String) { context.dataStore.edit { it[AI_CHAT_HISTORY_KEY] = history } }
     suspend fun setAiModel(model: String) { context.dataStore.edit { it[AI_MODEL_KEY] = model } }
@@ -399,16 +417,14 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 所有会话元数据列表 */
     val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = context.dataStore.data.map { prefs ->
         val json = prefs[AI_CHAT_SESSIONS_KEY] ?: "[]"
-        try { Json.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (_: Exception) { emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode chat sessions", e); emptyList() }
     }
 
     /** 当前会话 ID */
     val aiCurrentSessionId: Flow<String> = context.dataStore.data.map { it[AI_CURRENT_SESSION_ID_KEY] ?: "" }
 
     /** 保存会话列表 */
-    suspend fun setAiChatSessions(sessions: List<com.azurlane.blyy.data.model.ChatSession>) {
-        context.dataStore.edit { it[AI_CHAT_SESSIONS_KEY] = Json.encodeToString(sessions) }
-    }
+    suspend fun setAiChatSessions(sessions: List<com.azurlane.blyy.data.model.ChatSession>) { context.dataStore.edit { it[AI_CHAT_SESSIONS_KEY] = lenientJson.encodeToString(sessions) } }
 
     /** 设置当前会话 ID */
     suspend fun setAiCurrentSessionId(id: String) {
@@ -419,17 +435,75 @@ class PlayerSettingsDataStore @Inject constructor(
     fun aiSessionMessages(sessionId: String): Flow<List<com.azurlane.blyy.data.model.ChatMessage>> = context.dataStore.data.map { prefs ->
         val key = stringPreferencesKey("ai_session_msgs_$sessionId")
         val json = prefs[key] ?: "[]"
-        try { Json.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (_: Exception) { emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode session messages for $sessionId", e); emptyList() }
     }
 
     /** 保存指定会话的消息 */
     suspend fun setAiSessionMessages(sessionId: String, messages: List<com.azurlane.blyy.data.model.ChatMessage>) {
-        context.dataStore.edit { it[stringPreferencesKey("ai_session_msgs_$sessionId")] = Json.encodeToString(messages) }
+        context.dataStore.edit { it[stringPreferencesKey("ai_session_msgs_$sessionId")] = lenientJson.encodeToString(messages) }
     }
 
     /** 删除指定会话的消息数据 */
     suspend fun deleteAiSessionMessages(sessionId: String) {
         context.dataStore.edit { it.remove(stringPreferencesKey("ai_session_msgs_$sessionId")) }
+    }
+
+    // ── 啾信预设配置管理 ──
+
+    /** 所有已保存的啾信预设列表 */
+    val aiJiuxinPresets: Flow<List<com.azurlane.blyy.data.model.JiuxinPreset>> = context.dataStore.data.map { prefs ->
+        val json = prefs[AI_JIUXIN_PRESETS_KEY] ?: "[]"
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode presets", e); emptyList() }
+    }
+
+    /** 保存预设列表（覆盖） */
+    suspend fun setAiJiuxinPresets(presets: List<com.azurlane.blyy.data.model.JiuxinPreset>) {
+        context.dataStore.edit { it[AI_JIUXIN_PRESETS_KEY] = lenientJson.encodeToString(presets) }
+    }
+
+    /** 会话列表自定义排序（session id 列表，用户拖动后的顺序） */
+    val aiSessionOrder: Flow<List<String>> = context.dataStore.data.map { prefs ->
+        val json = prefs[AI_SESSION_ORDER_KEY] ?: "[]"
+        try { lenientJson.decodeFromString<List<String>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode session order", e); emptyList() }
+    }
+
+    /** 保存会话列表自定义排序 */
+    suspend fun setAiSessionOrder(order: List<String>) {
+        context.dataStore.edit { it[AI_SESSION_ORDER_KEY] = lenientJson.encodeToString(order) }
+    }
+
+    /** 聊天背景图片 URL（空表示使用默认纯色背景） */
+    val aiChatBackgroundUrl: Flow<String> = context.dataStore.data.map { it[AI_CHAT_BACKGROUND_URL_KEY] ?: "" }
+
+    /** 保存聊天背景图片 URL */
+    suspend fun setAiChatBackgroundUrl(url: String) {
+        context.dataStore.edit { it[AI_CHAT_BACKGROUND_URL_KEY] = url }
+    }
+
+    // ── 多套 API 配置管理 ──
+
+    /** 所有已保存的 API 配置列表 */
+    val aiApiConfigs: Flow<List<com.azurlane.blyy.data.model.ApiConfig>> = context.dataStore.data.map { prefs ->
+        val json = prefs[AI_API_CONFIGS_KEY] ?: "[]"
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode API configs", e); emptyList() }
+    }
+
+    /** 保存 API 配置列表（覆盖） */
+    suspend fun setAiApiConfigs(configs: List<com.azurlane.blyy.data.model.ApiConfig>) {
+        context.dataStore.edit { it[AI_API_CONFIGS_KEY] = lenientJson.encodeToString(configs) }
+    }
+
+    // ── 多套舰娘人格配置管理 ──
+
+    /** 所有已保存的舰娘人格配置列表 */
+    val aiPersonaConfigs: Flow<List<com.azurlane.blyy.data.model.PersonaConfig>> = context.dataStore.data.map { prefs ->
+        val json = prefs[AI_PERSONA_CONFIGS_KEY] ?: "[]"
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.PersonaConfig>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode persona configs", e); emptyList() }
+    }
+
+    /** 保存舰娘人格配置列表（覆盖） */
+    suspend fun setAiPersonaConfigs(configs: List<com.azurlane.blyy.data.model.PersonaConfig>) {
+        context.dataStore.edit { it[AI_PERSONA_CONFIGS_KEY] = lenientJson.encodeToString(configs) }
     }
 
     // ── 用户（指挥官）配置 ──

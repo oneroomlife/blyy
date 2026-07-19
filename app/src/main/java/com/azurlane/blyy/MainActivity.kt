@@ -148,7 +148,9 @@ import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipRandomScreen
 import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
+import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinChatScreen
+import com.azurlane.blyy.ui.screens.ConversationListScreen
 import com.azurlane.blyy.ui.screens.LeaderboardScreen
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
@@ -381,7 +383,9 @@ fun AppContent() {
             currentDestination?.route != "assistant" &&
             currentDestination?.route != "assistant_config" &&
             currentDestination?.route != "jiuxin_config" &&
-            currentDestination?.route != "jiuxin_chat"
+            currentDestination?.route != "jiuxin_chat" &&
+            currentDestination?.route != "jiuxin_ship_config" &&
+            currentDestination?.route != "jiuxin_conversation_list"
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
 
@@ -809,9 +813,22 @@ fun AppContent() {
                             onBack = { navController.popBackStack() }
                         )
                     }
+                    composable("jiuxin_ship_config") {
+                        JiuxinShipConfigScreen(
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
                     composable("jiuxin_chat") {
                         JiuxinChatScreen(
                             onBack = { navController.popBackStack() },
+                            onNavigateToConfig = { navController.navigate("jiuxin_config") },
+                            onNavigateToShipConfig = { navController.navigate("jiuxin_ship_config") }
+                        )
+                    }
+                    composable("jiuxin_conversation_list") {
+                        ConversationListScreen(
+                            onBack = { navController.popBackStack() },
+                            onNavigateToChat = { navController.navigate("jiuxin_chat") },
                             onNavigateToConfig = { navController.navigate("jiuxin_config") }
                         )
                     }
@@ -1290,7 +1307,7 @@ private fun ModernDrawerSheet(
             group = "工具"
         ),
         DrawerMenuItem(
-            route = "jiuxin_chat",
+            route = "jiuxin_conversation_list",
             label = "啾信",
             icon = Icons.Rounded.SmartToy,
             description = "与AI舰娘对话",
@@ -1554,27 +1571,21 @@ private fun ModernDrawerItem(
     isLastInGroup: Boolean,
     onClick: () -> Unit
 ) {
-    val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.02f else 1f,
-        animationSpec = AppAnimation.Specs.scale(),
-        label = "itemScale"
-    )
     val isWatch = isWatchScreen()
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+
+    val selectedBg = item.color.copy(alpha = 0.10f)
+    val selectedBorder = item.color.copy(alpha = 0.25f)
 
     Surface(
         onClick = onClick,
         modifier = Modifier
             .fillMaxWidth()
-            .scale(scale)
             .padding(bottom = if (isLastInGroup) AppSpacing.Xs else 0.dp),
         shape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = if (isSelected) {
-            item.color.copy(alpha = 0.12f)
-        } else {
-            Color.Transparent
-        },
-        shadowElevation = if (isSelected) AppElevation.Level3 else AppElevation.Level0
+        color = if (isSelected) selectedBg else Color.Transparent,
+        shadowElevation = 0.dp,
+        border = if (isSelected) androidx.compose.foundation.BorderStroke(1.dp, selectedBorder) else null
     ) {
         Row(
             modifier = Modifier
@@ -1590,30 +1601,19 @@ private fun ModernDrawerItem(
                         if (isCommandCenter) {
                             Modifier
                                 .background(
-                                    brush = Brush.linearGradient(
-                                        colors = listOf(
-                                            item.color.copy(alpha = if (isSelected) 0.2f else 0.1f),
-                                            item.color.copy(alpha = 0.02f)
-                                        )
-                                    ),
+                                    color = item.color.copy(alpha = if (isSelected) 0.18f else 0.08f),
                                     shape = BlyyShapes.Button
                                 )
                                 .border(
                                     width = AppSpacing.Border.Thin,
-                                    color = item.color.copy(alpha = if (isSelected) 0.4f else 0.15f),
+                                    color = item.color.copy(alpha = if (isSelected) 0.35f else 0.12f),
                                     shape = BlyyShapes.Button
                                 )
                         } else {
-                            Modifier
-                                .background(
-                                    brush = Brush.radialGradient(
-                                        colors = listOf(
-                                            item.color.copy(alpha = if (isSelected) 0.25f else 0.15f),
-                                            Color.Transparent
-                                        )
-                                    ),
-                                    shape = CircleShape
-                                )
+                            Modifier.background(
+                                color = item.color.copy(alpha = if (isSelected) 0.18f else 0.08f),
+                                shape = CircleShape
+                            )
                         }
                     ),
                 contentAlignment = Alignment.Center
@@ -1643,7 +1643,6 @@ private fun ModernDrawerItem(
                 )
             }
 
-            // 选中指示器 — 渐变竖条
             if (isSelected) {
                 Box(
                     modifier = Modifier

@@ -472,3 +472,91 @@ object ChatColors {
     val TimestampLight: Color = Color(0xFF7A9AB0)
     val TimestampDark: Color = Color(0xFF5A7A90)
 }
+
+/**
+ * JUUSTAGRAM 消息界面设计规范色板
+ * 来源：UI_work/juustagram-messaging-ui/docs/design-spec.md
+ * 主色 #5BA4E6，与 ChatColors 的青蓝主题区分
+ */
+object JuusPalette {
+    // 主色调
+    val Primary = Color(0xFF5BA4E6)
+    val PrimaryLight = Color(0xFFD6EBFF)
+    val PrimaryLighter = Color(0xFFE8F4FD)
+    val PrimaryDark = Color(0xFF3B8FD9)
+
+    // 背景色
+    val Bg = Color(0xFFF0F4F8)
+    val Surface = Color(0xFFFFFFFF)
+    val SurfaceDim = Color(0xFFF7F9FB)
+
+    // 文字色
+    val TextPrimary = Color(0xFF1A1A2E)
+    val TextSecondary = Color(0xFF555566)
+    val TextTertiary = Color(0xFF8899AA)
+    val TextOnPrimary = Color(0xFFFFFFFF)
+
+    // 功能色
+    val Badge = Color(0xFFFF3B30)
+    val TagWaiting = Color(0xFFFF9500)
+    val TagWaitingBg = Color(0x1FFF9500) // rgba(255,149,0,0.12)
+
+    // 聊天气泡
+    val BubbleIncoming = Color(0xFFFFFFFF)
+    val BubbleOutgoing = Color(0xFF5BA4E6)
+    val BubbleIncomingText = Color(0xFF1A1A2E)
+    val BubbleOutgoingText = Color(0xFFFFFFFF)
+
+    // 边框与分割线
+    val Border = Color(0xFFE4E8EC)
+    val BorderLight = Color(0xFFEFF2F5)
+    val Divider = Color(0xFFEDEFF2)
+    val ItemBorder = Color(0xFFF4F6F8)
+
+    // 导航栏渐变
+    val NavGradientTop = Color(0xFFE0F2FE)
+    val NavGradientBottom = Color(0xFFBAE6FD)
+
+    // 毛玻璃半透明
+    val Glass95 = Color(0xF2FFFFFF) // rgba(255,255,255,0.95)
+    val Glass85 = Color(0xD9FFFFFF) // rgba(255,255,255,0.85)
+    val Glass35 = Color(0x59FFFFFF) // rgba(255,255,255,0.35)
+
+    // 筛选弹窗
+    val FilterOverlay = Color(0x66000000) // rgba(0,0,0,0.4)
+    val FilterPillUnselectedBg = Color(0xFFF4F6F8)
+    val FilterCancelBg = Color(0xFFF4F6F8)
+
+    // 暗色模式适配
+    object Dark {
+        val Bg = Color(0xFF0D1B2A)
+        val Surface = Color(0xFF1A2335)
+        val SurfaceDim = Color(0xFF152033)
+        val Primary = Color(0xFF5BA4E6)
+        val PrimaryLight = Color(0xFF2A4A6B)
+        val PrimaryLighter = Color(0xFF1F3556)
+        val PrimaryDark = Color(0xFF3B8FD9)
+        val Badge = Color(0xFFFF453A)
+        val TextPrimary = Color(0xFFE2EAF4)
+        val TextSecondary = Color(0xFFA8BCD0)
+        val TextTertiary = Color(0xFF7A9AB0)
+        val TextOnPrimary = Color(0xFFFFFFFF)
+        val BubbleIncoming = Color(0xFF243559)
+        val BubbleOutgoing = Color(0xFF3B8FD9)
+        val BubbleIncomingText = Color(0xFFE2EAF4)
+        val BubbleOutgoingText = Color(0xFFFFFFFF)
+        val Border = Color(0xFF2A3F5F)
+        val BorderLight = Color(0xFF1F2F45)
+        val Divider = Color(0xFF2A3F5F)
+        val ItemBorder = Color(0xFF1F2F45)
+        val Glass95 = Color(0xF20F2038)
+        val Glass85 = Color(0xD90F2038)
+        val Glass35 = Color(0x590F2038)
+        val NavGradientTop = Color(0xFF0F2038)
+        val NavGradientBottom = Color(0xFF1A3050)
+        val FilterPillUnselectedBg = Color(0xFF1F2F45)
+        val FilterCancelBg = Color(0xFF1F2F45)
+        val TagWaiting = Color(0xFFFF9500)
+        val TagWaitingBg = Color(0x4DFF9500)
+    }
+}
