@@ -174,7 +174,7 @@ fun GalleryScreen(
     val allFactions = remember(state.archiveType) {
         when (state.archiveType) {
             com.azurlane.blyy.viewmodel.ArchiveType.DOCK ->
-                listOf("全部", "白鹰", "皇家", "重樱", "铁血", "东煌", "撒丁帝国", "北方联合", "自由鸢尾", "维希教廷", "郁金王国", "META", "其他", "飓风")
+                listOf("全部", "白鹰", "皇家", "重樱", "铁血", "东煌", "撒丁帝国", "北方联合", "自由鸢尾", "维希教廷", "郁金王国", "晶环联盟", "META", "其他", "飓风")
             com.azurlane.blyy.viewmodel.ArchiveType.STUDENT ->
                 listOf("全部", "蔚蓝档案")
         }

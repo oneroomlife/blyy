@@ -186,17 +186,20 @@ fun ConversationListScreen(
     )
     val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
 
-    Box(modifier = Modifier.fillMaxSize().background(bgGradient).imePadding()) {
+    Box(modifier = Modifier.fillMaxSize().background(bgGradient)) {
         Row(modifier = Modifier.fillMaxSize()) {
             // ── 左导航栏（56dp，玻璃渐变） ──
+            // 注意：导航栏不应用 imePadding — 它没有输入字段，键盘弹出时应保持全高，
+            // 避免高度变化导致内部 weight spacer 重新分配引起图标位移抽搐。
+            // imePadding 仅作用于主内容区（下方 Column）。
             JuusLeftNavRail(
-                isDark = isDark,
                 onBack = onBack,
                 onNavigateToConfig = onNavigateToConfig
             )
 
             // ── 主内容区 ──
-            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            // imePadding 仅在此处应用：键盘弹出时只有主内容区收缩，导航栏保持全高
+            Column(modifier = Modifier.weight(1f).fillMaxHeight().imePadding()) {
                 JuusListHeader(
                     isDark = isDark,
                     isEditMode = isEditMode,
@@ -429,9 +432,11 @@ fun ConversationListScreen(
 }
 
 // ── 左导航栏（56dp，玻璃渐变 #7DD3FC → #38BDF8 + 玻璃覆盖层） ──
+// 布局稳定性设计：使用 Box + Alignment 替代 Column + weight(1f)，
+// 顶部文字锚定 TopCenter，底部图标组锚定 BottomCenter。
+// 消除 weight spacer 对父容器高度的依赖，任何高度变化都不会导致图标位移。
 @Composable
 private fun JuusLeftNavRail(
-    isDark: Boolean,
     onBack: () -> Unit,
     onNavigateToConfig: () -> Unit
 ) {
@@ -439,14 +444,14 @@ private fun JuusLeftNavRail(
         colors = listOf(JuusListColors.NavGradientTop, JuusListColors.NavGradientBottom)
     )
 
-    Column(
+    Box(
         modifier = Modifier
             .width(56.dp)
             .fillMaxHeight()
             .background(gradient),
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.TopCenter
     ) {
-        // 顶部：JUUS// 文字
+        // 顶部：JUUS// 文字 — 锚定到顶部，不随高度变化移动
         Text(
             text = "JUUS//",
             fontSize = 10.sp,
@@ -456,54 +461,60 @@ private fun JuusLeftNavRail(
             modifier = Modifier.padding(top = 14.dp)
         )
 
-        Spacer(modifier = Modifier.weight(1f))
-
-        // 中间：聊天气泡图标（玻璃质感 — 无阴影，仅边框+背景）
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Color.White.copy(alpha = 0.85f))
-                .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
-                .clickable(onClick = onBack),
-            contentAlignment = Alignment.Center
+        // 底部图标组 — 锚定到 BottomCenter，不使用 weight spacer
+        // 即使父容器高度变化（虽然 imePadding 已隔离），图标位置也仅随底边变化，
+        // 不会出现 weight 重新分配导致的"抽搐"位移
+        Column(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(
-                Icons.Rounded.ChatBubbleOutline,
-                contentDescription = "消息",
-                tint = JuusListColors.Primary,
-                modifier = Modifier.size(24.dp)
+            // 聊天气泡图标（玻璃质感 — 无阴影，仅边框+背景）
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White.copy(alpha = 0.85f))
+                    .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Rounded.ChatBubbleOutline,
+                    contentDescription = "消息",
+                    tint = JuusListColors.Primary,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+
+            // 白色分隔线
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 12.dp)
+                    .width(30.dp)
+                    .height(1.5.dp)
+                    .background(Color.White.copy(alpha = 0.5f))
             )
+
+            // 设置图标（玻璃质感 — 无阴影，与上方图标风格统一）
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.85f))
+                    .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
+                    .clickable(onClick = onNavigateToConfig),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Rounded.Settings,
+                    contentDescription = "设置",
+                    tint = JuusListColors.Primary,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
-
-        // 白色分隔线
-        Box(
-            modifier = Modifier
-                .padding(vertical = 12.dp)
-                .width(30.dp)
-                .height(1.5.dp)
-                .background(Color.White.copy(alpha = 0.5f))
-        )
-
-        // 底部：设置图标（玻璃质感 — 无阴影，与上方图标风格统一）
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.85f))
-                .border(1.dp, Color.White.copy(alpha = 0.5f), CircleShape)
-                .clickable(onClick = onNavigateToConfig),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Rounded.Settings,
-                contentDescription = "设置",
-                tint = JuusListColors.Primary,
-                modifier = Modifier.size(24.dp)
-            )
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 

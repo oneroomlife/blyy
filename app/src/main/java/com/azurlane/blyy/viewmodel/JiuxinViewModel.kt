@@ -1203,60 +1203,101 @@ class JiuxinViewModel @Inject constructor(
         }
     }
 
-    /** 删除指定会话 */
+    /**
+     * 删除指定会话。
+     *
+     * 切换/创建策略（当删除的是当前会话时）：
+     * 1. **同舰娘还有其他会话** → 切换到同舰娘最新的会话（保持 HistoryPanel 仍在原舰娘上下文，
+     *    用户可继续删除/查看该舰娘的其他对话）
+     * 2. **同舰娘无其他会话** → 自动创建新会话继承原舰娘标识和配置快照（保持该舰娘在会话列表
+     *    中存在，与"只有一个舰娘时删除所有会话"的行为一致，避免舰娘被"误删除"）
+     *
+     * 非当前会话被删除时无需切换，仅更新会话列表。
+     *
+     * @param sessionId 要删除的会话 ID
+     */
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
             // 递增代际计数器，使所有在途的 sendMessage 请求返回后能检测到状态变更并丢弃结果
             _chatGeneration.incrementAndGet()
 
-            // 先捕获被删除会话的舰娘标识（用于自动创建新会话时继承）
-            val deletedSession = _sessions.value.firstOrNull { it.id == sessionId }
+            // 先捕获被删除会话的舰娘标识（用于同舰娘会话查找和自动创建新会话时继承）
+            val deletedSession = _sessions.value.firstOrNull { it.id == sessionId } ?: return@launch
+            val deletedShipKey = computeShipKey(deletedSession)
 
             val currentList = _sessions.value.toMutableList()
             currentList.removeAll { it.id == sessionId }
-            // 先持久化到 DataStore
+            // 先持久化会话列表到 DataStore
             settings.setAiChatSessions(currentList)
             settings.deleteAiSessionMessages(sessionId)
 
-            // 如果删除的是当前会话，切换到最新的；若无会话则自动创建新会话
-            if (_currentSessionId.value == sessionId) {
-                if (currentList.isNotEmpty()) {
-                    // 先持久化新会话 ID，再同步更新内存，防止在途 API 回调将消息写入已删除的会话
-                    settings.setAiCurrentSessionId(currentList.first().id)
-                    _currentSessionId.value = currentList.first().id
-                } else {
-                    // 所有会话已删除：自动创建新空会话，继承当前舰娘标识和配置，保证聊天依旧存在
-                    // 继承被删除会话的舰娘标识（presetId/avatarUrl/jiuxinName）和配置快照，
-                    // 使新会话与原舰娘保持同一去重 key，用户可继续与同一舰娘对话。
-                    val newSession = ChatSession(
-                        name = generateDefaultName(),
-                        presetId = deletedSession?.presetId ?: "",
-                        avatarUrl = deletedSession?.avatarUrl ?: avatarUrl.value,
-                        jiuxinName = deletedSession?.jiuxinName ?: jiuxinName.value,
-                        apiUrl = deletedSession?.apiUrl ?: apiUrl.value,
-                        apiKey = deletedSession?.apiKey ?: apiKey.value,
-                        model = deletedSession?.model ?: selectedModel.value,
-                        systemPrompt = deletedSession?.systemPrompt ?: systemPrompt.value,
-                        voiceShipName = deletedSession?.voiceShipName ?: voiceShipName.value,
-                        voiceShipAvatar = deletedSession?.voiceShipAvatar ?: voiceShipAvatar.value,
-                        voiceEnabled = deletedSession?.voiceEnabled ?: voiceEnabled.value,
-                        voiceRandomChance = deletedSession?.voiceRandomChance ?: voiceRandomChance.value,
-                        voiceKeywords = deletedSession?.voiceKeywords ?: voiceKeywords.value,
-                        stickersEnabled = deletedSession?.stickersEnabled ?: stickersEnabled.value,
-                        stickerChance = deletedSession?.stickerChance ?: stickerChance.value
-                    )
-                    settings.setAiChatSessions(listOf(newSession))
-                    settings.setAiSessionMessages(newSession.id, emptyList())
-                    settings.setAiCurrentSessionId(newSession.id)
-                    currentList.clear()
-                    currentList.add(newSession)
-                    _currentSessionId.value = newSession.id
-                    _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
-                }
+            // 删除的不是当前会话：无需切换，仅更新会话列表内存状态
+            if (_currentSessionId.value != sessionId) {
+                _sessions.value = currentList
+                Log.d(TAG, "Deleted non-current session: $sessionId, remaining: ${currentList.size}")
+                return@launch
             }
-            // 同步更新会话列表内存状态
-            _sessions.value = currentList
-            Log.d(TAG, "Deleted session: $sessionId, remaining: ${currentList.size}")
+
+            // 删除的是当前会话：按优先级决定切换/创建策略
+
+            // 策略 1：同舰娘还有其他会话 → 切换到同舰娘最新的会话
+            // 保持 HistoryPanel 上下文不变，用户可继续操作该舰娘的其他对话
+            val sameShipLatest = currentList
+                .filter { computeShipKey(it) == deletedShipKey }
+                .maxByOrNull { it.updatedAt }
+
+            if (sameShipLatest != null) {
+                // 先持久化新会话 ID，再同步更新内存
+                settings.setAiCurrentSessionId(sameShipLatest.id)
+                _currentSessionId.value = sameShipLatest.id
+                // 立即清空消息并显示加载态：避免闪现被删除会话的内容
+                // 同步目标会话的语音关键词（与 switchToSession 行为一致）
+                // L388-399 的 collector 会自动加载 sameShipLatest 的消息
+                val keywords = sameShipLatest.voiceKeywords.split(";").filter { it.isNotBlank() }
+                _chatState.update {
+                    it.copy(
+                        messages = emptyList(),
+                        voiceKeywords = keywords,
+                        voiceTagMappings = buildVoiceTagMappings(keywords),
+                        error = null,
+                        isLoading = true,
+                        inputText = ""
+                    )
+                }
+                _sessions.value = currentList
+                Log.d(TAG, "Deleted session: $sessionId, switched to same ship: ${sameShipLatest.id}")
+                return@launch
+            }
+
+            // 策略 2：同舰娘无其他会话 → 自动创建新会话继承原舰娘标识和配置
+            // 无论是否有其他舰娘的会话，都为原舰娘保留一个空会话，避免舰娘从列表中"消失"
+            // 这与"只有一个舰娘时删除所有会话"的行为一致
+            val newSession = ChatSession(
+                name = generateDefaultName(),
+                presetId = deletedSession.presetId,
+                avatarUrl = deletedSession.avatarUrl,
+                jiuxinName = deletedSession.jiuxinName,
+                apiUrl = deletedSession.apiUrl,
+                apiKey = deletedSession.apiKey,
+                model = deletedSession.model,
+                systemPrompt = deletedSession.systemPrompt,
+                voiceShipName = deletedSession.voiceShipName,
+                voiceShipAvatar = deletedSession.voiceShipAvatar,
+                voiceEnabled = deletedSession.voiceEnabled,
+                voiceRandomChance = deletedSession.voiceRandomChance,
+                voiceKeywords = deletedSession.voiceKeywords,
+                stickersEnabled = deletedSession.stickersEnabled,
+                stickerChance = deletedSession.stickerChance
+            )
+            // 新会话插入到列表头部，使其在会话列表中优先显示
+            val newList = listOf(newSession) + currentList
+            settings.setAiChatSessions(newList)
+            settings.setAiSessionMessages(newSession.id, emptyList())
+            settings.setAiCurrentSessionId(newSession.id)
+            _currentSessionId.value = newSession.id
+            _sessions.value = newList
+            _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
+            Log.d(TAG, "Deleted session: $sessionId, auto-created new session for ship: ${newSession.id} (ship=$deletedShipKey)")
         }
     }
 
