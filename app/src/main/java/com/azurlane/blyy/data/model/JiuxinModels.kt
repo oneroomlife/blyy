@@ -136,10 +136,56 @@ data class FilterCriteria(
 )
 
 /**
+ * 会话类型
+ */
+enum class SessionType {
+    PRIVATE,    // 私聊（单舰娘）
+    GROUP       // 群聊（多舰娘）
+}
+
+/**
+ * 群聊成员（群内舰娘的配置快照）
+ *
+ * 每个成员保存完整的人格 + 语音配置，确保群聊中不同舰娘
+ * 使用各自的提示词、语音、表情包设置，互不干扰。
+ *
+ * @param personaId 关联的舰娘人格配置 ID（用于成员去重和来源追踪）。为空表示临时成员
+ */
+@Serializable
+data class GroupMember(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val personaId: String = "",
+    /** 啾信显示名称 */
+    val jiuxinName: String = "",
+    /** 舰娘头像 URL */
+    val avatarUrl: String = "",
+    /** 人格提示词 */
+    val systemPrompt: String = "",
+    /** 语音舰娘名称 */
+    val voiceShipName: String = "",
+    /** 语音舰娘头像 URL */
+    val voiceShipAvatar: String = "",
+    /** 是否启用语音发送 */
+    val voiceEnabled: Boolean = true,
+    /** 语音随机触发概率 */
+    val voiceRandomChance: Float = 0.1f,
+    /** 语音触发关键词 */
+    val voiceKeywords: String = "你好;早安;晚安;加油;辛苦了",
+    /** 是否启用表情包 */
+    val stickersEnabled: Boolean = true,
+    /** 表情包发送概率 */
+    val stickerChance: Float = 0.8f
+)
+
+/**
  * 聊天会话
  *
  * 配置隔离机制：每个会话保存创建时的完整配置快照，切换会话时恢复对应配置，
  * 确保不同舰娘的对话使用各自的 API、人格、语音等设置，互不干扰。
+ *
+ * 群聊扩展：当 [sessionType] 为 GROUP 时，[groupMembers] 保存群内所有舰娘的配置快照，
+ * 群聊消息通过 [ChatMessage.shipName] / [ChatMessage.avatarUrl] 标识发送者，
+ * API 调用时以各成员的 systemPrompt 构造群聊上下文。
  *
  * @param presetId 关联的预设 ID（用于按舰娘去重显示）。为空表示使用默认配置
  * @param avatarUrl 创建会话时的舰娘头像快照（用于列表显示和去重，不依赖预设是否存在）
@@ -176,8 +222,33 @@ data class ChatSession(
     val voiceRandomChance: Float = 0.1f,
     val voiceKeywords: String = "你好;早安;晚安;加油;辛苦了",
     val stickersEnabled: Boolean = true,
-    val stickerChance: Float = 0.8f
-)
+    val stickerChance: Float = 0.8f,
+    // ── 群聊扩展字段 ──
+    /** 会话类型：PRIVATE=私聊，GROUP=群聊 */
+    val sessionType: String = SessionType.PRIVATE.name,
+    /** 群聊成员列表（仅群聊会话有效，每个成员含完整人格配置快照） */
+    val groupMembers: List<GroupMember> = emptyList(),
+    /**
+     * 群聊稳定标识（仅群聊会话有效）。
+     *
+     * 用于 [com.azurlane.blyy.viewmodel.JiuxinViewModel.computeShipKey] 中群聊去重 key 计算，
+     * 替代原先的 session.name，确保群聊重命名后历史面板聚合不断裂。
+     *
+     * - 创建群聊时生成（[createGroupSession]）
+     * - 删除群聊会话自动创建新会话时继承（[deleteSession]）
+     * - 为当前群聊新建历史对话时继承（[createNewSessionForCurrentShip]）
+     * - 重命名群聊时**不**变更（[renameGroupSession]）
+     *
+     * 空字符串表示旧数据（兼容性回退到 session.name + memberHash 计算）
+     */
+    val groupId: String = "",
+    /** 会话级聊天背景 URL（空表示使用全局背景）。
+     *  优先级：会话级 backgroundUrl > 全局 aiChatBackgroundUrl > 默认纯色 */
+    val backgroundUrl: String = ""
+) {
+    /** 是否为群聊会话 */
+    val isGroup: Boolean get() = sessionType == SessionType.GROUP.name
+}
 
 /**
  * 啾信预设配置
@@ -277,7 +348,25 @@ data class PersonaConfig(
 )
 
 /**
+ * 群聊打字成员标识（轻量级，仅含 UI 显示所需字段）
+ *
+ * 用于群聊并发回复场景下，同时显示多位舰娘"正在输入"的指示器。
+ * 与 [GroupMember] 分离：避免在 UI 状态中持有完整成员配置快照。
+ */
+@Serializable
+data class TypingMember(
+    val name: String,
+    val avatarUrl: String
+)
+
+/**
  * 啾信聊天会话状态
+ *
+ * 群聊并发扩展：
+ * - [typingMembers] 在群聊并发回复期间，记录正在打字的成员列表。
+ *   非空时 UI 优先渲染每位成员的 TypingIndicator；为空时回退到 [isLoading] 单一指示器（私聊场景）。
+ * - [isLoading] 在群聊整轮回复（含互回轮次）完成前保持 true，
+ *   阻止 [ChatInputBar] 发送避免消息错乱。
  */
 data class JiuxinChatUiState(
     val messages: List<ChatMessage> = emptyList(),
@@ -287,5 +376,6 @@ data class JiuxinChatUiState(
     val selectedShipName: String = "",
     val selectedShipAvatar: String = "",
     val voiceKeywords: List<String> = emptyList(),
-    val voiceTagMappings: List<VoiceTagMapping> = emptyList()
+    val voiceTagMappings: List<VoiceTagMapping> = emptyList(),
+    val typingMembers: List<TypingMember> = emptyList()
 )

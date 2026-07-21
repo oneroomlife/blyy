@@ -143,3 +143,6 @@ UI_work/
 
 # Platform-specific prebuilt binaries (use system-installed oxipng or download on demand)
 scripts/oxipng-*-*/
+
+# Trae IDE workbuddy extension local memory (per-user agent state, not project source)
+.workbuddy/

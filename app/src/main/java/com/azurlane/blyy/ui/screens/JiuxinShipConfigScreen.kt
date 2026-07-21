@@ -52,7 +52,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
 import com.azurlane.blyy.R
@@ -75,7 +77,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun JiuxinShipConfigScreen(
     onBack: () -> Unit,
-    viewModel: JiuxinViewModel = hiltViewModel()
+    viewModel: JiuxinViewModel = hiltViewModel(
+        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+    )
 ) {
     val scope = rememberCoroutineScope()
     val session by viewModel.currentSession.collectAsStateWithLifecycle()

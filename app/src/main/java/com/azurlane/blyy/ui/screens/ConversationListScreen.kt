@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.data.model.ApiConfig
@@ -153,7 +154,9 @@ fun ConversationListScreen(
     onBack: () -> Unit,
     onNavigateToChat: () -> Unit,
     onNavigateToConfig: () -> Unit,
-    viewModel: JiuxinViewModel = hiltViewModel()
+    viewModel: JiuxinViewModel = hiltViewModel(
+        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+    )
 ) {
     val conversations by viewModel.uniqueConversations.collectAsStateWithLifecycle()
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
@@ -167,6 +170,7 @@ fun ConversationListScreen(
 
     var showPlusDropdown by remember { mutableStateOf(false) }
     var showNewChatSheet by remember { mutableStateOf(false) }
+    var showNewGroupSheet by remember { mutableStateOf(false) }
     var showDeleteSessionConfirm by remember { mutableStateOf<ChatSession?>(null) }
     var showConfigMissingDialog by remember { mutableStateOf(false) }
     // 编辑模式：长按会话项进入，可拖动排序+删除；完成按钮或返回键退出
@@ -209,6 +213,10 @@ fun ConversationListScreen(
                     onNewChatClick = {
                         showPlusDropdown = false
                         showNewChatSheet = true
+                    },
+                    onNewGroupClick = {
+                        showPlusDropdown = false
+                        showNewGroupSheet = true
                     },
                     onDismissDropdown = { showPlusDropdown = false },
                     onExitEditMode = { isEditMode = false }
@@ -277,7 +285,14 @@ fun ConversationListScreen(
                             val effectiveAvatar = session.avatarUrl.ifBlank { associatedPreset?.avatarUrl ?: "" }
                             val effectiveName = session.jiuxinName.ifBlank { associatedPreset?.name ?: session.name }
                             val hasPreset = session.presetId.isNotBlank()
-                            val lastPreview = formatSessionPreview(session.updatedAt)
+                            val isGroup = session.isGroup
+                            val groupMemberAvatars = if (isGroup) session.groupMembers.map { it.avatarUrl } else emptyList()
+                            val groupMemberCount = if (isGroup) session.groupMembers.size else 0
+                            val lastPreview = if (isGroup) {
+                                "${groupMemberCount} 位成员 · ${formatSessionPreview(session.updatedAt)}"
+                            } else {
+                                formatSessionPreview(session.updatedAt)
+                            }
 
                             Box(
                                 modifier = Modifier
@@ -297,6 +312,8 @@ fun ConversationListScreen(
                                     isSelected = isSelected,
                                     isDark = isDark,
                                     hasPreset = hasPreset,
+                                    isGroup = isGroup,
+                                    groupMemberAvatars = groupMemberAvatars,
                                     isEditMode = isEditMode,
                                     gestureModifier = if (isEditMode) {
                                         // 编辑模式：长按拖动排序
@@ -384,6 +401,31 @@ fun ConversationListScreen(
                 val personaName = personaConfigId?.let { id -> personaConfigs.firstOrNull { it.id == id }?.name } ?: "当前人格"
                 Toast.makeText(context, "已应用 $apiName · $personaName 并开始对话", Toast.LENGTH_SHORT).show()
                 onNavigateToChat()
+            }
+        )
+    }
+
+    // ── 新建群聊界面 ──
+    if (showNewGroupSheet) {
+        JuusNewGroupSheet(
+            personaConfigs = personaConfigs,
+            isDark = isDark,
+            onDismiss = { showNewGroupSheet = false },
+            onCreate = { groupName, memberIds ->
+                // API 配置校验：群聊使用全局 API 配置
+                if (apiUrl.isBlank() || apiKey.isBlank()) {
+                    showNewGroupSheet = false
+                    showConfigMissingDialog = true
+                    return@JuusNewGroupSheet
+                }
+                val newId = viewModel.createGroupSession(groupName, memberIds)
+                showNewGroupSheet = false
+                if (newId.isNotBlank()) {
+                    Toast.makeText(context, "已创建群聊「${groupName.ifBlank { "群聊" }}」", Toast.LENGTH_SHORT).show()
+                    onNavigateToChat()
+                } else {
+                    Toast.makeText(context, "创建失败：请至少选择 2 位成员", Toast.LENGTH_SHORT).show()
+                }
             }
         )
     }
@@ -527,6 +569,7 @@ private fun JuusListHeader(
     onMenuClick: () -> Unit,
     showPlusDropdown: Boolean = false,
     onNewChatClick: () -> Unit = {},
+    onNewGroupClick: () -> Unit = {},
     onDismissDropdown: () -> Unit = {},
     onExitEditMode: () -> Unit = {}
 ) {
@@ -641,6 +684,27 @@ private fun JuusListHeader(
                             },
                             onClick = onNewChatClick
                         )
+                        DropdownMenuItem(
+                            text = {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Person,
+                                        contentDescription = null,
+                                        tint = primaryColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "新建群聊",
+                                        fontSize = 14.sp,
+                                        color = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
+                                    )
+                                }
+                            },
+                            onClick = onNewGroupClick
+                        )
                     }
                 }
                 IconButton(onClick = onMenuClick, modifier = Modifier.size(32.dp)) {
@@ -669,6 +733,8 @@ private fun JuusConversationItem(
     isSelected: Boolean,
     isDark: Boolean,
     hasPreset: Boolean = false,
+    isGroup: Boolean = false,
+    groupMemberAvatars: List<String> = emptyList(),
     isEditMode: Boolean = false,
     gestureModifier: Modifier = Modifier,
     onDeleteClick: () -> Unit = {}
@@ -705,17 +771,54 @@ private fun JuusConversationItem(
         ) {
             // 头像 48dp + 预设关联徽章
             Box(contentAlignment = Alignment.BottomEnd) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(JuusListColors.ChannelEmojiBg),
-                    contentAlignment = Alignment.Center
-                ) {
-                    RobustAvatar(
-                        url = avatarUrl,
-                        modifier = Modifier.size(48.dp).clip(CircleShape),
-                        fallbackContent = {
+                if (isGroup) {
+                    // 群聊头像：2x2 宫格组合成员头像（最多 4 个），无成员时回退群图标
+                    val avatarsToShow = groupMemberAvatars.take(4)
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(JuusListColors.ChannelEmojiBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (avatarsToShow.isNotEmpty()) {
+                            Column(
+                                modifier = Modifier.fillMaxSize().padding(3.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                val rows = if (avatarsToShow.size <= 2) 1 else 2
+                                for (row in 0 until rows) {
+                                    Row(
+                                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        val itemsInRow = if (rows == 1) avatarsToShow.size
+                                        else if (row == 0) minOf(2, avatarsToShow.size)
+                                        else avatarsToShow.size - 2
+                                        for (col in 0 until itemsInRow) {
+                                            val idx = row * 2 + col
+                                            if (idx < avatarsToShow.size) {
+                                                RobustAvatar(
+                                                    url = avatarsToShow[idx],
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .fillMaxHeight()
+                                                        .clip(RoundedCornerShape(6.dp)),
+                                                    fallbackContent = {
+                                                        Icon(
+                                                            Icons.Rounded.Person,
+                                                            contentDescription = null,
+                                                            tint = primaryColor.copy(alpha = 0.5f),
+                                                            modifier = Modifier.size(12.dp)
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
                             Icon(
                                 Icons.Rounded.Person,
                                 contentDescription = null,
@@ -723,7 +826,28 @@ private fun JuusConversationItem(
                                 modifier = Modifier.size(24.dp)
                             )
                         }
-                    )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(JuusListColors.ChannelEmojiBg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        RobustAvatar(
+                            url = avatarUrl,
+                            modifier = Modifier.size(48.dp).clip(CircleShape),
+                            fallbackContent = {
+                                Icon(
+                                    Icons.Rounded.Person,
+                                    contentDescription = null,
+                                    tint = primaryColor.copy(alpha = 0.5f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        )
+                    }
                 }
                 // 预设关联小徽章 — 用纯白边框避免半透明边框模糊
                 if (hasPreset) {
@@ -1245,6 +1369,210 @@ private fun JuusEmptyState(
                 fontSize = 11.sp,
                 color = hintColor.copy(alpha = 0.7f)
             )
+        }
+    }
+}
+
+/**
+ * 新建群聊界面
+ *
+ * 流程：输入群聊名称 → 多选舰娘人格（至少 2 位）→ 创建群聊。
+ * 与新建聊天页保持一致的玻璃质感设计语言和交互模式。
+ *
+ * 成员选择为多选模式（复选），区别于单聊的单选。
+ */
+@Composable
+private fun JuusNewGroupSheet(
+    personaConfigs: List<PersonaConfig>,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onCreate: (groupName: String, memberIds: List<String>) -> Unit
+) {
+    val titleColor = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
+    val hintColor = if (isDark) JuusListColors.Dark.TextSecondary else JuusListColors.TextSecondary
+    val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
+    val itemDividerColor = if (isDark) JuusPalette.Dark.Divider else JuusPalette.Divider
+    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
+    val sectionBg = if (isDark) Color(0xFF161922) else Color(0xFFF8FAFC)
+    val selectedBg = if (isDark) Color(0xFF1E2A44) else Color(0xFFE6F2FF)
+    val fieldBg = if (isDark) Color(0xFF0F172A) else Color(0xFFF1F5F9)
+    val fieldBorder = if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)
+
+    var groupName by remember { mutableStateOf("") }
+    var selectedMemberIds by remember { mutableStateOf(setOf<String>()) }
+    val scrollState = rememberScrollState()
+
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().background(cardBg)) {
+            // ── 标题栏 ──
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        Icons.Rounded.Person,
+                        contentDescription = null,
+                        tint = primaryColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "新建群聊",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = titleColor
+                    )
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        Icons.Rounded.Close,
+                        contentDescription = "关闭",
+                        tint = hintColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // ── 提示文字 ──
+            Text(
+                text = "设置群聊名称并选择至少 2 位舰娘成员",
+                fontSize = 11.sp,
+                color = hintColor.copy(alpha = 0.8f),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+            )
+
+            // ── 群聊名称输入 ──
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(fieldBg)
+                    .border(1.dp, fieldBorder, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 14.dp, vertical = 4.dp)
+            ) {
+                androidx.compose.foundation.text.BasicTextField(
+                    value = groupName,
+                    onValueChange = { if (it.length <= 24) groupName = it },
+                    singleLine = true,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontSize = 14.sp,
+                        color = titleColor
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(primaryColor),
+                    decorationBox = { innerTextField ->
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (groupName.isEmpty()) {
+                                Text(
+                                    text = "群聊名称（选填，默认自动生成）",
+                                    fontSize = 14.sp,
+                                    color = hintColor.copy(alpha = 0.6f)
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            // ── 成员选择区（可滚动） ──
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(scrollState)
+            ) {
+                JuusNewChatSectionHeader(
+                    title = "选择成员",
+                    count = selectedMemberIds.size,
+                    trailing = "共 ${personaConfigs.size} 位 · 至少 2 位",
+                    primaryColor = primaryColor,
+                    hintColor = hintColor,
+                    sectionBg = sectionBg
+                )
+                if (personaConfigs.isNotEmpty()) {
+                    personaConfigs.forEach { config ->
+                        val isSelected = config.id in selectedMemberIds
+                        JuusPersonaConfigRow(
+                            config = config,
+                            isSelected = isSelected,
+                            titleColor = titleColor,
+                            hintColor = hintColor,
+                            primaryColor = primaryColor,
+                            selectedBg = selectedBg,
+                            itemDividerColor = itemDividerColor,
+                            onClick = {
+                                selectedMemberIds = if (isSelected) {
+                                    selectedMemberIds - config.id
+                                } else {
+                                    selectedMemberIds + config.id
+                                }
+                            }
+                        )
+                    }
+                } else {
+                    JuusEmptyState(
+                        icon = Icons.Rounded.Psychology,
+                        title = "暂无舰娘人格",
+                        subtitle = "请先在啾信配置中创建舰娘人格",
+                        hintColor = hintColor,
+                        compact = true
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // ── 底部固定：已选摘要 + 创建按钮 ──
+            val selectedNames = personaConfigs.filter { it.id in selectedMemberIds }
+                .joinToString("、") { it.name.ifBlank { "未命名" } }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(sectionBg)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.Check,
+                    contentDescription = null,
+                    tint = primaryColor,
+                    modifier = Modifier.size(14.dp)
+                )
+                Text(
+                    text = if (selectedNames.isBlank()) "尚未选择成员" else "已选 ${selectedMemberIds.size} 位: $selectedNames",
+                    fontSize = 11.sp,
+                    color = hintColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            val canCreate = selectedMemberIds.size >= 2
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (canCreate) primaryColor else primaryColor.copy(alpha = 0.35f))
+                    .clickable(enabled = canCreate) {
+                        onCreate(groupName.trim(), selectedMemberIds.toList())
+                    }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (canCreate) "创建群聊" else "请至少选择 2 位成员",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
         }
     }
 }

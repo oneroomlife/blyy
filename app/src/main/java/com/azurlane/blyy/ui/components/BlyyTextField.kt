@@ -238,6 +238,11 @@ fun BlyySearchField(
  *
  * 解决问题：直接绑定 StateFlow String 值时，用户每次输入都要经 DataStore 异步往返，
  * 导致光标位置丢失/跳变。
+ *
+ * 光标跳末尾修复：原实现 `if (localValue.text != value)` 在用户输入后、StateFlow 异步回流前
+ * 会为 true（localValue 是新值，value 是旧值），导致光标被重置到 TextRange(value.length) 末尾。
+ * 现引入 [lastExternalValue] 记录上一次外部值，只有外部值真正变化时（说明是程序化修改/切换会话）
+ * 才同步 localValue，避免用户输入过程中被 recompose 干扰。
  */
 @Composable
 fun StableOutlinedTextField(
@@ -264,21 +269,28 @@ fun StableOutlinedTextField(
 ) {
     // 本地 TextFieldValue 状态：用户输入时立即更新，不等待外部 StateFlow 往返
     var localValue by remember { mutableStateOf(TextFieldValue(value)) }
+    // 记录上一次的外部值：用于判断外部值是否真正变化（而非用户输入导致的 recompose）
+    var lastExternalValue by remember { mutableStateOf(value) }
 
-    // 仅在外部值与本地文本不一致时同步（如程序化清空、切换会话等场景）
-    // 注意：不使用 LaunchedEffect(value)，因为 value 每次输入后都会从 StateFlow 回流，
-    // 导致光标被重置。仅在文本真正不同时才更新。
-    if (localValue.text != value) {
-        localValue = TextFieldValue(
-            text = value,
-            selection = androidx.compose.ui.text.TextRange(value.length)
-        )
+    // 仅在外部值真正变化时（如程序化清空、切换会话等场景）才同步本地状态
+    // 关键：不使用 `if (localValue.text != value)`，因为用户输入后 StateFlow 异步回流前
+    // value 还是旧值，localValue.text 是新值，会导致光标被重置到末尾
+    if (value != lastExternalValue) {
+        lastExternalValue = value
+        // 外部值变化时，仅在本地文本与外部值不一致时才更新（避免覆盖用户正在输入的相同文本）
+        if (localValue.text != value) {
+            localValue = TextFieldValue(
+                text = value,
+                selection = androidx.compose.ui.text.TextRange(value.length)
+            )
+        }
     }
 
     androidx.compose.material3.OutlinedTextField(
         value = localValue,
         onValueChange = { tfv ->
             localValue = tfv
+            lastExternalValue = tfv.text  // 同步标记，避免 StateFlow 回流时重复同步
             if (tfv.text != value) {
                 onValueChange(tfv.text)
             }

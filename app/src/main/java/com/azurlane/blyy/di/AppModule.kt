@@ -50,9 +50,16 @@ object AppModule {
     fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
         val cacheDir = File(context.cacheDir, "okhttp_cache")
         val cache = Cache(cacheDir, 20L * 1024 * 1024) // 20MB disk cache
+        // 群聊并发优化：提高单 host 并发请求数到 10（默认 5）
+        // 群聊模式下多位舰娘同时调用同一 API 端点，默认 5 可能限制并发
+        val dispatcher = okhttp3.Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 10
+        }
         return OkHttpClient.Builder()
             .cache(cache)
-            .connectionPool(ConnectionPool(5, 5, TimeUnit.MINUTES))
+            .dispatcher(dispatcher)
+            .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)

@@ -85,6 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import androidx.compose.material3.AlertDialog
@@ -110,7 +111,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun JiuxinConfigScreen(
     onBack: () -> Unit,
-    viewModel: JiuxinViewModel = hiltViewModel()
+    viewModel: JiuxinViewModel = hiltViewModel(
+        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+    )
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()

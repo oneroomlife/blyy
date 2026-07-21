@@ -3,6 +3,7 @@ package com.azurlane.blyy.ui.screens
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -81,9 +83,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -113,6 +117,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.ViewModelStoreOwner
 import com.valentinilk.shimmer.shimmer
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
@@ -123,6 +128,7 @@ import com.azurlane.blyy.data.model.ChatMessage
 import com.azurlane.blyy.data.model.ChatMessageType
 import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.data.model.GroupPosition
+import com.azurlane.blyy.data.model.PersonaConfig
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.getGroupPosition
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
@@ -138,6 +144,8 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -275,12 +283,18 @@ fun RobustAvatar(
     }
 }
 
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 @Composable
 fun JiuxinChatScreen(
     onBack: () -> Unit,
     onNavigateToConfig: () -> Unit,
     onNavigateToShipConfig: () -> Unit,
-    viewModel: JiuxinViewModel = hiltViewModel()
+    // 关键修复：绑定到 Activity 而非 NavBackStackEntry，确保跨页面共享同一 ViewModel 实例。
+    // 修复"聊天记录退出后丢失"问题：避免每个屏幕持有独立 ViewModel 导致状态不同步。
+    // NavBackStackEntry 作用域会导致：聊天页 ViewModel A 销毁保存 → 列表页 ViewModel B 用过期数据覆盖
+    viewModel: JiuxinViewModel = hiltViewModel(
+        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+    )
 ) {
     val chatState by viewModel.chatUiState.collectAsStateWithLifecycle()
     // 配置隔离：从当前会话快照读取舰娘配置，而非全局 StateFlow
@@ -297,6 +311,23 @@ fun JiuxinChatScreen(
     // 在聊天界面订阅会造成不必要的重组且从未被读取
     val shipSessions by viewModel.currentShipSessions.collectAsStateWithLifecycle()
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
+    // 群成员管理面板数据源：可用舰娘人格列表（仅群聊会话的面板使用）
+    val personaConfigs by viewModel.personaConfigs.collectAsStateWithLifecycle()
+
+    // 退出聊天界面时保存当前会话消息到 DataStore
+    // 避免：用户在舰娘A聊天后返回 → 点击舰娘B → flatMapLatest collector 从 DataStore 读取舰娘A的旧消息
+    // DisposableEffect 在 Composable 离开组合时触发，确保消息持久化
+    DisposableEffect(currentSessionId) {
+        onDispose {
+            if (currentSessionId.isNotBlank()) {
+                // updateTimestamp=false：退出聊天不应改变会话列表顺序
+                viewModel.saveCurrentSessionMessages(
+                    sessionId = currentSessionId,
+                    updateTimestamp = false
+                )
+            }
+        }
+    }
     // API 配置状态：用于新建对话前的配置完整性验证（读取全局默认值）
     val apiUrl by viewModel.apiUrl.collectAsStateWithLifecycle()
     val apiKey by viewModel.apiKey.collectAsStateWithLifecycle()
@@ -305,6 +336,7 @@ fun JiuxinChatScreen(
     val isDark = LocalIsDark.current
 
     var showHistoryPanel by remember { mutableStateOf(false) }
+    var showMemberPanel by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
     var showRenameDialog by remember { mutableStateOf<String?>(null) }
     var showUserConfigDialog by remember { mutableStateOf(false) }
@@ -319,12 +351,15 @@ fun JiuxinChatScreen(
 
     // 纯色背景（取消角色立绘背景层，避免视觉干扰和性能开销）
     val chatBgFallback = if (isDark) JuusPalette.Dark.Bg else JuusPalette.Bg
+    // 背景优先级：会话级 backgroundUrl > 全局 aiChatBackgroundUrl > 默认纯色
+    val sessionBgUrl = currentSession?.backgroundUrl ?: ""
+    val effectiveBackgroundUrl = sessionBgUrl.ifBlank { chatBackgroundUrl }
 
-    Box(modifier = Modifier.fillMaxSize().background(chatBgFallback).imePadding()) {
+    Box(modifier = Modifier.fillMaxSize().background(chatBgFallback)) {
         // 自定义聊天背景图片层（半透明覆盖，保证消息气泡可读性）
-        if (chatBackgroundUrl.isNotBlank()) {
+        if (effectiveBackgroundUrl.isNotBlank()) {
             AsyncImage(
-                model = chatBackgroundUrl,
+                model = effectiveBackgroundUrl,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
@@ -338,13 +373,20 @@ fun JiuxinChatScreen(
         }
         // 聊天内容层
         Column(modifier = Modifier.fillMaxSize()) {
+            val isGroupChat = currentSession?.isGroup == true
+            val groupMemberCount = currentSession?.groupMembers?.size ?: 0
             JuusChatTopBar(
-                title = jiuxinName.ifBlank { "啾信" },
-                subtitle = if (voiceEnabled && voiceShipName.isNotBlank()) "语音: $voiceShipName" else "啾信对话",
+                title = if (isGroupChat) currentSession?.name?.ifBlank { "群聊" } ?: "群聊" else jiuxinName.ifBlank { "啾信" },
+                subtitle = when {
+                    isGroupChat -> "$groupMemberCount 位成员"
+                    voiceEnabled && voiceShipName.isNotBlank() -> "语音: $voiceShipName"
+                    else -> "啾信对话"
+                },
                 onBack = onBack,
                 onHistoryClick = { showHistoryPanel = true },
                 onBackgroundClick = { showBackgroundPicker = true },
-                onSettingsClick = onNavigateToShipConfig,
+                // 群聊暂不进入单舰娘配置页（群配置由会话列表管理）
+                onSettingsClick = if (isGroupChat) ({ showMemberPanel = true }) else onNavigateToShipConfig,
                 isDark = isDark
             )
 
@@ -360,31 +402,67 @@ fun JiuxinChatScreen(
             val density = LocalDensity.current
             val coroutineScope = rememberCoroutineScope()
 
-            // 消息数量变化时自动滚动到底部
-            LaunchedEffect(chatState.messages.size, chatState.isLoading) {
-                if (chatState.messages.isNotEmpty()) {
+            // ── 智能自动滚动机制 ──
+            // 仅当用户"在底部附近"时才自动滚动，避免用户查看历史消息时被强制拽回底部。
+            // 判定"在底部附近"：最后可见 item 索引 >= 消息总数 - 2（容忍 2 条误差）
+            // 额外引入 userScrolledUp 标记：用户主动向上滚动后，新消息到达不强制滚动，
+            // 直到用户手动滚回底部（或发送消息）才恢复自动跟随。
+            var shouldAutoScroll by remember { mutableStateOf(true) }
+
+            // 监听用户手动滚动：当用户向上滚动离开底部时，关闭自动滚动；
+            // 当用户滚回底部附近时，重新开启自动滚动。
+            LaunchedEffect(listState) {
+                snapshotFlow {
+                    val layoutInfo = listState.layoutInfo
+                    val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                    val totalItems = layoutInfo.totalItemsCount
+                    // 总项数包含头尾 Spacer 和 typing/error item，需要容忍更多误差
+                    lastVisibleIndex >= 0 && totalItems > 0 && lastVisibleIndex < totalItems - 3
+                }.collect { isScrolledAwayFromBottom ->
+                    shouldAutoScroll = !isScrolledAwayFromBottom
+                }
+            }
+
+            // 消息数量变化时自动滚动到底部（仅在 shouldAutoScroll 为 true 时）
+            LaunchedEffect(chatState.messages.size) {
+                if (chatState.messages.isNotEmpty() && shouldAutoScroll) {
                     listState.animateScrollToItem(chatState.messages.size - 1)
                 }
             }
 
-            // 键盘弹出时自动滚动到底部
+            // 加载状态变化时不触发滚动（避免 isLoading 翻转引起跳动）
+            // 原实现将 isLoading 作为 key 会导致 API 开始/结束各滚动一次，产生跳动
+
+            // 键盘弹出时自动滚动到底部（仅在 shouldAutoScroll 为 true 时）
+            // 优化：使用 snapshotFlow + debounce 等待 IME 动画稳定后再滚动
+            // 原实现用 LaunchedEffect(keyboardHeight > 0) 只在状态切换时触发一次，
+            // 但此时 IME 动画刚开始，LazyColumn 的 weight(1f) 高度还在变化，
+            // 滚动目标位置错误，导致最新消息仍被键盘遮挡。
+            // debounce(280) 等待 IME 动画完成（约 250ms）+ 布局稳定后再滚动，
+            // 使用 scrollToItem（无动画立即跳转）避免与 IME 动画叠加产生视觉跳动。
             val imeInsets = WindowInsets.ime
-            LaunchedEffect(imeInsets.getBottom(density)) {
-                val keyboardHeight = imeInsets.getBottom(density)
-                if (keyboardHeight > 0 && chatState.messages.isNotEmpty()) {
-                    listState.animateScrollToItem(chatState.messages.size - 1)
-                }
+            LaunchedEffect(Unit) {
+                snapshotFlow { imeInsets.getBottom(density) }
+                    .filter { it > 0 }
+                    .debounce(280)
+                    .collect {
+                        if (chatState.messages.isNotEmpty() && shouldAutoScroll) {
+                            listState.scrollToItem(chatState.messages.size - 1)
+                        }
+                    }
             }
 
             // 提升到 LazyColumn 外层，避免每个 item 重复读取 LocalConfiguration
             val messageMaxWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
 
             // 消息发送者标识函数（用于分组判断：USER=发送方，AI/VOICE/STICKER=接收方，SYSTEM=独立）
+            // 群聊扩展：群聊会话中按 shipName 区分不同舰娘发送者，使不同舰娘的连续消息独立分组、各自显示头像
+            val isGroupSession = currentSession?.isGroup == true
             val senderOf: (ChatMessage) -> String = { msg ->
                 when (msg.type) {
                     ChatMessageType.USER.name -> "user"
                     ChatMessageType.SYSTEM.name -> "system_${msg.id}" // 每条系统消息独立成组
-                    else -> "ai" // AI / VOICE / STICKER 都归为接收方
+                    else -> if (isGroupSession) "ai_${msg.shipName}" else "ai" // 群聊按舰娘分组
                 }
             }
 
@@ -419,6 +497,7 @@ fun JiuxinChatScreen(
                         maxWidth = messageMaxWidth,
                         groupPosition = groupPos,
                         topPadding = topPadding,
+                        isGroup = isGroupSession,
                         onVoiceClick = remember(message.id, message.voiceUrl) {
                             {
                                 if (message.voiceUrl.isNotBlank()) {
@@ -435,7 +514,19 @@ fun JiuxinChatScreen(
                 }
 
                 // 打字动画指示器
-                if (chatState.isLoading) {
+                // 群聊并发模式：优先显示 typingMembers 列表中每位正在打字的成员
+                // 私聊模式或 typingMembers 为空时：回退到基于 isLoading 的单一指示器
+                if (chatState.typingMembers.isNotEmpty()) {
+                    chatState.typingMembers.forEach { typingMember ->
+                        item(key = "typing_${typingMember.name}_${typingMember.avatarUrl}") {
+                            TypingIndicator(
+                                jiuxinName = typingMember.name,
+                                avatarUrl = typingMember.avatarUrl,
+                                isDark = isDark
+                            )
+                        }
+                    }
+                } else if (chatState.isLoading) {
                     item {
                         TypingIndicator(
                             jiuxinName = jiuxinName,
@@ -473,10 +564,21 @@ fun JiuxinChatScreen(
             ChatInputBar(
                 inputText = chatState.inputText,
                 onInputChange = viewModel::setInputText,
-                onSend = { viewModel.sendMessage(chatState.inputText) },
+                onSend = {
+                    // 用户主动发送消息：恢复自动滚动并立即滚到底部
+                    shouldAutoScroll = true
+                    viewModel.sendMessage(chatState.inputText)
+                    if (chatState.messages.isNotEmpty()) {
+                        coroutineScope.launch {
+                            listState.animateScrollToItem(chatState.messages.size - 1)
+                        }
+                    }
+                },
                 enabled = !chatState.isLoading,
                 isDark = isDark,
                 onInputFocus = {
+                    // 用户点击输入框：恢复自动滚动到底部
+                    shouldAutoScroll = true
                     if (chatState.messages.isNotEmpty()) {
                         coroutineScope.launch {
                             listState.animateScrollToItem(chatState.messages.size - 1)
@@ -501,11 +603,18 @@ fun JiuxinChatScreen(
                 showHistoryPanel = false
             },
             onNewSession = {
-                // 新建对话前验证 API 配置完整性，与会话列表行为一致
-                // 注意：这里使用 createNewSessionForCurrentShip 而非 createNewSession，
-                // 确保新会话继承当前舰娘的完整配置快照（avatarUrl/jiuxinName 等），
-                // 使 computeShipKey 一致，新会话才能出现在同一舰娘的历史面板中
-                if (apiUrl.isBlank() || apiKey.isBlank()) {
+                // 新建对话前验证 API 配置完整性
+                // 注意：群聊会话使用会话快照中的 API 配置校验（会话级隔离），
+                // 私聊会话使用全局 StateFlow 校验（作为新建会话默认值模板）
+                // 这样即使全局 API 被清空，群聊仍可基于自身快照继续新建对话
+                val isGroup = currentSession?.isGroup == true
+                val hasValidApi = if (isGroup) {
+                    currentSession?.apiUrl?.isNotBlank() == true &&
+                        currentSession?.apiKey?.isNotBlank() == true
+                } else {
+                    apiUrl.isNotBlank() && apiKey.isNotBlank()
+                }
+                if (!hasValidApi) {
                     showHistoryPanel = false
                     showConfigMissingDialog = true
                 } else {
@@ -516,6 +625,25 @@ fun JiuxinChatScreen(
             onDeleteSession = { sessionId -> showDeleteConfirm = sessionId },
             onRenameSession = { sessionId -> showRenameDialog = sessionId }
         )
+    }
+
+    // ── 群成员管理面板 ──
+    if (showMemberPanel) {
+        val session = currentSession
+        if (session != null && session.isGroup) {
+            GroupMemberPanel(
+                session = session,
+                personaConfigs = personaConfigs,
+                isDark = isDark,
+                onDismiss = { showMemberPanel = false },
+                onUpdateMembers = { memberIds ->
+                    viewModel.updateGroupMembers(session.id, memberIds)
+                },
+                onRename = { newName ->
+                    viewModel.renameGroupSession(session.id, newName)
+                }
+            )
+        }
     }
 
     // ── 用户（指挥官）配置弹窗 ──
@@ -645,7 +773,9 @@ fun JiuxinChatScreen(
     if (showBackgroundPicker) {
         BackgroundPickerSheet(
             viewModel = viewModel,
-            currentBackgroundUrl = chatBackgroundUrl,
+            sessionId = currentSessionId,
+            sessionBackgroundUrl = sessionBgUrl,
+            globalBackgroundUrl = chatBackgroundUrl,
             isDark = isDark,
             onDismiss = { showBackgroundPicker = false }
         )
@@ -1035,6 +1165,159 @@ private fun HistoryPanel(
     }
 }
 
+/**
+ * 群成员管理面板
+ *
+ * 展示当前群聊成员列表，支持：
+ * - 查看群成员头像/名称
+ * - 添加/移除成员（从可用舰娘人格中选择，至少保留 2 位）
+ * - 重命名群聊
+ */
+@Composable
+private fun GroupMemberPanel(
+    session: ChatSession,
+    personaConfigs: List<PersonaConfig>,
+    isDark: Boolean,
+    onDismiss: () -> Unit,
+    onUpdateMembers: (List<String>) -> Unit,
+    onRename: (String) -> Unit
+) {
+    val primaryColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
+    // 当前群成员的 personaId 集合（用于标记已加入状态）
+    var selectedPersonaIds by remember(session.groupMembers) {
+        mutableStateOf(session.groupMembers.mapNotNull { it.personaId.ifBlank { null } }.toSet())
+    }
+    var editingName by remember(session.name) { mutableStateOf(session.name) }
+
+    BlyyBottomSheet(onDismissRequest = onDismiss) {
+        Column(modifier = Modifier.fillMaxWidth().height(560.dp)) {
+            // ── 标题栏 ──
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "群聊信息", style = AppTypography.TitleMediumBold)
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Rounded.Close, contentDescription = "关闭")
+                }
+            }
+
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                // ── 群名称编辑 ──
+                item {
+                    Column(modifier = Modifier.padding(horizontal = AppSpacing.Lg)) {
+                        Text(
+                            text = "群聊名称",
+                            style = AppTypography.LabelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp)
+                                .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDark) 0.4f else 0.5f))
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            androidx.compose.foundation.text.BasicTextField(
+                                value = editingName,
+                                onValueChange = { if (it.length <= 24) editingName = it },
+                                singleLine = true,
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    fontSize = 15.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                cursorBrush = androidx.compose.ui.graphics.SolidColor(primaryColor),
+                                modifier = Modifier.weight(1f).padding(vertical = 10.dp)
+                            )
+                            if (editingName.trim() != session.name && editingName.trim().isNotBlank()) {
+                                TextButton(onClick = { onRename(editingName.trim()) }) {
+                                    Text("保存", color = primaryColor, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+
+                // ── 成员选择标题 ──
+                item {
+                    Text(
+                        text = "群成员（${selectedPersonaIds.size} 位，至少 2 位）",
+                        style = AppTypography.LabelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        modifier = Modifier.padding(horizontal = AppSpacing.Lg, vertical = 4.dp)
+                    )
+                }
+
+                // ── 成员选择列表 ──
+                items(personaConfigs, key = { it.id }) { persona ->
+                    val isMember = persona.id in selectedPersonaIds
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                            .background(if (isMember) primaryColor.copy(alpha = 0.08f) else Color.Transparent)
+                            .clickable {
+                                val newSet = if (isMember) selectedPersonaIds - persona.id
+                                else selectedPersonaIds + persona.id
+                                // 至少保留 2 位成员
+                                if (newSet.size >= 2 || !isMember) {
+                                    selectedPersonaIds = newSet
+                                    onUpdateMembers(newSet.toList())
+                                }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        RobustAvatar(
+                            url = persona.avatarUrl,
+                            modifier = Modifier.size(40.dp).clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            fallbackContent = {
+                                Icon(
+                                    Icons.Rounded.Person,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = primaryColor.copy(alpha = 0.5f)
+                                )
+                            }
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = persona.name.ifBlank { "未命名舰娘" },
+                                style = AppTypography.TitleSmall,
+                                fontWeight = if (isMember) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isMember) primaryColor else MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (persona.jiuxinName.isNotBlank()) {
+                                Text(
+                                    text = persona.jiuxinName,
+                                    style = AppTypography.LabelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                        if (isMember) {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = "已加入",
+                                tint = primaryColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── JUUSTAGRAM 消息分组圆角计算 ──
 // CSS 圆角顺序 (top-left, top-right, bottom-right, bottom-left) = Compose (topStart, topEnd, bottomEnd, bottomStart)
 private fun incomingBubbleShape(groupPos: GroupPosition): RoundedCornerShape = when (groupPos) {
@@ -1063,6 +1346,7 @@ private fun MessageBubble(
     maxWidth: Dp,
     groupPosition: GroupPosition,
     topPadding: Dp,
+    isGroup: Boolean = false,
     onVoiceClick: () -> Unit,
     onStickerClick: () -> Unit,
     onMessageLongClick: () -> Unit = {}
@@ -1117,11 +1401,16 @@ private fun MessageBubble(
 
         ChatMessageType.AI.name -> {
             // ── AI消息：JUUSTAGRAM 白色气泡，左对齐，40dp 头像仅组首显示 ──
+            // 群聊扩展：群聊会话使用消息自带的 avatarUrl（各舰娘自己的头像），私聊用会话级头像
             val bubbleBg = if (isDark) JuusColors.Dark.AiBubble else JuusColors.AiBubble
             val bubbleBorder = if (isDark) JuusColors.Dark.AiBubbleBorder else JuusColors.AiBubbleBorder
             val textColor = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
             val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
+            val nameColor = if (isDark) JuusColors.Dark.AiName else JuusColors.AiName
             val bubbleShape = incomingBubbleShape(groupPosition)
+            // 群聊：优先使用消息自带的发送者头像/名称；私聊：回退到会话级头像
+            val displayAvatar = if (isGroup && message.avatarUrl.isNotBlank()) message.avatarUrl else jiuxinAvatarUrl
+            val displaySenderName = if (isGroup && message.shipName.isNotBlank()) message.shipName else ""
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
@@ -1131,7 +1420,7 @@ private fun MessageBubble(
                 // 头像或占位（40dp — 增大舰娘头像尺寸）
                 if (showAvatar) {
                     RobustAvatar(
-                        url = jiuxinAvatarUrl,
+                        url = displayAvatar,
                         modifier = Modifier.size(40.dp).clip(CircleShape)
                             .background(bubbleBg)
                             .border(1.dp, avatarBorder, CircleShape),
@@ -1144,6 +1433,15 @@ private fun MessageBubble(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
+                    // 群聊：组首消息上方显示发送者名称
+                    if (isGroup && showAvatar && displaySenderName.isNotBlank()) {
+                        Text(
+                            text = displaySenderName,
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            color = nameColor,
+                            modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .clip(bubbleShape)
@@ -1179,7 +1477,9 @@ private fun MessageBubble(
             val voiceAccent = if (isDark) JuusColors.Dark.VoiceAccent else JuusColors.VoiceAccent
             val textColor = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
             val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
+            val nameColor = if (isDark) JuusColors.Dark.AiName else JuusColors.AiName
             val bubbleShape = incomingBubbleShape(groupPosition)
+            val voiceSenderName = if (isGroup && message.shipName.isNotBlank()) message.shipName else ""
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
@@ -1201,6 +1501,15 @@ private fun MessageBubble(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
+                    // 群聊：组首消息上方显示发送者名称
+                    if (isGroup && showAvatar && voiceSenderName.isNotBlank()) {
+                        Text(
+                            text = voiceSenderName,
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            color = nameColor,
+                            modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .clip(bubbleShape)
@@ -1242,6 +1551,7 @@ private fun MessageBubble(
             val bubbleBg = if (isDark) JuusColors.Dark.AiBubble else JuusColors.AiBubble
             val nameColor = if (isDark) JuusColors.Dark.AiName else JuusColors.AiName
             val avatarBorder = if (isDark) JuusColors.Dark.AvatarBorder else JuusColors.AvatarBorder
+            val stickerSenderName = if (isGroup && message.shipName.isNotBlank()) message.shipName else ""
 
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = topPadding, start = AppSpacing.Md, end = AppSpacing.Md),
@@ -1263,6 +1573,15 @@ private fun MessageBubble(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.widthIn(max = maxWidth)) {
+                    // 群聊：组首消息上方显示发送者名称
+                    if (isGroup && showAvatar && stickerSenderName.isNotBlank()) {
+                        Text(
+                            text = stickerSenderName,
+                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            color = nameColor,
+                            modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .widthIn(max = 160.dp)
@@ -1393,6 +1712,11 @@ private fun ChatInputBar(
                     strokeWidth = strokeWidth
                 )
             }
+            // imePadding + navigationBarsPadding 作用于输入栏：
+            // 键盘弹出时推高 ChatInputBar，LazyColumn 的 weight(1f) 可用高度保持稳定。
+            // 关键：Row 的高度由 heightIn 约束的 BasicTextField 决定，不随 IME 动画抖动。
+            .imePadding()
+            .navigationBarsPadding()
             .padding(horizontal = AppSpacing.Md, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
@@ -1425,7 +1749,12 @@ private fun ChatInputBar(
             },
             modifier = Modifier
                 .weight(1f)
-                .heightIn(min = 40.dp, max = 120.dp)
+                // 关键修复：固定高度 40dp，消除多行输入导致的高度变化抖动
+                // 原实现 heightIn(min=40, max=120) 会让 Row 高度随输入行数变化，
+                // 挤压 LazyColumn 的 weight(1f) 空间，与 IME 动画叠加产生抽搐。
+                // 改为固定 40dp + maxLines=1 + 水平滚动，单行输入体验更稳定。
+                // 若需多行体验，可在外层加垂直滚动容器，但当前固定高度消除抖动优先级更高。
+                .height(40.dp)
                 .focusRequester(focusRequester)
                 .onFocusEvent { state ->
                     if (state.isFocused) onInputFocus()
@@ -1434,8 +1763,8 @@ private fun ChatInputBar(
                 .background(inputBg)
                 .padding(horizontal = 14.dp, vertical = 8.dp),
             textStyle = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp),
-            // 多行输入：允许最多 5 行，文字过长时自动换行显示，避免单行截断
-            maxLines = 5,
+            // 单行输入：固定高度，避免多行高度变化导致布局抖动
+            maxLines = 1,
             cursorBrush = androidx.compose.ui.graphics.SolidColor(if (isDark) JuusPalette.Dark.Primary else JuusPalette.Primary),
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                 capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
@@ -1563,33 +1892,57 @@ fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDi
 /**
  * 聊天背景选择弹窗
  *
- * 支持两种背景来源：
- * 1. 本地上传：从相册选择图片，复制到内部存储 backgrounds/ 目录
- * 2. 默认纯色：清除自定义背景，恢复纯色背景
+ * 支持三种背景设置方式：
+ * 1. 设置当前聊天背景：仅当前会话生效（会话级 backgroundUrl）
+ * 2. 设置全部聊天背景：所有会话默认使用（全局 aiChatBackgroundUrl）
+ * 3. 恢复默认背景：清除会话级 + 全局背景
  *
- * 设计：底部弹窗 + 当前背景预览 + 操作按钮
+ * 使用 PickVisualMedia（Android Photo Picker）代替 OpenDocument（文件管理器），
+ * 提供更符合移动端使用习惯的图库选择体验。
+ *
+ * 设计：底部弹窗 + 当前背景预览 + 操作按钮（区分会话级/全局）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BackgroundPickerSheet(
     viewModel: JiuxinViewModel,
-    currentBackgroundUrl: String,
+    sessionId: String,
+    sessionBackgroundUrl: String,
+    globalBackgroundUrl: String,
     isDark: Boolean,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val accentColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
-    val cardBg = if (isDark) JuusColors.Dark.FooterBg else JuusColors.FooterBg
     val subColor = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
 
-    val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+    // 当前生效的背景（会话级优先，回退到全局）
+    val effectiveBackgroundUrl = sessionBackgroundUrl.ifBlank { globalBackgroundUrl }
+    // 当前生效的背景来源标签
+    val effectiveSourceLabel = when {
+        sessionBackgroundUrl.isNotBlank() -> "当前会话背景"
+        globalBackgroundUrl.isNotBlank() -> "全局背景"
+        else -> "默认背景"
+    }
+
+    // PickVisualMedia：Android Photo Picker（真正的图库选择器，无需权限）
+    // 优于 OpenDocument（文件管理器）：更流畅、更符合移动端习惯、自动处理权限
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
         uri?.let {
             scope.launch {
                 val filePath = viewModel.copyBackgroundToInternalStorage(it)
                 if (filePath != null) {
-                    viewModel.saveChatBackgroundUrl(filePath)
-                    Toast.makeText(context, "已设置聊天背景", Toast.LENGTH_SHORT).show()
+                    // 默认设置为当前会话背景（用户最常见的需求）
+                    if (sessionId.isNotBlank()) {
+                        viewModel.saveSessionBackgroundUrl(sessionId, filePath)
+                        Toast.makeText(context, "已设置当前聊天背景", Toast.LENGTH_SHORT).show()
+                    } else {
+                        viewModel.saveChatBackgroundUrl(filePath)
+                        Toast.makeText(context, "已设置聊天背景", Toast.LENGTH_SHORT).show()
+                    }
                 } else {
                     Toast.makeText(context, "背景图片加载失败，请重试", Toast.LENGTH_SHORT).show()
                 }
@@ -1615,7 +1968,7 @@ private fun BackgroundPickerSheet(
 
             Spacer(modifier = Modifier.height(AppSpacing.Md))
 
-            // 当前背景预览
+            // 当前背景预览（显示生效中的背景，会话级优先）
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1625,14 +1978,14 @@ private fun BackgroundPickerSheet(
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), RoundedCornerShape(AppSpacing.Corner.Lg)),
                 contentAlignment = Alignment.Center
             ) {
-                if (currentBackgroundUrl.isNotBlank()) {
+                if (effectiveBackgroundUrl.isNotBlank()) {
                     AsyncImage(
-                        model = currentBackgroundUrl,
+                        model = effectiveBackgroundUrl,
                         contentDescription = "当前背景预览",
                         modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(AppSpacing.Corner.Lg)),
                         contentScale = ContentScale.Crop
                     )
-                    // 右下角标识
+                    // 右下角标识来源
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
@@ -1641,7 +1994,7 @@ private fun BackgroundPickerSheet(
                             .background(Color.Black.copy(alpha = 0.5f))
                             .padding(horizontal = AppSpacing.Sm, vertical = 2.dp)
                     ) {
-                        Text(text = "当前背景", style = AppTypography.LabelSmall, color = Color.White)
+                        Text(text = effectiveSourceLabel, style = AppTypography.LabelSmall, color = Color.White)
                     }
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
@@ -1658,34 +2011,68 @@ private fun BackgroundPickerSheet(
 
             Spacer(modifier = Modifier.height(AppSpacing.Lg))
 
-            // 操作按钮：从相册选择
+            // 主操作按钮：从图库选择（设置为当前聊天背景）
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(AppSpacing.Corner.Md))
                     .background(accentColor)
-                    .clickable { imagePickerLauncher.launch(arrayOf("image/*")) }
+                    .clickable {
+                        imagePickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    }
                     .padding(vertical = AppSpacing.Md),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.Rounded.AddPhotoAlternate, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                Text(text = "从相册选择背景", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Text(text = "从图库选择背景", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 14.sp)
             }
 
             Spacer(modifier = Modifier.height(AppSpacing.Sm))
 
-            // 清除背景按钮（仅当有自定义背景时显示）
-            if (currentBackgroundUrl.isNotBlank()) {
+            // 次要操作：设为全部聊天背景（将当前生效的背景应用到全局）
+            // 仅当当前背景来自会话级时显示，提供"提升为全局背景"的入口
+            if (sessionBackgroundUrl.isNotBlank() && sessionId.isNotBlank()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(AppSpacing.Corner.Md))
+                        .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f))
+                        .clickable {
+                            viewModel.saveChatBackgroundUrl(sessionBackgroundUrl)
+                            Toast.makeText(context, "已设为全部聊天的默认背景", Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(vertical = AppSpacing.Md),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Edit, contentDescription = null, tint = accentColor, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                    Text(text = "设为全部聊天背景", color = accentColor, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                }
+                Spacer(modifier = Modifier.height(AppSpacing.Sm))
+            }
+
+            // 清除背景按钮（区分清除会话级/全局）
+            if (effectiveBackgroundUrl.isNotBlank()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(AppSpacing.Corner.Md))
                         .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f))
                         .clickable {
-                            viewModel.saveChatBackgroundUrl("")
-                            Toast.makeText(context, "已恢复默认背景", Toast.LENGTH_SHORT).show()
+                            if (sessionBackgroundUrl.isNotBlank() && sessionId.isNotBlank()) {
+                                // 清除会话级背景（回退到全局或默认）
+                                viewModel.saveSessionBackgroundUrl(sessionId, "")
+                                Toast.makeText(context, "已清除当前会话背景", Toast.LENGTH_SHORT).show()
+                            } else {
+                                // 清除全局背景
+                                viewModel.saveChatBackgroundUrl("")
+                                Toast.makeText(context, "已恢复默认背景", Toast.LENGTH_SHORT).show()
+                            }
                         }
                         .padding(vertical = AppSpacing.Md),
                     horizontalArrangement = Arrangement.Center,
@@ -1693,13 +2080,18 @@ private fun BackgroundPickerSheet(
                 ) {
                     Icon(Icons.Rounded.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                    Text(text = "恢复默认背景", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    Text(
+                        text = if (sessionBackgroundUrl.isNotBlank()) "清除当前会话背景" else "恢复默认背景",
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp
+                    )
                 }
             }
 
             Spacer(modifier = Modifier.height(AppSpacing.Sm))
             Text(
-                text = "建议使用竖屏比例的图片，背景会自适应铺满整个聊天界面",
+                text = "会话级背景优先于全局背景。建议使用竖屏比例图片，会自适应铺满聊天界面",
                 style = AppTypography.BodySmall,
                 color = subColor.copy(alpha = 0.7f),
                 modifier = Modifier.padding(horizontal = AppSpacing.Xs)

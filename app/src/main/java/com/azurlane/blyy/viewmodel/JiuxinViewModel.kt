@@ -12,11 +12,14 @@ import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.ChatMessage
 import com.azurlane.blyy.data.model.ChatMessageType
 import com.azurlane.blyy.data.model.ChatSession
+import com.azurlane.blyy.data.model.GroupMember
 import com.azurlane.blyy.data.model.JiuxinChatUiState
 import com.azurlane.blyy.data.model.JiuxinPreset
 import com.azurlane.blyy.data.model.ApiConfig
 import com.azurlane.blyy.data.model.PersonaConfig
+import com.azurlane.blyy.data.model.SessionType
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.data.model.TypingMember
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceTagMapping
 import com.azurlane.blyy.data.repository.ShipRepository
@@ -26,9 +29,14 @@ import com.azurlane.blyy.util.LocalAvatarResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -69,6 +77,21 @@ class JiuxinViewModel @Inject constructor(
         private const val DEFAULT_MODEL = "gpt-4o-mini"
         private const val MAX_CHAT_HISTORY = 200
         private const val MAX_SESSIONS = 50
+        /** 群聊互回轮触发概率（每次用户消息后，有 85% 概率触发成员间互回） */
+        private const val REACTION_PROBABILITY = 0.85f
+        /** 群聊互回轮中，AI 输出该标记表示主动放弃回应 */
+        private const val SKIP_TOKEN = "[SKIP]"
+        /**
+         * 群聊单次用户消息触发的最大互回轮数上限（防止无限循环）。
+         * 实际互回轮数 = min(群成员数, MAX_REACTION_ROUNDS)，确保所有成员都有机会参与互回，
+         * 同时避免大群消息刷屏。3 人群聊时最多 3 轮互回，每位成员都有机会回应他人。
+         */
+        private const val MAX_REACTION_ROUNDS = 3
+        /** 群聊上下文消息历史最大条数（硬上限） */
+        private const val MAX_GROUP_CONTEXT_MESSAGES = 30
+        /** 群聊上下文 token 估算上限（1 token ≈ 2-3 个中文字符，按保守 2 计算）
+         *  预留 model 上下文窗口（通常 4K-8K）给 system prompt + 输出 */
+        private const val MAX_GROUP_CONTEXT_CHARS = 6000
 
         /** 语音触发关键词默认值 — 与 PlayerSettingsDataStore 默认保持一致 */
         private const val DEFAULT_VOICE_KEYWORDS = "你好;早安;晚安;加油;辛苦了"
@@ -140,10 +163,19 @@ class JiuxinViewModel @Inject constructor(
      * 聊天界面和舰娘设置界面通过此 StateFlow 读取当前会话的配置快照，
      * 而非全局 StateFlow —— 实现会话级配置隔离。
      * 全局 StateFlow 仅作为新建会话的默认值模板，不再被聊天界面直接读取。
+     *
+     * 使用 [SharingStarted.Eagerly] 而非 WhileSubscribed(5000) 的关键原因：
+     * WhileSubscribed 在最后一个订阅者取消后 5 秒停止收集上游 combine，
+     * 此时 StateFlow.value 会保留旧会话（如 A）的缓存值。
+     * 当 switchToSession(B) 同步设置 _currentSessionId=B 时，combine 已停止收集，
+     * 无法感知此变化，currentSession.value 仍是 A。
+     * ChatScreen 重新订阅时会先收到 A 的缓存值（显示上一个舰娘），
+     * 然后 combine 重新收集才派发 B —— 这就是"跳转到上一个舰娘"的根因。
+     * Eagerly 让 combine 始终保持收集，_currentSessionId 的变化能立即反映到 currentSession.value。
      */
     val currentSession: StateFlow<ChatSession?> = combine(_sessions, _currentSessionId) { sessions, id ->
         sessions.firstOrNull { it.id == id }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
      * 聊天状态代际计数器：每次清空/删除/切换会话时递增。
@@ -151,6 +183,18 @@ class JiuxinViewModel @Inject constructor(
      * 若已变更则丢弃过期的 AI 回复和表情包，避免已删除/已清空的内容重新出现。
      */
     private val _chatGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * 会话消息持久化锁：序列化所有 DataStore 写入，避免并发 saveCurrentSessionMessages
+     * 各自捕获不同快照导致后执行者覆盖先执行者造成消息丢失。
+     *
+     * 场景：群聊第一轮并行 launch，成员 A、B 几乎同时 addMessage → 同时触发 save。
+     * A 捕获 [m1, mA]，B 捕获 [m1, mA, mB]，若 A 后执行会以 [m1, mA] 覆盖 [m1, mA, mB]，
+     * 消息 mB 永久丢失。引入此锁后在锁内重新读取最新快照即可避免。
+     *
+     * 注意：锁内禁止执行任何会回调 addMessage 的操作（防止死锁）。
+     */
+    private val saveMutex = Mutex()
 
     // ── 啾信预设配置 ──
     val presets: StateFlow<List<JiuxinPreset>> = settings.aiJiuxinPresets
@@ -203,24 +247,46 @@ class JiuxinViewModel @Inject constructor(
      * 隔离 key 与 [uniqueConversations] 一致（[computeShipKey]）。
      *
      * 当当前会话不存在（如全部删除后）时返回空列表。
+     *
+     * 使用 [SharingStarted.Eagerly] 与 [currentSession] 保持一致：避免 ChatScreen 重新订阅时
+     * 收到旧会话的缓存值导致历史面板显示错误舰娘的对话。
      */
     val currentShipSessions: StateFlow<List<ChatSession>> = combine(_sessions, _currentSessionId) { sessions, currentId ->
         val currentSession = sessions.firstOrNull { it.id == currentId } ?: return@combine emptyList()
         val shipKey = computeShipKey(currentSession)
         sessions.filter { computeShipKey(it) == shipKey }
             .sortedByDescending { it.updatedAt }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /**
      * 计算舰娘去重 key（统一隔离标识）。
      *
      * 优先级（多级回退）：
+     * 0. 群聊会话 → 优先按 [ChatSession.groupId] 分组（稳定标识，重命名/改成员不变）；
+     *    groupId 为空（旧数据兼容）时回退到群名 + 成员哈希
      * 1. presetId 非空 → 按预设 ID 分组
      * 2. avatarUrl 非空 → 按头像 URL 分组（同一头像视为同一舰娘）
      * 3. jiuxinName 非空且非默认格式（不以"对话-"开头）→ 按舰娘名分组
      * 4. 以上均无 → 统一归入 "default" 分组
+     *
+     * P2 修复：群聊 key 改用 groupId（稳定标识），不再包含 session.name。
+     * 原实现使用 "group:${session.name}|$memberHash" 作为 key，
+     * 导致群聊重命名（renameGroupSession）后 key 变化，
+     * 历史面板聚合断裂（重命名后的会话不再显示在同一群聊的历史列表中）。
      */
     private fun computeShipKey(session: ChatSession): String = when {
+        session.isGroup -> {
+            if (session.groupId.isNotBlank()) {
+                "group:${session.groupId}"
+            } else {
+                // 兼容旧数据：groupId 为空时回退到原逻辑
+                val memberHash = session.groupMembers
+                    .map { it.personaId.ifBlank { it.jiuxinName } }
+                    .sorted()
+                    .joinToString(",")
+                "group:${session.name}|$memberHash"
+            }
+        }
         session.presetId.isNotBlank() -> "preset:${session.presetId}"
         session.avatarUrl.isNotBlank() -> "avatar:${session.avatarUrl}"
         session.jiuxinName.isNotBlank() && !session.jiuxinName.startsWith("对话-") -> "name:${session.jiuxinName}"
@@ -374,15 +440,26 @@ class JiuxinViewModel @Inject constructor(
 
 
     init {
-        // 加载会话列表和当前会话
+        // 加载会话列表
+        // 持续监听 DataStore：会话列表可能在其他界面（如设置页）被修改，需要同步
         viewModelScope.launch {
             settings.aiChatSessions.collect { sessionList ->
                 _sessions.value = sessionList
             }
         }
+        // 加载当前会话 ID：仅在初始化时从 DataStore 读取一次，用于恢复上次的会话
+        // 之后内存 [_currentSessionId] 是单一真相源，[switchToSession] 等方法同步更新内存，
+        // 异步持久化到 DataStore。持续监听 DataStore 会导致竞态：
+        //   switchToSession 同步设置 _currentSessionId = B
+        //   → 异步 settings.setAiCurrentSessionId(B) 未完成
+        //   → init collector 派发旧值 A → 覆盖 _currentSessionId 回 A
+        //   → ChatScreen 显示旧会话 A
+        // 因此这里只用 first() 读取一次初始值，后续由内存状态驱动
         viewModelScope.launch {
-            settings.aiCurrentSessionId.collect { sessionId ->
-                _currentSessionId.value = sessionId
+            val initialSessionId = settings.aiCurrentSessionId.first()
+            // 仅在内存值为空时初始化，避免覆盖已通过其他路径设置的值
+            if (_currentSessionId.value.isBlank() && initialSessionId.isNotBlank()) {
+                _currentSessionId.value = initialSessionId
             }
         }
         // 加载当前会话消息
@@ -394,7 +471,30 @@ class JiuxinViewModel @Inject constructor(
                     flowOf(emptyList())
                 }
             }.collect { messages ->
-                _chatState.update { it.copy(messages = messages) }
+                // 仅当消息列表实际变化时更新状态并关闭 isLoading
+                // 避免 sendMessage 中的 addMessage → saveCurrentSessionMessages → DataStore 派发
+                // 触发 collector 关闭 isLoading，导致 TypingIndicator 动画提前消失
+                //
+                // 场景分析：
+                // 1. switchToSession 切换到有消息的会话：state.messages=[]（已清空）vs DataStore=[m1,m2]
+                //    → 不相等 → 关闭 isLoading ✅
+                // 2. switchToSession 切换到空会话：state.messages=[] vs DataStore=[]
+                //    → 相等但空 → 关闭 isLoading ✅（空会话无需 loading）
+                // 3. sendMessage 的 addMessage(userMessage)：state.messages 已含 userMessage
+                //    vs DataStore 派发相同列表 → 相等且非空 → 保留 isLoading ✅（TypingIndicator 继续）
+                // 4. API 返回 addMessage(aiMessage) + finishLoading：finishLoading 已关闭 isLoading
+                //    DataStore 随后派发相同列表 → 相等 → 保留当前 false ✅
+                _chatState.update { state ->
+                    if (state.messages == messages && messages.isNotEmpty()) {
+                        // 消息未变化（DataStore 重新派发相同数据，如 addMessage 持久化回写）：
+                        // 保留当前 isLoading 状态，不干扰 sendMessage 的 TypingIndicator
+                        state
+                    } else {
+                        // 消息变化（会话切换加载）或空会话：更新 messages 并关闭 isLoading
+                        // 同时清空 typingMembers，防止上一会话的群聊打字指示器残留显示
+                        state.copy(messages = messages, isLoading = false, typingMembers = emptyList())
+                    }
+                }
             }
         }
         // 旧数据迁移：如果存在旧的 aiChatHistory 且无会话，自动迁移
@@ -544,6 +644,40 @@ class JiuxinViewModel @Inject constructor(
     fun saveChatBackgroundUrl(url: String) { viewModelScope.launch { settings.setAiChatBackgroundUrl(url) } }
 
     /**
+     * 保存会话级聊天背景 URL
+     *
+     * 与全局 [saveChatBackgroundUrl] 配合实现多级背景：
+     * - 会话级 [backgroundUrl] 非空 → 仅当前会话使用该背景
+     * - 会话级为空 → 回退到全局 [aiChatBackgroundUrl]
+     * - 全局也为空 → 使用默认纯色背景
+     *
+     * @param sessionId 目标会话 ID
+     * @param url 背景图片 URL（file:// 路径），空字符串表示清除会话级背景
+     */
+    fun saveSessionBackgroundUrl(sessionId: String, url: String) {
+        viewModelScope.launch(NonCancellable) {
+            val updated = _sessions.value.map { session ->
+                if (session.id == sessionId) session.copy(backgroundUrl = url) else session
+            }
+            _sessions.value = updated
+            settings.setAiChatSessions(updated)
+            Log.d(TAG, "Saved session background: sessionId=$sessionId, url=$url")
+        }
+    }
+
+    /**
+     * 清除所有会话级背景（统一恢复到全局背景或默认背景）。
+     */
+    fun clearAllSessionBackgrounds() {
+        viewModelScope.launch(NonCancellable) {
+            val updated = _sessions.value.map { it.copy(backgroundUrl = "") }
+            _sessions.value = updated
+            settings.setAiChatSessions(updated)
+            Log.d(TAG, "Cleared all session backgrounds")
+        }
+    }
+
+    /**
      * 复制用户选择的背景图片到内部存储，返回可靠的 file:// 路径
      *
      * 与 [copyAvatarToInternalStorage] 类似，但存储到 backgrounds/ 目录。
@@ -648,7 +782,7 @@ class JiuxinViewModel @Inject constructor(
         // 再同步更新内存状态：确保 UI 和在途请求能立即感知新会话
         _sessions.value = trimmed
         _currentSessionId.value = session.id
-        _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
+        _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false, typingMembers = emptyList()) }
     }
 
     /**
@@ -714,6 +848,30 @@ class JiuxinViewModel @Inject constructor(
     fun createNewSessionForCurrentShip() {
         val currentSession = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
 
+        // 群聊会话：复制完整群聊配置（含成员列表）创建新群聊
+        if (currentSession != null && currentSession.isGroup) {
+            _chatGeneration.incrementAndGet()
+            viewModelScope.launch {
+                val session = ChatSession(
+                    name = currentSession.name,
+                    jiuxinName = currentSession.jiuxinName,
+                    apiUrl = currentSession.apiUrl,
+                    apiKey = currentSession.apiKey,
+                    model = currentSession.model,
+                    systemPrompt = currentSession.systemPrompt,
+                    sessionType = SessionType.GROUP.name,
+                    groupMembers = currentSession.groupMembers,
+                    // 继承稳定群聊标识：新建的历史对话与原会话归属同一群聊
+                    groupId = currentSession.groupId,
+                    // 继承会话级聊天背景
+                    backgroundUrl = currentSession.backgroundUrl
+                )
+                persistAndActivateSession(session)
+                Log.d(TAG, "Created new group session for current group: ${session.id} (${session.groupMembers.size} members, groupId=${currentSession.groupId})")
+            }
+            return
+        }
+
         // 关联预设的会话：走预设路径，presetId 一致即保证去重 key 相同
         if (currentSession != null && currentSession.presetId.isNotBlank()) {
             createNewSession(presetId = currentSession.presetId)
@@ -748,6 +906,144 @@ class JiuxinViewModel @Inject constructor(
             )
             persistAndActivateSession(session)
             Log.d(TAG, "Created new session for current ship: ${session.id} - ${session.name} (ship=${currentSession.jiuxinName})")
+        }
+    }
+
+    // ── 群聊管理 ──
+
+    /**
+     * 创建群聊会话
+     *
+     * 完整流程：群聊名称设置 + 成员选择 + 群聊创建 + 持久化存储。
+     * 群聊使用全局 API 配置（apiUrl/apiKey/model），成员各自携带人格配置快照。
+     *
+     * @param groupName 群聊名称。为空时使用默认名称（"群聊-时间戳"）
+     * @param memberPersonaIds 选中的舰娘人格配置 ID 列表（至少 2 个，否则退化为私聊无意义）
+     * @return 新创建的群聊会话 ID；若成员不足或配置缺失则返回空串
+     */
+    fun createGroupSession(groupName: String, memberPersonaIds: List<String>): String {
+        // 成员去重并保持选择顺序
+        val distinctIds = memberPersonaIds.distinct()
+        if (distinctIds.size < 2) {
+            Log.w(TAG, "createGroupSession: need at least 2 members, got ${distinctIds.size}")
+            return ""
+        }
+        // 解析成员配置：仅保留存在的 persona
+        val members = distinctIds.mapNotNull { id ->
+            personaConfigs.value.firstOrNull { it.id == id }?.let { persona ->
+                GroupMember(
+                    personaId = persona.id,
+                    jiuxinName = persona.jiuxinName.ifBlank { persona.name },
+                    avatarUrl = normalizeUrl(persona.avatarUrl),
+                    systemPrompt = persona.systemPrompt,
+                    voiceShipName = persona.voiceShipName,
+                    voiceShipAvatar = normalizeUrl(persona.voiceShipAvatar),
+                    voiceEnabled = persona.voiceEnabled,
+                    voiceRandomChance = persona.voiceRandomChance,
+                    voiceKeywords = persona.voiceKeywords,
+                    stickersEnabled = persona.stickersEnabled,
+                    stickerChance = persona.stickerChance
+                )
+            }
+        }
+        if (members.size < 2) {
+            Log.w(TAG, "createGroupSession: resolved members < 2 (${members.size})")
+            return ""
+        }
+
+        // P2 防御：校验 API 配置有效性。UI 层（ConversationListScreen）已做校验，
+        // 此处为兜底防御，避免后续 sendMessage 时才发现配置缺失导致体验受损。
+        if (apiUrl.value.isBlank() || apiKey.value.isBlank()) {
+            Log.w(TAG, "createGroupSession: API config missing (url=${apiUrl.value.isNotBlank()}, key=${apiKey.value.isNotBlank()})")
+            return ""
+        }
+
+        // 递增代际计数器，使在途的 sendMessage 请求返回后丢弃旧会话的回复
+        _chatGeneration.incrementAndGet()
+        val newSessionId = UUID.randomUUID().toString()
+        // 生成稳定的群聊标识：用于 computeShipKey 去重，重命名/改成员后保持不变，
+        // 确保历史面板聚合不断裂。同一群聊的新建会话/自动继承会话都复用此 ID。
+        val newGroupId = UUID.randomUUID().toString()
+        viewModelScope.launch {
+            val effectiveName = groupName.trim().ifBlank {
+                "群聊-${SimpleDateFormat("MMdd-HHmm", Locale.getDefault()).format(Date())}"
+            }
+            val session = ChatSession(
+                id = newSessionId,
+                name = effectiveName,
+                jiuxinName = effectiveName,
+                // 群聊使用全局 API 配置快照
+                apiUrl = apiUrl.value,
+                apiKey = apiKey.value,
+                model = selectedModel.value,
+                // 群聊级 systemPrompt 仅作兜底：实际 API 调用以各成员 prompt 构造群聊上下文
+                systemPrompt = systemPrompt.value,
+                sessionType = SessionType.GROUP.name,
+                groupMembers = members,
+                groupId = newGroupId
+            )
+            persistAndActivateSession(session)
+            Log.d(TAG, "Created group session: ${session.id} - ${session.name} (${members.size} members, groupId=$newGroupId)")
+        }
+        return newSessionId
+    }
+
+    /**
+     * 更新群聊成员（群成员管理）。
+     *
+     * @param sessionId 群聊会话 ID
+     * @param memberPersonaIds 新的成员 personaId 列表
+     */
+    fun updateGroupMembers(sessionId: String, memberPersonaIds: List<String>) {
+        val distinctIds = memberPersonaIds.distinct()
+        if (distinctIds.size < 2) {
+            Log.w(TAG, "updateGroupMembers: need at least 2 members")
+            return
+        }
+        val members = distinctIds.mapNotNull { id ->
+            personaConfigs.value.firstOrNull { it.id == id }?.let { persona ->
+                GroupMember(
+                    personaId = persona.id,
+                    jiuxinName = persona.jiuxinName.ifBlank { persona.name },
+                    avatarUrl = normalizeUrl(persona.avatarUrl),
+                    systemPrompt = persona.systemPrompt,
+                    voiceShipName = persona.voiceShipName,
+                    voiceShipAvatar = normalizeUrl(persona.voiceShipAvatar),
+                    voiceEnabled = persona.voiceEnabled,
+                    voiceRandomChance = persona.voiceRandomChance,
+                    voiceKeywords = persona.voiceKeywords,
+                    stickersEnabled = persona.stickersEnabled,
+                    stickerChance = persona.stickerChance
+                )
+            }
+        }
+        if (members.size < 2) return
+        viewModelScope.launch {
+            val updated = _sessions.value.map { session ->
+                if (session.id == sessionId && session.isGroup) {
+                    session.copy(groupMembers = members, updatedAt = System.currentTimeMillis())
+                } else session
+            }
+            settings.setAiChatSessions(updated)
+            _sessions.value = updated
+            Log.d(TAG, "Updated group members: $sessionId (${members.size} members)")
+        }
+    }
+
+    /**
+     * 重命名群聊
+     */
+    fun renameGroupSession(sessionId: String, newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isBlank()) return
+        viewModelScope.launch {
+            val updated = _sessions.value.map { session ->
+                if (session.id == sessionId && session.isGroup) {
+                    session.copy(name = trimmed, jiuxinName = trimmed, updatedAt = System.currentTimeMillis())
+                } else session
+            }
+            settings.setAiChatSessions(updated)
+            _sessions.value = updated
         }
     }
 
@@ -1068,6 +1364,10 @@ class JiuxinViewModel @Inject constructor(
      *
      * 竞态修复：先捕获旧会话 ID，使用它保存旧会话消息，
      * 避免子协程读取到已变更的 [_currentSessionId] 导致消息保存到错误会话。
+     *
+     * 响应性优化：内存状态（[_currentSessionId]、[_chatState] 语音配置）在主线程同步更新，
+     * 仅 DataStore 持久化在协程中异步执行。这样从会话列表点击切换并立即导航到聊天页时，
+     * [currentSession] StateFlow 能立即反映新会话，避免"切换不及时需返回再点"的问题。
      */
     fun switchToSession(sessionId: String) {
         if (_currentSessionId.value == sessionId) return
@@ -1077,37 +1377,43 @@ class JiuxinViewModel @Inject constructor(
         val oldSessionId = _currentSessionId.value
         // 关键：在清空消息之前先捕获当前消息列表，否则 saveCurrentSessionMessages 会保存空列表
         val messagesToSave = _chatState.value.messages
+
+        // ── 同步更新内存状态（主线程立即生效）──
+        // 立即更新 _currentSessionId：currentSession StateFlow 会即时派发新会话快照给 UI
+        // 这是从会话列表点击切换后立即导航到聊天页能正确显示新会话的关键
+        _currentSessionId.value = sessionId
         // 立即清空消息并显示加载态：避免异步切换期间闪现旧会话内容
-        _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = true, inputText = "") }
+        // 消息会由 init 中的 _currentSessionId.flatMapLatest collector 异步加载
+        _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = true, inputText = "", typingMembers = emptyList()) }
+        // 同步当前会话的语音关键词到 chatState（用于语音触发匹配）
+        // 注意：不在此处关闭 isLoading，由 _currentSessionId.flatMapLatest collector
+        // 加载完消息后自然更新 chatState.messages（此时 isLoading 仍为 true，
+        // 但 messages 已显示，UI 可基于 messages 非空判断显示内容）
+        val targetSession = _sessions.value.firstOrNull { it.id == sessionId }
+        if (targetSession != null) {
+            val keywords = targetSession.voiceKeywords.split(";").filter { it.isNotBlank() }
+            _chatState.update {
+                it.copy(
+                    voiceKeywords = keywords,
+                    voiceTagMappings = buildVoiceTagMappings(keywords),
+                    error = null
+                    // 不重置 isLoading：让消息加载 collector 负责最终状态
+                )
+            }
+        } else {
+            // 会话不存在（异常情况）：关闭加载态
+            _chatState.update { it.copy(error = null, isLoading = false) }
+        }
+
+        // ── 异步持久化（不阻塞 UI）──
         viewModelScope.launch {
-            // 先保存当前会话消息（使用捕获的旧会话 ID 和消息列表，避免竞态和数据丢失）
+            // 保存旧会话消息（使用捕获的旧会话 ID 和消息列表，避免竞态和数据丢失）
             // 不更新时间戳：切换会话不应改变会话列表顺序
             if (oldSessionId.isNotBlank() && messagesToSave.isNotEmpty()) {
                 settings.setAiSessionMessages(oldSessionId, messagesToSave)
             }
-
-            // 配置隔离：不再把会话快照回写到全局 StateFlow。
-            // 聊天界面和 callApi 通过 currentSession StateFlow 读取会话快照，
-            // 全局 StateFlow 保持独立，仅作为新建会话的默认值模板。
-
-            // 先持久化新会话 ID 到 DataStore，再同步更新内存
+            // 持久化新会话 ID 到 DataStore
             settings.setAiCurrentSessionId(sessionId)
-            _currentSessionId.value = sessionId
-            // 同步当前会话的语音关键词到 chatState（用于语音触发匹配）
-            val targetSession = _sessions.value.firstOrNull { it.id == sessionId }
-            if (targetSession != null) {
-                val keywords = targetSession.voiceKeywords.split(";").filter { it.isNotBlank() }
-                _chatState.update {
-                    it.copy(
-                        voiceKeywords = keywords,
-                        voiceTagMappings = buildVoiceTagMappings(keywords),
-                        error = null,
-                        isLoading = false
-                    )
-                }
-            } else {
-                _chatState.update { it.copy(error = null, isLoading = false) }
-            }
             Log.d(TAG, "Switched to session: $sessionId (config isolated, no global writeback)")
         }
     }
@@ -1261,11 +1567,52 @@ class JiuxinViewModel @Inject constructor(
                         voiceTagMappings = buildVoiceTagMappings(keywords),
                         error = null,
                         isLoading = true,
-                        inputText = ""
+                        inputText = "",
+                        typingMembers = emptyList()
                     )
                 }
                 _sessions.value = currentList
                 Log.d(TAG, "Deleted session: $sessionId, switched to same ship: ${sameShipLatest.id}")
+                return@launch
+            }
+
+            // 群聊会话删除后：同组无其他会话时，自动创建继承群聊标识的空会话
+            // 修复"群聊历史对话全部删除导致整个群聊被删除"问题：
+            // 历史对话面板（deleteSession）的语义是"删除一条历史对话"，
+            // 不应导致整个群聊从会话列表中消失。与私聊"策略2"保持一致，
+            // 同组会话全部被删除后自动创建继承群聊名+成员配置的空会话。
+            if (deletedSession.isGroup) {
+                val newGroupSession = ChatSession(
+                    name = deletedSession.name,
+                    presetId = deletedSession.presetId,
+                    avatarUrl = deletedSession.avatarUrl,
+                    jiuxinName = deletedSession.jiuxinName,
+                    apiUrl = deletedSession.apiUrl,
+                    apiKey = deletedSession.apiKey,
+                    model = deletedSession.model,
+                    systemPrompt = deletedSession.systemPrompt,
+                    voiceShipName = deletedSession.voiceShipName,
+                    voiceShipAvatar = deletedSession.voiceShipAvatar,
+                    voiceEnabled = deletedSession.voiceEnabled,
+                    voiceRandomChance = deletedSession.voiceRandomChance,
+                    voiceKeywords = deletedSession.voiceKeywords,
+                    stickersEnabled = deletedSession.stickersEnabled,
+                    stickerChance = deletedSession.stickerChance,
+                    sessionType = deletedSession.sessionType,
+                    groupMembers = deletedSession.groupMembers,
+                    // P2 修复：继承稳定群聊标识，重命名后新建会话仍归属同一群聊
+                    groupId = deletedSession.groupId,
+                    // P2 修复：继承会话级聊天背景，避免删除历史对话后背景丢失
+                    backgroundUrl = deletedSession.backgroundUrl
+                )
+                val newList = listOf(newGroupSession) + currentList
+                settings.setAiChatSessions(newList)
+                settings.setAiSessionMessages(newGroupSession.id, emptyList())
+                settings.setAiCurrentSessionId(newGroupSession.id)
+                _currentSessionId.value = newGroupSession.id
+                _sessions.value = newList
+                _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false, inputText = "", typingMembers = emptyList()) }
+                Log.d(TAG, "Deleted group session: $sessionId, auto-created new group session: ${newGroupSession.id}")
                 return@launch
             }
 
@@ -1296,7 +1643,7 @@ class JiuxinViewModel @Inject constructor(
             settings.setAiCurrentSessionId(newSession.id)
             _currentSessionId.value = newSession.id
             _sessions.value = newList
-            _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false) }
+            _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false, typingMembers = emptyList()) }
             Log.d(TAG, "Deleted session: $sessionId, auto-created new session for ship: ${newSession.id} (ship=$deletedShipKey)")
         }
     }
@@ -1336,7 +1683,7 @@ class JiuxinViewModel @Inject constructor(
                     // 所有会话已删除：清空当前会话 ID，会话列表显示空状态
                     settings.setAiCurrentSessionId("")
                     _currentSessionId.value = ""
-                    _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false, inputText = "") }
+                    _chatState.update { it.copy(messages = emptyList(), error = null, isLoading = false, inputText = "", typingMembers = emptyList()) }
                 }
             }
             _sessions.value = currentList
@@ -1358,7 +1705,9 @@ class JiuxinViewModel @Inject constructor(
             val trimmedName = newName.trim()
             val updated = _sessions.value.map {
                 if (it.id == sessionId) {
-                    it.copy(name = trimmedName)
+                    // 群聊：名称即群名，name 与 jiuxinName 同步更新（会话列表用 jiuxinName 显示）
+                    if (it.isGroup) it.copy(name = trimmedName, jiuxinName = trimmedName)
+                    else it.copy(name = trimmedName)
                 } else it
             }
             // 先持久化到 DataStore，再同步更新内存状态，确保 UI 立即刷新
@@ -1777,6 +2126,13 @@ class JiuxinViewModel @Inject constructor(
     // ── 发送消息 ──
     fun sendMessage(text: String) {
         if (text.isBlank()) return
+        // P0-4 防御：正在进行中的请求时拒绝新发送，避免并发 handleGroupMessage
+        // 造成上下文混乱、typingMembers 残留、消息保存竞态等问题。
+        // UI 层 Send 按钮已基于 isLoading 禁用，此处为兜底防御。
+        if (_chatState.value.isLoading) {
+            Log.d(TAG, "sendMessage ignored: another request is in progress")
+            return
+        }
 
         val userMessage = ChatMessage(
             id = UUID.randomUUID().toString(),
@@ -1799,6 +2155,20 @@ class JiuxinViewModel @Inject constructor(
 
             // 配置隔离：从当前会话快照读取语音配置，回退到全局默认值
             val currentSessionSnapshot = _sessions.value.firstOrNull { it.id == sessionId }
+
+            // ── 群聊分支：多舰娘依次回复 ──
+            if (currentSessionSnapshot?.isGroup == true) {
+                try {
+                    handleGroupMessage(text, sessionId, generation, currentSessionSnapshot)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Group message handling failed", e)
+                    _chatState.update { it.copy(error = e.message ?: e.javaClass.simpleName, isLoading = false, typingMembers = emptyList()) }
+                } finally {
+                    finishLoading()
+                }
+                return@launch
+            }
+
             var selectedShip = currentSessionSnapshot?.voiceShipName?.ifBlank { null } ?: settings.aiVoiceShipName.first()
             var shipAvatar = currentSessionSnapshot?.voiceShipAvatar?.ifBlank { null } ?: settings.aiVoiceShipAvatar.first()
             val voiceEnabledSetting = currentSessionSnapshot?.voiceEnabled ?: settings.aiVoiceEnabled.first()
@@ -1911,6 +2281,564 @@ class JiuxinViewModel @Inject constructor(
         persistAndActivateSession(session)
         Log.d(TAG, "Auto-created session on sendMessage: ${session.id} - ${session.name}")
         return session.id
+    }
+
+    // ── 群聊消息处理 ──
+
+    /**
+     * 处理群聊消息：多个舰娘成员**并行**回复用户消息，并可选地互相回应。
+     *
+     * 实现策略（优化版）：
+     *
+     * **第一轮（并行回复用户）**：
+     * - 从群成员中随机选择 1~2 位回复（避免每次全员回复造成刷屏和 API 浪费）
+     * - 使用 `coroutineScope { launch { ... } }` 并发发起 API 请求
+     * - 每位成员的回复**流式显示**（谁先返回谁先 addMessage + 移除对应 TypingIndicator）
+     * - 使用 [Mutex] 保护 typingSet / successCount / spokenMembers 等共享状态
+     * - 表情包/语音按各成员配置独立触发，与回复显示并行不阻塞其他成员
+     *
+     * **第二轮（成员间互回，可选）**：
+     * - 仅当第一轮至少 1 位成员成功回复时，按 [REACTION_PROBABILITY] 概率触发
+     * - 每轮选 1 位成员（优先选未参与前序轮次的成员）对刚才的对话做出反应
+     * - AI 可输出 `[SKIP]` 标记表示无需回应，由本方法识别并跳过
+     *
+     * **死循环防护**：
+     * - 严格限定最多 [MAX_REACTION_ROUNDS] 轮互回，无更深递归 → 物理上不可能死循环
+     * - 概率衰减：每轮互回触发概率 [REACTION_PROBABILITY] = 85%
+     * - AI 自决：通过 `[SKIP]` 标记让模型主动放弃回应
+     * - 用户介入：发送新消息 → 代际计数器递增 → 所有在途回复被丢弃
+     * - 单次用户消息触发的 AI 回复上限 = 3（并行初始） + min(成员数, MAX_REACTION_ROUNDS)（互回） ≤ 6 条
+     *
+     * 竞态防护：与私聊一致，使用代际计数器 + 会话 ID 双重校验，
+     * 中途清空/删除/切换会话时丢弃后续回复。
+     *
+     * @param text 用户发送的文本
+     * @param sessionId 群聊会话 ID
+     * @param generation 发送时的代际计数
+     * @param session 群聊会话快照（含 groupMembers）
+     */
+    private suspend fun handleGroupMessage(
+        text: String,
+        sessionId: String,
+        generation: Int,
+        session: ChatSession
+    ) {
+        val members = session.groupMembers
+        if (members.isEmpty()) {
+            _chatState.update { it.copy(error = "群聊暂无成员", isLoading = false, typingMembers = emptyList()) }
+            return
+        }
+
+        // 选择回复成员：根据成员数动态选择并发数，保证群聊活跃度与可读性平衡
+        // - 成员数 <= 2：全部参与（每人必回）
+        // - 成员数 3-4：选 3 位（多数参与，活跃度高）
+        // - 成员数 >= 5：选 3 位（避免消息过多刷屏，同时保持并发活跃度）
+        val initialResponders = when {
+            members.size <= 2 -> members.toList()
+            members.size <= 4 -> members.shuffled().take(3).toList()
+            else -> members.shuffled().take(3).toList()
+        }
+
+        // ── 设置初始打字指示器：所有初始回复成员同时显示 ──
+        val typingSet = mutableSetOf<TypingMember>()
+        initialResponders.forEach { typingSet.add(TypingMember(it.jiuxinName, it.avatarUrl)) }
+        updateTypingMembers(typingSet.toList())
+
+        // 共享状态（由 mutex 保护）：跨多个 launch 协程访问
+        var anyError: String? = null
+        var successCount = 0
+        val spokenMembers = mutableListOf<GroupMember>()
+        val stateMutex = Mutex()
+
+        // ── 第一轮：并行调用 API + 流式显示 ──
+        // 每位成员独立 launch，谁先完成谁先 addMessage，无需等待其他成员
+        // coroutineScope 会等待所有 launch 完成，确保进入第二轮前第一轮已结束
+        coroutineScope {
+            initialResponders.forEach { member ->
+                launch {
+                    try {
+                        val reply = callGroupApi(text, member, session, isReaction = false)
+
+                        // API 返回后立即检查代际（避免在已切换会话后还显示旧回复）
+                        if (_chatGeneration.get() != generation || _currentSessionId.value != sessionId) {
+                            Log.d(TAG, "Group chat state changed, abort reply for ${member.jiuxinName}")
+                            // P1 修复：代际变更后必须清理 typingSet，否则该成员的 TypingIndicator
+                            // 会残留在内存 typingSet 中。虽然 switchToSession/clearChat 会清空 UI 的
+                            // typingMembers，但本函数末尾的 updateTypingMembers(typingSet.toList())
+                            // 可能将残留成员重新写回 UI。
+                            stateMutex.withLock {
+                                typingSet.remove(TypingMember(member.jiuxinName, member.avatarUrl))
+                                if (_chatGeneration.get() == generation && _currentSessionId.value == sessionId) {
+                                    updateTypingMembers(typingSet.toList())
+                                }
+                            }
+                            return@launch
+                        }
+
+                        val aiMessage = ChatMessage(
+                            id = UUID.randomUUID().toString(),
+                            type = ChatMessageType.AI.name,
+                            content = reply,
+                            timestamp = System.currentTimeMillis(),
+                            shipName = member.jiuxinName,
+                            avatarUrl = member.avatarUrl
+                        )
+
+                        // 加锁保护共享状态：addMessage/typingSet/spokenMembers/successCount
+                        // 锁内操作极短（仅状态更新 + StateFlow update），不影响其他成员并发
+                        stateMutex.withLock {
+                            if (_chatGeneration.get() != generation || _currentSessionId.value != sessionId) {
+                                // P1 修复：锁内二次检查失败时也需清理 typingSet
+                                typingSet.remove(TypingMember(member.jiuxinName, member.avatarUrl))
+                                Log.d(TAG, "Group member ${member.jiuxinName} aborted: state changed in lock")
+                                return@launch
+                            }
+                            addMessage(aiMessage)
+                            successCount++
+                            spokenMembers.add(member)
+                            typingSet.remove(TypingMember(member.jiuxinName, member.avatarUrl))
+                            updateTypingMembers(typingSet.toList())
+                            Log.d(TAG, "Group member ${member.jiuxinName} replied successfully (successCount=$successCount, replyLen=${reply.length})")
+                        }
+
+                        // ── 表情包逻辑（锁外执行，不阻塞其他成员显示） ──
+                        if (member.stickersEnabled && kotlin.random.Random.nextFloat() < member.stickerChance) {
+                            findBestSticker(reply)?.let { sticker ->
+                                kotlinx.coroutines.delay(300) // 模拟输入感
+                                if (_chatGeneration.get() != generation || _currentSessionId.value != sessionId) return@launch
+                                if (!_chatState.value.messages.any { it.id == aiMessage.id }) return@launch
+                                addStickerMessage(sticker, member.jiuxinName, member.avatarUrl)
+                            }
+                        }
+
+                        // ── 语音触发（锁外执行，按成员配置独立触发） ──
+                        triggerGroupMemberVoice(text, member)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Group member ${member.jiuxinName} reply failed", e)
+                        stateMutex.withLock {
+                            if (anyError == null) anyError = e.message ?: e.javaClass.simpleName
+                            typingSet.remove(TypingMember(member.jiuxinName, member.avatarUrl))
+                            if (_chatGeneration.get() == generation && _currentSessionId.value == sessionId) {
+                                updateTypingMembers(typingSet.toList())
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // coroutineScope 返回时所有 launch 已完成，spokenMembers/successCount 已稳定
+        Log.d(TAG, "Group first round done: successCount=$successCount, spokenMembers=${spokenMembers.map { it.jiuxinName }}, members=${members.size}")
+
+        // ── 第二轮起：成员间互回循环（受概率与代际双重限制） ──
+        // 死循环防护：最多 min(成员数, MAX_REACTION_ROUNDS) 轮互回，每轮都需要概率命中 + 代际未变更
+        // 每轮选择不同的成员回应，形成"用户→A→B→C"的连续群聊互动
+        // 动态轮数：3 人群聊最多 3 轮互回，确保每位成员都有机会回应他人
+        val maxRounds = minOf(members.size, MAX_REACTION_ROUNDS)
+        var reactionRound = 0
+        // 仅记录参与过互回轮的成员（不包含第一轮并发成员），让 freshCandidates 能选到第一轮已发言的成员
+        // 这样 3 人群聊中 3 人都参与第一轮后，互回轮仍能让每位成员都有机会回应
+        val reactionParticipatedIds = mutableSetOf<String>()
+
+        while (reactionRound < maxRounds &&
+            successCount >= 1 &&
+            kotlin.random.Random.nextFloat() < REACTION_PROBABILITY &&
+            _chatGeneration.get() == generation && _currentSessionId.value == sessionId
+        ) {
+            reactionRound++
+
+            // 选择本轮回应成员：
+            // - 优先选未参与过互回轮的成员（让更多成员有机会发言）
+            // - 若所有成员都已参与过互回，则排除最后一位发言者（避免自言自语）
+            val lastSpoken = spokenMembers.lastOrNull()
+            val freshCandidates = members.filter { it.id !in reactionParticipatedIds }
+            val reactorPool = if (freshCandidates.isNotEmpty()) {
+                freshCandidates
+            } else {
+                members.filter { it.id != lastSpoken?.id }
+            }
+
+            if (reactorPool.isEmpty()) break
+
+            val reactor = reactorPool.shuffled().first()
+            reactionParticipatedIds.add(reactor.id)
+            Log.d(TAG, "Group reaction round=$reactionRound/$maxRounds, selected reactor: ${reactor.jiuxinName}, freshCandidates=${freshCandidates.size}")
+
+            // 标记打字
+            typingSet.add(TypingMember(reactor.jiuxinName, reactor.avatarUrl))
+            updateTypingMembers(typingSet.toList())
+
+            try {
+                val reactionReply = callGroupApi(
+                    userMessage = "",
+                    member = reactor,
+                    session = session,
+                    isReaction = true
+                )
+                if (_chatGeneration.get() != generation || _currentSessionId.value != sessionId) break
+
+                // 检测 [SKIP] 标记：AI 主动放弃回应
+                val trimmed = reactionReply.trim()
+                val isSkip = trimmed == SKIP_TOKEN ||
+                    trimmed.startsWith(SKIP_TOKEN) ||
+                    trimmed.isEmpty()
+
+                if (isSkip) {
+                    Log.d(TAG, "Group member ${reactor.jiuxinName} skipped reaction (round=$reactionRound/$maxRounds)")
+                    // 本轮无新增消息，但仍计入参与（避免下轮再次选中）
+                } else {
+                    // 清理可能残留的 [SKIP] 前缀（兼容模型输出 "[SKIP] ..." 这种半格式）
+                    val cleanedReply = trimmed.removePrefix(SKIP_TOKEN).trim()
+                    val aiMessage = ChatMessage(
+                        id = UUID.randomUUID().toString(),
+                        type = ChatMessageType.AI.name,
+                        content = cleanedReply,
+                        timestamp = System.currentTimeMillis(),
+                        shipName = reactor.jiuxinName,
+                        avatarUrl = reactor.avatarUrl
+                    )
+                    addMessage(aiMessage)
+                    successCount++
+                    spokenMembers.add(reactor)
+                    Log.d(TAG, "Group member ${reactor.jiuxinName} reaction replied (round=$reactionRound/$maxRounds, successCount=$successCount, replyLen=${cleanedReply.length})")
+
+                    // 互回轮的表情包触发（语音跳过，避免与第一轮重叠）
+                    if (reactor.stickersEnabled && kotlin.random.Random.nextFloat() < reactor.stickerChance) {
+                        findBestSticker(cleanedReply)?.let { sticker ->
+                            kotlinx.coroutines.delay(300)
+                            if (_chatGeneration.get() == generation && _currentSessionId.value == sessionId) {
+                                if (_chatState.value.messages.any { it.id == aiMessage.id }) {
+                                    addStickerMessage(sticker, reactor.jiuxinName, reactor.avatarUrl)
+                                }
+                            }
+                        }
+                    }
+
+                    // 模拟群聊节奏：成员间回复间隔
+                    kotlinx.coroutines.delay(500)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Group member ${reactor.jiuxinName} reaction failed (round=$reactionRound)", e)
+                if (anyError == null) anyError = e.message ?: e.javaClass.simpleName
+            } finally {
+                typingSet.remove(TypingMember(reactor.jiuxinName, reactor.avatarUrl))
+                updateTypingMembers(typingSet.toList())
+            }
+        }
+
+        // 仅当全部成员回复失败时展示错误；部分成功则不打扰用户
+        if (anyError != null && successCount == 0) {
+            _chatState.update { it.copy(error = anyError) }
+        }
+        updateTypingMembers(emptyList())
+        finishLoading()
+    }
+
+    /**
+     * 更新群聊打字成员列表（触发 UI 渲染多位 TypingIndicator）。
+     */
+    private fun updateTypingMembers(members: List<TypingMember>) {
+        _chatState.update { it.copy(typingMembers = members) }
+    }
+
+    /**
+     * 动态选择上下文消息：基于字符数估算 token，从最新消息向前累计。
+     *
+     * 策略：
+     * 1. 从列表末尾（最新消息）向前遍历
+     * 2. 累计消息内容的字符数（含身份前缀）
+     * 3. 当累计字符数超过 [maxChars] 或消息条数超过 [maxMessages] 时停止
+     * 4. 返回选中的消息列表（保持时间正序，即最旧在前最新在后）
+     *
+     * 这样保证：
+     * - 最近对话优先纳入上下文
+     * - 长消息场景不会超出模型上下文窗口
+     * - 短消息场景可纳入更多历史（最多 [maxMessages] 条）
+     *
+     * @param allMessages 全部消息列表（时间正序）
+     * @param maxMessages 最大消息条数
+     * @param maxChars 最大字符数（token 估算）
+     * @return 选中的消息列表（时间正序）
+     */
+    private fun selectContextMessages(
+        allMessages: List<ChatMessage>,
+        maxMessages: Int,
+        maxChars: Int
+    ): List<ChatMessage> {
+        if (allMessages.isEmpty()) return emptyList()
+        val selected = mutableListOf<ChatMessage>()
+        var totalChars = 0
+        // 从最新消息向前遍历
+        for ((index, i) in allMessages.indices.reversed().withIndex()) {
+            val msg = allMessages[i]
+            // 估算单条消息字符数：内容 + 身份前缀（约 10 字符）+ role 标记开销
+            val estimatedChars = msg.content.length + 10
+            if (totalChars + estimatedChars > maxChars) {
+                // P1 修复：保底机制——即使首条（最新）消息超过 maxChars 也必须包含它，
+                // 否则互回轮上下文为空导致 AI 无法理解当前对话，initialReply 轮用户消息丢失。
+                // 后续更长历史直接截断即可。
+                if (index == 0) {
+                    // 首条超长时截断内容，确保至少有最新消息作为上下文
+                    val budget = maxChars - totalChars - 10
+                    if (budget > 0) {
+                        val truncated = msg.copy(content = msg.content.take(budget) + "…")
+                        selected.add(0, truncated)
+                    }
+                }
+                break
+            }
+            selected.add(0, msg)  // 插入到列表头部，保持时间正序
+            totalChars += estimatedChars
+            if (selected.size >= maxMessages) break
+        }
+        return selected
+    }
+
+    /**
+     * 触发群成员的语音回复（按成员自身的语音配置）。
+     *
+     * P1 修复：语音消息归属到群成员（[member.jiuxinName] + [member.avatarUrl]），
+     * 而非语音来源舰船（[member.voiceShipName] + [member.voiceShipAvatar]）。
+     *
+     * 原实现将 voiceShipName 作为 sendVoiceMessage 的 shipName 参数，导致群聊界面
+     * 显示语音消息时归属到错误的舰娘（如成员"赤诚"的语音配置为"赤诚.改"时，
+     * 语音消息会显示为"赤诚.改"发送的，与群聊成员身份不一致）。
+     *
+     * 现拆分为两层：
+     * - 语音查询：使用 [member.voiceShipName] 调用 [getVoicesUseCase] 获取语音资源
+     * - 消息归属：使用 [member.jiuxinName] 和 [member.avatarUrl] 作为消息的发送者标识
+     */
+    private fun triggerGroupMemberVoice(text: String, member: GroupMember) {
+        if (!member.voiceEnabled || member.voiceShipName.isBlank()) return
+        val keywords = member.voiceKeywords.split(";").filter { it.isNotBlank() }
+        val tagMappings = buildVoiceTagMappings(keywords)
+        val matched = findBestTagMatch(text, tagMappings)
+        when {
+            matched != null -> triggerVoiceByTagsForMember(
+                voiceShipName = member.voiceShipName,
+                memberName = member.jiuxinName,
+                memberAvatar = member.avatarUrl,
+                sceneTags = matched.sceneTags,
+                preferredSkinName = matched.preferredSkinName
+            )
+            member.voiceRandomChance > 0f && kotlin.random.Random.nextDouble() < member.voiceRandomChance ->
+                triggerVoiceRandomForMember(
+                    voiceShipName = member.voiceShipName,
+                    memberName = member.jiuxinName,
+                    memberAvatar = member.avatarUrl
+                )
+        }
+    }
+
+    /**
+     * 群成员语音触发（带标签匹配）：语音查询与消息归属分离。
+     * 与 [triggerVoiceByTags] 的区别：voiceShipName 仅用于语音资源查询，
+     * 消息归属使用 [memberName] 和 [memberAvatar]（群成员身份）。
+     */
+    private fun triggerVoiceByTagsForMember(
+        voiceShipName: String,
+        memberName: String,
+        memberAvatar: String,
+        sceneTags: List<String>,
+        preferredSkinName: String = ""
+    ) {
+        viewModelScope.launch {
+            try {
+                val (voices, _, _) = getVoicesUseCase(voiceShipName)
+                if (voices.isNotEmpty()) {
+                    val taggedVoice = findBestVoice(voices, sceneTags, preferredSkinName)
+                    val audioUrl = taggedVoice.getActiveAudioUrl(VoiceLanguage.CN)
+                    sendVoiceMessage(memberName, audioUrl, taggedVoice.dialogue, memberAvatar)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load group member voice: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 群成员随机语音触发：语音查询与消息归属分离。
+     */
+    private fun triggerVoiceRandomForMember(
+        voiceShipName: String,
+        memberName: String,
+        memberAvatar: String
+    ) {
+        viewModelScope.launch {
+            try {
+                val (voices, _, _) = getVoicesUseCase(voiceShipName)
+                if (voices.isNotEmpty()) {
+                    val defaultVoices = voices.filter { it.skinName in DEFAULT_SKIN_NAMES }
+                    val voice = if (defaultVoices.isNotEmpty()) defaultVoices.random() else voices.random()
+                    val audioUrl = voice.getActiveAudioUrl(VoiceLanguage.CN)
+                    sendVoiceMessage(memberName, audioUrl, voice.dialogue, memberAvatar)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load group member voice: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * 群聊 API 调用：以某位成员的视角构造群聊上下文。
+     *
+     * 身份鉴别机制（v3 - ASCII name + content 标签双轨方案）：
+     *
+     * **问题背景**：
+     * - OpenAI API 的 name 字段要求匹配 `^[a-zA-Z0-9_-]+$`，中文会触发 400 错误
+     * - 纯 content 前缀方案（v1）会让 AI 模仿格式，输出带 `[舰娘名]:` 前缀
+     * - 纯 name 字段方案（v2）对不支持 name 的第三方 API 无效
+     *
+     * **v3 双轨方案**：
+     * 1. name 字段使用 ASCII 安全标识：`user` / `ship_<hash>` / `sys`
+     * 2. content 开头添加轻量身份标签 `(指挥官)` / `(赤城)` / `(系统)`，与正文以空格分隔
+     *    - 标签使用圆括号而非方括号，避免 AI 模仿 `[xxx]:` 输出格式
+     *    - 标签简短，不显著增加 token
+     * 3. system prompt 明确告知"content 开头的 (名称) 标识发言者，回复时不要添加此类标签"
+     *
+     * **关键修复**：不在 messages 末尾重复添加用户消息（P0-1）
+     * - 用户消息已通过 addMessage 加入 _chatState.messages
+     * - selectContextMessages 会包含最新用户消息
+     * - 历史消息自己承担传递用户消息的职责，无需重复
+     *
+     * @param isReaction 是否为成员间互回模式。
+     * - false（默认）：成员回复用户消息，userMessage 为用户原文（仅用于校验，不重复加入 messages）
+     * - true：成员对其他成员的最近发言做出反应，userMessage 为空，
+     *   系统在消息历史末尾追加"请决定是否回应"指令，允许模型输出 [SKIP] 放弃
+     */
+    private suspend fun callGroupApi(
+        userMessage: String,
+        member: GroupMember,
+        session: ChatSession,
+        isReaction: Boolean = false
+    ): String {
+        val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
+        if (key.isBlank()) throw Exception("未配置 API 密钥，请先在啾信配置中设置")
+        val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
+        if (baseUrl.isBlank()) throw Exception("未配置 API URL，请先在啾信配置中设置")
+        val url = buildFullApiUrl(baseUrl)
+        val modelStr = session.model.ifBlank { settings.aiModel.first() }
+        val model = modelStr.ifBlank { DEFAULT_MODEL }
+
+        val otherMembers = session.groupMembers.filter { it.id != member.id }
+            .joinToString("、") { it.jiuxinName }
+        val groupContext = buildString {
+            if (member.systemPrompt.isNotBlank()) append(member.systemPrompt).append("\n\n")
+            append("【群聊场景】你正在一个群聊中，群名为「").append(session.name).append("」。")
+            if (otherMembers.isNotBlank()) {
+                append("群内其他成员有：").append(otherMembers).append("。")
+            }
+            append("你是 ").append(member.jiuxinName).append("，正在参与群聊。\n\n")
+
+            // 身份鉴别说明：告知模型 content 开头的 (名称) 标签含义
+            append("【发言者标识】群聊中有多位发言者，每条消息 content 开头的括号标签标识发言者：\n")
+            append("- (指挥官) 开头的是指挥官（用户）的发言\n")
+            append("- (舰娘名) 开头的是对应舰娘的发言，不是指挥官\n")
+            append("- (系统) 开头的是系统对你的指示\n")
+            append("- 无标签的 assistant 消息是你自己的历史回复\n")
+            append("请根据标签区分发言者，不要将其他舰娘的发言误认为指挥官的。\n\n")
+
+            // 输出格式约束：避免 AI 模仿输入格式
+            append("【输出要求】\n")
+            append("- 直接输出你的回复内容，不要添加任何括号标签或名字前缀\n")
+            append("- 不要在回复开头添加 (").append(member.jiuxinName).append(") 或类似标记\n")
+            append("- 不要模仿消息历史中的标签格式\n\n")
+
+            // 互动引导：让 AI 更自然地参与群聊，形成多人聊天室氛围
+            append("【互动准则】\n")
+            append("- 保持你的角色设定和语言风格，不要脱离人格\n")
+            append("- 可以主动回应其他舰娘的观点，形成自然的对话接力\n")
+            append("- 对其他舰娘的发言可以表示赞同、质疑、补充或调侃，展现角色间的关系\n")
+            append("- 回复简短自然（通常 1-2 句话），像真实群聊一样避免长篇大论\n")
+            append("- 不要@其他成员，不要代替其他成员发言，不要重复他人说过的话\n\n")
+
+            if (isReaction) {
+                append("【当前任务】请观察群内其他成员的对话，基于你的人格和兴趣，主动参与讨论或回应其他成员的观点。")
+                append("可以附和、反驳、补充、提问，或分享你的看法，让群聊形成自然的多人互动。")
+                append("如果当前话题与你无关、你毫无兴趣，或无法自然插话，请只输出 [SKIP] 表示不发言。")
+            } else {
+                append("【当前任务】请以你自己的身份和语气回复指挥官的最新消息。")
+                append("回复需简短自然，符合群聊氛围。")
+            }
+        }
+
+        // 动态上下文截取：基于字符数估算 token，避免长消息超出模型上下文窗口
+        val recentMessages = selectContextMessages(
+            _chatState.value.messages,
+            maxMessages = MAX_GROUP_CONTEXT_MESSAGES,
+            maxChars = MAX_GROUP_CONTEXT_CHARS
+        )
+        val messages = buildJsonArray {
+            add(buildJsonObject {
+                put("role", JsonPrimitive("system"))
+                put("content", JsonPrimitive(groupContext))
+            })
+            recentMessages.forEach { msg ->
+                when (msg.type) {
+                    ChatMessageType.USER.name -> {
+                        // 指挥官消息：name 用 ASCII "user"，content 开头加轻量标签
+                        add(buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("name", JsonPrimitive("user"))
+                            put("content", JsonPrimitive("(指挥官) ${msg.content}"))
+                        })
+                    }
+                    ChatMessageType.AI.name -> {
+                        if (msg.shipName == member.jiuxinName) {
+                            // 自己的历史回复：assistant 角色，无标签
+                            add(buildJsonObject {
+                                put("role", JsonPrimitive("assistant"))
+                                put("content", JsonPrimitive(msg.content))
+                            })
+                        } else if (msg.shipName.isNotBlank()) {
+                            // 其他舰娘的回复：name 用 ASCII hash，content 开头加 (舰娘名) 标签
+                            val safeName = "ship_" + msg.shipName.hashCode().toString(16)
+                            add(buildJsonObject {
+                                put("role", JsonPrimitive("user"))
+                                put("name", JsonPrimitive(safeName))
+                                put("content", JsonPrimitive("(${msg.shipName}) ${msg.content}"))
+                            })
+                        }
+                    }
+                    ChatMessageType.STICKER.name -> {
+                        val senderLabel = if (msg.shipName.isNotBlank()) "(${msg.shipName})" else "(指挥官)"
+                        val safeName = if (msg.shipName.isNotBlank()) "ship_" + msg.shipName.hashCode().toString(16) else "user"
+                        add(buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("name", JsonPrimitive(safeName))
+                            put("content", JsonPrimitive("$senderLabel [发送了表情包]"))
+                        })
+                    }
+                }
+            }
+            if (isReaction) {
+                // 互回模式：末尾追加系统指令（用户消息已在历史中，无需重复）
+                add(buildJsonObject {
+                    put("role", JsonPrimitive("user"))
+                    put("name", JsonPrimitive("sys"))
+                    put("content", JsonPrimitive("(系统) 请决定是否回应以上对话，无需回应请只输出 [SKIP]"))
+                })
+            }
+            // 默认模式：不追加用户消息——用户消息已在 recentMessages 中（P0-1 修复）
+        }
+
+        val requestJson = buildJsonObject {
+            put("model", JsonPrimitive(model))
+            put("messages", messages)
+            put("max_tokens", JsonPrimitive(1024))
+            put("temperature", JsonPrimitive(0.7))
+        }
+        val requestBody = json.encodeToString(requestJson).toRequestBody("application/json".toMediaType())
+        val request = buildJsonPostRequest(url, key, requestBody)
+
+        Log.d(TAG, "Group API call for ${member.jiuxinName} (reaction=$isReaction): $url, model=$model")
+        return withContext(Dispatchers.IO) {
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: throw Exception("空响应")
+            if (!response.isSuccessful) {
+                throw Exception("API 错误 (${response.code}): ${parseErrorMessage(body)}")
+            }
+            parseChatCompletionResponse(body)
+        }
     }
 
     // ── 智能语音标签匹配 ──
@@ -2057,7 +2985,8 @@ class JiuxinViewModel @Inject constructor(
         // 捕获当前会话 ID：避免异步清空时 _currentSessionId 已被切换到新会话
         val sessionId = _currentSessionId.value
         // 同步清空内存消息，确保 UI 立即更新
-        _chatState.update { it.copy(messages = emptyList()) }
+        // 同时清空 typingMembers，防止群聊打字指示器残留显示
+        _chatState.update { it.copy(messages = emptyList(), typingMembers = emptyList()) }
         viewModelScope.launch {
             if (sessionId.isNotBlank()) {
                 settings.setAiSessionMessages(sessionId, emptyList())
@@ -2113,21 +3042,34 @@ class JiuxinViewModel @Inject constructor(
         _chatGeneration.incrementAndGet()
         // 截断消息列表
         val truncated = messages.subList(0, targetIndex)
+        // 关键修复：不在此处单独异步持久化 truncated。
+        // 原实现先异步写 truncated 到 DataStore，再调用 sendMessage 的 addMessage(userMessage)，
+        // 两者产生交叉：若 truncated 的 DataStore 写入在 addMessage 之后派发，
+        // collector 会收到不含 userMessage 的 truncated 列表 → state.messages != messages
+        // → 执行 state.copy(messages = truncated, isLoading = false)
+        // → userMessage 被丢弃 + TypingIndicator 动画消失。
+        // 现在只同步更新内存状态，最终的 truncated + userMessage 由 sendMessage 的 addMessage
+        // → saveCurrentSessionMessages 统一持久化，避免竞态。
         _chatState.update { it.copy(messages = truncated, isLoading = false, error = null) }
 
-        // 持久化截断后的消息
-        viewModelScope.launch {
-            if (sessionId.isNotBlank()) {
-                settings.setAiSessionMessages(sessionId, truncated)
-                Log.d(TAG, "Truncated messages from: $messageId, session: $sessionId")
-            }
-        }
-
-        // 发送新消息（复用 sendMessage 逻辑）
+        // 发送新消息（复用 sendMessage 逻辑，addMessage 会持久化最终状态）
         sendMessage(newContent)
     }
 
-    override fun onCleared() { super.onCleared(); stopVoice() }
+    override fun onCleared() {
+        // ViewModel 销毁时同步保存当前会话消息
+        // 注意：ViewModel 现在绑定到 Activity 作用域，onCleared 仅在 Activity 销毁时触发
+        // （不再是每次页面切换都触发），所以 runBlocking 不会引起 ANR
+        val currentSessionId = _currentSessionId.value
+        val currentMessages = _chatState.value.messages
+        if (currentSessionId.isNotBlank() && currentMessages.isNotEmpty()) {
+            runBlocking(NonCancellable) {
+                settings.setAiSessionMessages(currentSessionId, currentMessages)
+            }
+        }
+        stopVoice()
+        super.onCleared()
+    }
 
     // ── 私有方法 ──
 
@@ -2147,22 +3089,42 @@ class JiuxinViewModel @Inject constructor(
     /**
      * 保存当前会话消息到 DataStore
      *
-     * 竞态修复：接受 [sessionId] 参数，而非从 [_currentSessionId] 读取。
+     * 竞态修复（P0-3）：使用 [saveMutex] 序列化所有 DataStore 写入。
+     * 在锁内**重新读取**最新的 [_chatState.value].messages 快照，避免并发场景下
+     * 多个 launch 各自捕获不同快照、后执行者覆盖先执行者导致消息丢失。
+     *
+     * 竞态修复（P0-旧）：接受 [sessionId] 参数，而非从 [_currentSessionId] 读取。
      * 调用方在切换会话前传入旧会话 ID，避免子协程读到已变更的 [_currentSessionId]
      * 导致消息保存到错误会话（这是"删除后切换再切回，消息复活"的根因）。
+     *
+     * 显式传入 messages 的场景（如 onCleared 中同步捕获）：跳过锁内重读，
+     * 直接使用传入的快照，但仍受锁保护避免与其他写入交错。
+     *
+     * 持久化可靠性：使用 [NonCancellable] 上下文执行 DataStore 写入，
+     * 确保即使 viewModelScope 被取消（如 Activity 销毁触发 onCleared），
+     * 写入仍会完成。修复"聊天记录退出后丢失"问题。
      */
-    private fun saveCurrentSessionMessages(
+    fun saveCurrentSessionMessages(
         sessionId: String = _currentSessionId.value,
         updateTimestamp: Boolean = true,
         messages: List<ChatMessage>? = null
     ) {
-        viewModelScope.launch {
-            if (sessionId.isNotBlank()) {
-                val msgs = messages ?: _chatState.value.messages
-                settings.setAiSessionMessages(sessionId, msgs)
-                if (updateTimestamp) {
-                    val updated = _sessions.value.map {
-                        if (it.id == sessionId) it.copy(updatedAt = System.currentTimeMillis()) else it
+        // 调用方未显式传入 messages 时，记录"需要在锁内重新读取"的意图；
+        // 调用方显式传入 messages 时（如 onCleared），优先使用传入的快照
+        val callerSnapshot = messages
+        val sessionIdCopy = sessionId
+        val updateTs = updateTimestamp
+        viewModelScope.launch(NonCancellable) {
+            if (sessionIdCopy.isBlank()) return@launch
+            saveMutex.withLock {
+                // 锁内重新读取最新消息快照：避免并发 save 之间相互覆盖
+                // 显式传入的快照优先（onCleared 场景已经同步捕获，不可能被并发更新）
+                val msgs = callerSnapshot ?: _chatState.value.messages
+                val sessionsSnapshot = _sessions.value
+                settings.setAiSessionMessages(sessionIdCopy, msgs)
+                if (updateTs) {
+                    val updated = sessionsSnapshot.map {
+                        if (it.id == sessionIdCopy) it.copy(updatedAt = System.currentTimeMillis()) else it
                     }
                     settings.setAiChatSessions(updated)
                 }
