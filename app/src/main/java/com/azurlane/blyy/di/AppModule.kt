@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.azurlane.blyy.data.local.AppDatabase
 import com.azurlane.blyy.data.local.GuessHistoryDao
 import com.azurlane.blyy.data.local.ShipDao
+import com.azurlane.blyy.util.AppIconManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -63,9 +64,19 @@ object AppModule {
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            // 整个请求总超时兜底：防止 TCP 连接成功但服务端持续慢速输出
+            // 不触发 readTimeout 的场景（如非流式长回复），避免协程无限等待。
+            // 120s 覆盖 max_tokens=1024 的慢速模型生成时间。
+            .callTimeout(120, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
             .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideAppIconManager(@ApplicationContext context: Context): AppIconManager {
+        return AppIconManager(context)
     }
 }

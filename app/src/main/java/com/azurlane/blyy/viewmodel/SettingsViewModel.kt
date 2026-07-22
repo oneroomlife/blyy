@@ -1,17 +1,23 @@
 package com.azurlane.blyy.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.data.repository.AssistantRepository
 import com.azurlane.blyy.ui.theme.UiStyle
+import com.azurlane.blyy.util.AppIconManager
+import com.azurlane.blyy.util.AppIconType
+import com.azurlane.blyy.util.PinShortcutResult
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class SettingsState(
@@ -35,7 +41,8 @@ sealed class PlayerVerifyState {
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val settings: PlayerSettingsDataStore,
-    private val assistantRepository: AssistantRepository
+    private val assistantRepository: AssistantRepository,
+    private val appIconManager: AppIconManager
 ) : ViewModel() {
 
     val uiStyle: StateFlow<UiStyle> = settings.uiStyle
@@ -142,5 +149,119 @@ class SettingsViewModel @Inject constructor(
                 }
             )
         }
+    }
+
+    // ── 自定义 app 快捷方式 ──
+
+    /** 当前保存的图标类型（DEFAULT=默认，CUSTOM=已创建自定义快捷方式） */
+    val appIconType: StateFlow<String> = settings.appIconType
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppIconType.DEFAULT.id)
+
+    /** 自定义图标的内部存储路径 */
+    val appCustomIconPath: StateFlow<String> = settings.appCustomIconPath
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    /** 图标选择时间戳 */
+    val appIconSelectedAt: StateFlow<Long> = settings.appIconSelectedAt
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+
+    /** 图标操作状态：Idle=空闲，Switching=处理中，Error=失败，Success=成功，NeedSettings=需去系统设置授权 */
+    sealed class IconSwitchState {
+        object Idle : IconSwitchState()
+        object Switching : IconSwitchState()
+        data class Error(val message: String) : IconSwitchState()
+        data class Success(val message: String) : IconSwitchState()
+        object NeedSettings : IconSwitchState()
+    }
+
+    private val _iconSwitching = MutableStateFlow<IconSwitchState>(IconSwitchState.Idle)
+    val iconSwitching: StateFlow<IconSwitchState> = _iconSwitching.asStateFlow()
+
+    /** 检查当前设备/启动器是否支持自定义快捷方式 */
+    private val _isPinShortcutSupported = MutableStateFlow(false)
+    val isPinShortcutSupported: StateFlow<Boolean> = _isPinShortcutSupported.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _isPinShortcutSupported.value = appIconManager.isPinShortcutSupported()
+        }
+    }
+
+    /**
+     * 应用自定义快捷方式 — 从相册图片创建桌面快捷方式
+     *
+     * 流程：
+     * 1. 从用户选择的图片 URI 生成裁剪后的自适应图标（432×432 PNG）
+     * 2. 通过 [AppIconManager.pinCustomShortcut] 创建/更新桌面快捷方式
+     * 3. 根据 [PinShortcutResult] 提供精确反馈：
+     *    - [PinShortcutResult.Updated]：静默更新成功
+     *    - [PinShortcutResult.WaitingConfirmation]：系统已弹确认框，等待用户操作
+     *    - [PinShortcutResult.NotSupported]：引导用户去系统设置授权
+     *    - 其它：错误提示
+     * 4. 成功时持久化选择 + 自定义路径到 DataStore
+     *
+     * @param sourceUri 用户从相册选择的图片 URI
+     */
+    fun applyCustomIcon(sourceUri: Uri) {
+        _iconSwitching.value = IconSwitchState.Switching
+        viewModelScope.launch {
+            val iconPath = withContext(Dispatchers.IO) {
+                appIconManager.generateCustomIcon(sourceUri)
+            }
+            if (iconPath == null) {
+                _iconSwitching.value = IconSwitchState.Error("图片处理失败，请选择其它图片")
+                return@launch
+            }
+
+            val result = withContext(Dispatchers.IO) {
+                appIconManager.pinCustomShortcut(iconPath)
+            }
+
+            when (result) {
+                is PinShortcutResult.Updated -> {
+                    settings.setAppIcon(AppIconType.CUSTOM.id, iconPath)
+                    _iconSwitching.value = IconSwitchState.Success("图标已更新，桌面快捷方式即将刷新")
+                }
+                is PinShortcutResult.NotSupported -> {
+                    _iconSwitching.value = IconSwitchState.NeedSettings
+                }
+                is PinShortcutResult.IconNotFound -> {
+                    _iconSwitching.value = IconSwitchState.Error("图标文件丢失，请重新选择图片")
+                }
+                is PinShortcutResult.Failed -> {
+                    _iconSwitching.value = IconSwitchState.Error(result.message)
+                }
+            }
+        }
+    }
+
+    /** 打开系统应用详情页，引导用户开启快捷方式权限 */
+    fun openShortcutSettings() {
+        appIconManager.openAppShortcutSettings()
+    }
+
+    /**
+     * 移除自定义快捷方式
+     *
+     * 禁用桌面上的自定义快捷方式（图标变灰），同时清理内部存储的图标文件。
+     * 用户需手动长按拖拽删除已禁用的快捷方式。
+     */
+    fun removeCustomIcon() {
+        _iconSwitching.value = IconSwitchState.Switching
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                appIconManager.removeCustomShortcut()
+                appIconManager.clearCustomIcon()
+            }
+            settings.setAppIcon(AppIconType.DEFAULT.id, "")
+            _iconSwitching.value = IconSwitchState.Success(
+                    "自定义快捷方式已移除，请长按桌面灰色图标拖拽删除"
+                )
+        }
+    }
+
+    /** 清除图标操作状态（UI 显示成功/错误后调用） */
+    fun clearIconSwitchingState() {
+        _iconSwitching.value = IconSwitchState.Idle
     }
 }

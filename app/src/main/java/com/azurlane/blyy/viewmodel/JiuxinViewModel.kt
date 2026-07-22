@@ -16,12 +16,17 @@ import com.azurlane.blyy.data.model.GroupMember
 import com.azurlane.blyy.data.model.JiuxinChatUiState
 import com.azurlane.blyy.data.model.JiuxinPreset
 import com.azurlane.blyy.data.model.ApiConfig
+import com.azurlane.blyy.data.model.MessageStatus
 import com.azurlane.blyy.data.model.PersonaConfig
 import com.azurlane.blyy.data.model.SessionType
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.TypingMember
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceTagMapping
+import com.azurlane.blyy.data.repository.ChatCompletionRequest
+import com.azurlane.blyy.data.repository.ChatRoleMessage
+import com.azurlane.blyy.data.repository.JiuxinApiRepository
+import com.azurlane.blyy.data.repository.JiuxinApiResult
 import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.data.model.StickerResource
@@ -62,6 +67,25 @@ sealed class ConnectionTestState {
     data class Error(val message: String) : ConnectionTestState()
 }
 
+/**
+ * 模型列表拉取状态机
+ *
+ * 区分"未拉取 / 拉取中 / 拉取成功 / 拉取失败 / 成功但为空"五种状态，
+ * 替代原先只能表达 List<String> 的粗放设计，UI 可据此展示加载动画与具体错误。
+ */
+sealed class ModelListState {
+    /** 初始空闲：尚未发起拉取 */
+    object Idle : ModelListState()
+    /** 拉取中：正在请求 API */
+    object Loading : ModelListState()
+    /** 拉取成功：[models] 为模型 ID 列表（已排序去重） */
+    data class Success(val models: List<String>) : ModelListState()
+    /** 拉取成功但列表为空：API 返回了合法响应但没有可用模型 */
+    object Empty : ModelListState()
+    /** 拉取失败：[message] 为对用户友好的错误原因 */
+    data class Error(val message: String) : ModelListState()
+}
+
 @HiltViewModel
 class JiuxinViewModel @Inject constructor(
     private val settings: PlayerSettingsDataStore,
@@ -69,6 +93,7 @@ class JiuxinViewModel @Inject constructor(
     private val shipDao: ShipDao,
     private val getVoicesUseCase: GetVoicesUseCase,
     private val client: OkHttpClient,
+    private val apiRepository: JiuxinApiRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -133,8 +158,18 @@ class JiuxinViewModel @Inject constructor(
     val userName = settings.userName.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "指挥官")
     val userAvatarUrl = settings.userAvatarUrl.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
-    private val _availableModels = MutableStateFlow<List<String>>(emptyList())
-    val availableModels: StateFlow<List<String>> = _availableModels.asStateFlow()
+    private val _modelListState = MutableStateFlow<ModelListState>(ModelListState.Idle)
+    val modelListState: StateFlow<ModelListState> = _modelListState.asStateFlow()
+
+    /**
+     * 向后兼容：从 [modelListState] 派生的纯模型列表。
+     *
+     * 仅在 [ModelListState.Success] 时返回非空列表，其它状态返回空列表。
+     * 新代码应直接观察 [modelListState] 以获取加载/错误状态。
+     */
+    val availableModels: StateFlow<List<String>> = _modelListState
+        .map { (it as? ModelListState.Success)?.models ?: emptyList() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val voiceShipName = settings.aiVoiceShipName.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val voiceShipAvatar = settings.aiVoiceShipAvatar.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
@@ -1745,12 +1780,15 @@ class JiuxinViewModel @Inject constructor(
     fun resetConnectionTest() { _connectionTestState.value = ConnectionTestState.Idle }
 
     /**
-     * 获取可用模型列表 (OpenAI 兼容接口)
+     * 获取可用模型列表。
+     *
+     * 委托 [JiuxinApiRepository.fetchModelList] 执行，采用多端点回退 + 多格式解析策略，
+     * 兼容各类 OpenAI 兼容 / 第三方代理 API。结果写入 [modelListState]。
      */
     fun fetchModels() {
         viewModelScope.launch {
             val key = settings.aiApiKey.first()
-            val baseUrl = settings.aiCustomBaseUrl.first().trim().trimEnd('/')
+            val baseUrl = settings.aiCustomBaseUrl.first().trim()
             performFetchModels(baseUrl, key)
         }
     }
@@ -1779,14 +1817,14 @@ class JiuxinViewModel @Inject constructor(
      * 针对当前会话快照拉取模型列表（会话级隔离）。
      *
      * 读取当前会话的 apiUrl/apiKey，回退到全局默认值，
-     * 结果写入共享的 [availableModels]（同一时刻仅一个界面可见，无冲突）。
+     * 结果写入共享的 [modelListState]（同一时刻仅一个界面可见，无冲突）。
      */
     fun fetchModelsForCurrentSession() {
         val session = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
         if (session == null) return
         viewModelScope.launch {
             val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
-            val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim().trimEnd('/')
+            val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
             performFetchModels(baseUrl, key)
         }
     }
@@ -1849,29 +1887,42 @@ class JiuxinViewModel @Inject constructor(
         }
     }
 
-    /** 模型列表拉取通用实现 — 消除全局/会话级重复代码 */
+    /**
+     * 模型列表拉取通用实现 — 委托 [JiuxinApiRepository.fetchModelList]。
+     *
+     * 核心改进：
+     * - 多端点回退：`/v1/models` → `/models` → 剥离 `/chat/completions` 后追加 `/models`
+     * - 多格式解析：OpenAI `data[].id` / Anthropic `models[].id` / 裸数组 / 字符串数组 / 对象键名
+     * - 多鉴权头：同时发送 `Authorization: Bearer` + `x-api-key`
+     * - 状态机驱动：UI 可据此展示加载动画与具体错误原因
+     */
     private suspend fun performFetchModels(baseUrl: String, key: String) {
-        if (key.isBlank() || baseUrl.isBlank()) return
-        val url = "$baseUrl/models"
-        val request = buildAuthGetRequest(url, key)
+        if (key.isBlank()) {
+            _modelListState.value = ModelListState.Error("请先配置 API 密钥")
+            return
+        }
+        if (baseUrl.isBlank()) {
+            _modelListState.value = ModelListState.Error("请先配置 API Base URL")
+            return
+        }
 
-        withContext(Dispatchers.IO) {
-            try {
-                val response = client.newCall(request).execute()
-                val body = response.body?.string()
-                if (response.isSuccessful && body != null) {
-                    val jsonElement = json.parseToJsonElement(body)
-                    val data = jsonElement.jsonObject["data"]?.jsonArray
-                    val modelList = data?.mapNotNull {
-                        it.jsonObject["id"]?.jsonPrimitive?.content
-                    }?.sorted() ?: emptyList()
-                    _availableModels.value = modelList
-                    Log.d(TAG, "Fetched ${modelList.size} models from $url")
+        _modelListState.value = ModelListState.Loading
+        Log.i(TAG, "Fetching model list from baseUrl=$baseUrl")
+
+        val result = apiRepository.fetchModelList(baseUrl, key)
+        _modelListState.value = when (result) {
+            is JiuxinApiResult.Success -> {
+                if (result.content.isEmpty()) {
+                    Log.w(TAG, "Model list fetched but empty from $baseUrl")
+                    ModelListState.Empty
                 } else {
-                    Log.e(TAG, "Failed to fetch models: ${response.code}")
+                    Log.i(TAG, "Model list fetched: ${result.content.size} models")
+                    ModelListState.Success(result.content)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception fetching models", e)
+            }
+            is JiuxinApiResult.Failure -> {
+                Log.e(TAG, "Model list fetch failed: ${result.error.userMessage}")
+                ModelListState.Error(result.error.userMessage)
             }
         }
     }
@@ -2138,7 +2189,9 @@ class JiuxinViewModel @Inject constructor(
             id = UUID.randomUUID().toString(),
             type = ChatMessageType.USER.name,
             content = text,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            // 用户消息本地添加，状态立即 SUCCESS（无需网络等待）
+            status = MessageStatus.SUCCESS.name
         )
 
         _chatState.update { it.copy(inputText = "", isLoading = true, error = null) }
@@ -2162,6 +2215,8 @@ class JiuxinViewModel @Inject constructor(
                     handleGroupMessage(text, sessionId, generation, currentSessionSnapshot)
                 } catch (e: Exception) {
                     Log.e(TAG, "Group message handling failed", e)
+                    // 标记用户消息为失败，允许重试
+                    markMessageFailed(userMessage.id)
                     _chatState.update { it.copy(error = e.message ?: e.javaClass.simpleName, isLoading = false, typingMembers = emptyList()) }
                 } finally {
                     finishLoading()
@@ -2211,7 +2266,8 @@ class JiuxinViewModel @Inject constructor(
                     id = UUID.randomUUID().toString(),
                     type = ChatMessageType.AI.name,
                     content = aiResponse,
-                    timestamp = System.currentTimeMillis()
+                    timestamp = System.currentTimeMillis(),
+                    status = MessageStatus.SUCCESS.name
                 )
                 addMessage(aiMessage)
 
@@ -2240,11 +2296,56 @@ class JiuxinViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
+                // 标记用户消息为失败，允许重试
+                markMessageFailed(userMessage.id)
                 _chatState.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
             } finally {
                 finishLoading()
             }
         }
+    }
+
+    /**
+     * 将指定消息标记为发送失败（状态机：SUCCESS → FAILED）。
+     *
+     * 用于 API 调用失败时标记用户消息，UI 可显示重试按钮。
+     */
+    private fun markMessageFailed(messageId: String) {
+        _chatState.update { state ->
+            state.copy(
+                messages = state.messages.map { msg ->
+                    if (msg.id == messageId) msg.copy(status = MessageStatus.FAILED.name) else msg
+                }
+            )
+        }
+        saveCurrentSessionMessages()
+    }
+
+    /**
+     * 重试发送失败的消息。
+     *
+     * 状态机流转：FAILED → SENDING → SUCCESS / FAILED
+     * - 将消息状态重置为 SUCCESS（本地消息内容不变）
+     * - 重新调用 [sendMessage] 以该消息内容触发 API
+     *
+     * @param messageId 失败消息的 ID
+     */
+    fun retryMessage(messageId: String) {
+        val failedMsg = _chatState.value.messages.firstOrNull { it.id == messageId }
+            ?: return
+        if (failedMsg.type != ChatMessageType.USER.name) return
+        if (failedMsg.status != MessageStatus.FAILED.name) return
+
+        // 重置状态为 SUCCESS（用户消息本地存在），然后重新发送
+        _chatState.update { state ->
+            state.copy(
+                messages = state.messages.map { msg ->
+                    if (msg.id == messageId) msg.copy(status = MessageStatus.SUCCESS.name) else msg
+                }
+            )
+        }
+        // 重新发送消息内容
+        sendMessage(failedMsg.content)
     }
 
     /**
@@ -2767,77 +2868,66 @@ class JiuxinViewModel @Inject constructor(
             maxMessages = MAX_GROUP_CONTEXT_MESSAGES,
             maxChars = MAX_GROUP_CONTEXT_CHARS
         )
-        val messages = buildJsonArray {
-            add(buildJsonObject {
-                put("role", JsonPrimitive("system"))
-                put("content", JsonPrimitive(groupContext))
-            })
+        // 构造 OpenAI 兼容 messages 数组（system + 带标识的历史消息）
+        val roleMessages = buildList {
+            add(ChatRoleMessage(role = "system", content = groupContext))
             recentMessages.forEach { msg ->
                 when (msg.type) {
                     ChatMessageType.USER.name -> {
                         // 指挥官消息：name 用 ASCII "user"，content 开头加轻量标签
-                        add(buildJsonObject {
-                            put("role", JsonPrimitive("user"))
-                            put("name", JsonPrimitive("user"))
-                            put("content", JsonPrimitive("(指挥官) ${msg.content}"))
-                        })
+                        add(ChatRoleMessage(
+                            role = "user",
+                            name = "user",
+                            content = "(指挥官) ${msg.content}"
+                        ))
                     }
                     ChatMessageType.AI.name -> {
                         if (msg.shipName == member.jiuxinName) {
                             // 自己的历史回复：assistant 角色，无标签
-                            add(buildJsonObject {
-                                put("role", JsonPrimitive("assistant"))
-                                put("content", JsonPrimitive(msg.content))
-                            })
+                            add(ChatRoleMessage(role = "assistant", content = msg.content))
                         } else if (msg.shipName.isNotBlank()) {
                             // 其他舰娘的回复：name 用 ASCII hash，content 开头加 (舰娘名) 标签
                             val safeName = "ship_" + msg.shipName.hashCode().toString(16)
-                            add(buildJsonObject {
-                                put("role", JsonPrimitive("user"))
-                                put("name", JsonPrimitive(safeName))
-                                put("content", JsonPrimitive("(${msg.shipName}) ${msg.content}"))
-                            })
+                            add(ChatRoleMessage(
+                                role = "user",
+                                name = safeName,
+                                content = "(${msg.shipName}) ${msg.content}"
+                            ))
                         }
                     }
                     ChatMessageType.STICKER.name -> {
                         val senderLabel = if (msg.shipName.isNotBlank()) "(${msg.shipName})" else "(指挥官)"
                         val safeName = if (msg.shipName.isNotBlank()) "ship_" + msg.shipName.hashCode().toString(16) else "user"
-                        add(buildJsonObject {
-                            put("role", JsonPrimitive("user"))
-                            put("name", JsonPrimitive(safeName))
-                            put("content", JsonPrimitive("$senderLabel [发送了表情包]"))
-                        })
+                        add(ChatRoleMessage(
+                            role = "user",
+                            name = safeName,
+                            content = "$senderLabel [发送了表情包]"
+                        ))
                     }
                 }
             }
             if (isReaction) {
                 // 互回模式：末尾追加系统指令（用户消息已在历史中，无需重复）
-                add(buildJsonObject {
-                    put("role", JsonPrimitive("user"))
-                    put("name", JsonPrimitive("sys"))
-                    put("content", JsonPrimitive("(系统) 请决定是否回应以上对话，无需回应请只输出 [SKIP]"))
-                })
+                add(ChatRoleMessage(
+                    role = "user",
+                    name = "sys",
+                    content = "(系统) 请决定是否回应以上对话，无需回应请只输出 [SKIP]"
+                ))
             }
             // 默认模式：不追加用户消息——用户消息已在 recentMessages 中（P0-1 修复）
         }
 
-        val requestJson = buildJsonObject {
-            put("model", JsonPrimitive(model))
-            put("messages", messages)
-            put("max_tokens", JsonPrimitive(1024))
-            put("temperature", JsonPrimitive(0.7))
-        }
-        val requestBody = json.encodeToString(requestJson).toRequestBody("application/json".toMediaType())
-        val request = buildJsonPostRequest(url, key, requestBody)
-
         Log.d(TAG, "Group API call for ${member.jiuxinName} (reaction=$isReaction): $url, model=$model")
-        return withContext(Dispatchers.IO) {
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: throw Exception("空响应")
-            if (!response.isSuccessful) {
-                throw Exception("API 错误 (${response.code}): ${parseErrorMessage(body)}")
-            }
-            parseChatCompletionResponse(body)
+        val request = ChatCompletionRequest(
+            url = url,
+            apiKey = key,
+            model = model,
+            messages = roleMessages
+        )
+        // 委托仓储层执行：含细粒度异常分类、自动重试、多格式响应解析
+        return when (val result = apiRepository.chatCompletion(request, tag = member.jiuxinName)) {
+            is JiuxinApiResult.Success -> result.content
+            is JiuxinApiResult.Failure -> throw result.error
         }
     }
 
@@ -3147,11 +3237,12 @@ class JiuxinViewModel @Inject constructor(
         val model = modelStr.ifBlank { DEFAULT_MODEL }
 
         val recentMessages = _chatState.value.messages.takeLast(20)
-        val messages = buildJsonArray {
-            add(buildJsonObject {
-                put("role", JsonPrimitive("system"))
-                put("content", JsonPrimitive(prompt))
-            })
+
+        // 构造 OpenAI 兼容 messages 数组（system + history）
+        // 注意：recentMessages 已包含最新用户消息（sendMessage 中 addMessage 在 callApi 之前），
+        // 不再重复追加，避免用户消息在上下文中出现两次（与 callGroupApi 的 P0-1 修复保持一致）。
+        val roleMessages = buildList {
+            add(ChatRoleMessage(role = "system", content = prompt))
             recentMessages.forEach { msg ->
                 val role = when (msg.type) {
                     ChatMessageType.USER.name -> "user"
@@ -3159,77 +3250,43 @@ class JiuxinViewModel @Inject constructor(
                     else -> null
                 }
                 if (role != null) {
-                    add(buildJsonObject {
-                        put("role", JsonPrimitive(role))
-                        put("content", JsonPrimitive(msg.content))
-                    })
+                    add(ChatRoleMessage(role = role, content = msg.content))
                 }
             }
-            add(buildJsonObject {
-                put("role", JsonPrimitive("user"))
-                put("content", JsonPrimitive(userMessage))
-            })
         }
-
-        val requestJson = buildJsonObject {
-            put("model", JsonPrimitive(model))
-            put("messages", messages)
-            put("max_tokens", JsonPrimitive(1024))
-            put("temperature", JsonPrimitive(0.7))
-        }
-
-        val requestBody = json.encodeToString(requestJson)
-            .toRequestBody("application/json".toMediaType())
-
-        val request = buildJsonPostRequest(url, key, requestBody)
 
         Log.d(TAG, "Calling API: $url, model=$model, history=${recentMessages.size} messages")
 
-        return withContext(Dispatchers.IO) {
-            val requestTime = System.currentTimeMillis()
-            val response = client.newCall(request).execute()
-            val body = response.body?.string() ?: throw Exception("空响应")
-            val duration = System.currentTimeMillis() - requestTime
+        val request = ChatCompletionRequest(
+            url = url,
+            apiKey = key,
+            model = model,
+            messages = roleMessages
+        )
 
-            if (!response.isSuccessful) {
-                val errorDetail = parseErrorMessage(body)
-                Log.e(TAG, "API error: ${response.code} ($duration ms) - $errorDetail")
-                throw Exception("API 错误 (${response.code}): $errorDetail")
-            }
-
-            Log.d(TAG, "API success: ${response.code} ($duration ms), body_length=${body.length}")
-
-            parseChatCompletionResponse(body)
+        // 委托仓储层执行：含细粒度异常分类、自动重试、多格式响应解析
+        return when (val result = apiRepository.chatCompletion(request)) {
+            is JiuxinApiResult.Success -> result.content
+            is JiuxinApiResult.Failure -> throw result.error
         }
     }
 
+    /**
+     * @deprecated 保留向后兼容，内部已委托 [JiuxinResponseParser]。
+     * 新代码应直接使用 [JiuxinApiRepository.chatCompletion]。
+     */
     private fun parseChatCompletionResponse(responseBody: String): String {
-        try {
-            val jsonElement = json.parseToJsonElement(responseBody)
-            val choices = jsonElement.jsonObject["choices"]?.jsonArray
-            if (choices != null && choices.isNotEmpty()) {
-                val firstChoice = choices[0].jsonObject
-                val message = firstChoice["message"]?.jsonObject
-                val content = message?.get("content")?.jsonPrimitive?.content
-                if (!content.isNullOrBlank()) {
-                    // trim 消除 API 返回内容中的前导/尾部空行和空白字符
-                    // 解决 AI 回复消息首尾出现错误空行的问题
-                    return content.trim()
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "JSON parse failed for chat response", e)
+        return when (val result = com.azurlane.blyy.data.repository.JiuxinResponseParser.parseChatCompletion(responseBody)) {
+            is JiuxinApiResult.Success -> result.content
+            is JiuxinApiResult.Failure -> throw result.error
         }
-        throw Exception("无法解析啾信响应")
     }
 
-    private fun parseErrorMessage(body: String): String {
-        return try {
-            val jsonElement = json.parseToJsonElement(body)
-            val message = jsonElement.jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content
-            message?.take(100) ?: body.take(100)
-        } catch (_: Exception) { body.take(100) }
-    }
+    /**
+     * @deprecated 保留向后兼容，内部已委托 [JiuxinResponseParser]。
+     */
+    private fun parseErrorMessage(body: String): String =
+        com.azurlane.blyy.data.repository.JiuxinResponseParser.parseErrorMessage(body)
 
     /**
      * 规范化 URL：处理协议相对 URL (//xxx)、缺少协议等情况

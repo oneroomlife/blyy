@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -71,6 +73,7 @@ import com.azurlane.blyy.ui.theme.JuusPalette
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
+import com.azurlane.blyy.viewmodel.ModelListState
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -85,6 +88,7 @@ fun JiuxinShipConfigScreen(
     val session by viewModel.currentSession.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionTestState.collectAsStateWithLifecycle()
     val availableModels by viewModel.availableModels.collectAsStateWithLifecycle()
+    val modelListState by viewModel.modelListState.collectAsStateWithLifecycle()
     val apiConfigs by viewModel.apiConfigs.collectAsStateWithLifecycle()
 
     var showAvatarPicker by remember { mutableStateOf(false) }
@@ -288,19 +292,77 @@ fun JiuxinShipConfigScreen(
                                         onDismissRequest = { showModelDropdown = false },
                                         modifier = Modifier.fillMaxWidth(0.8f).heightIn(max = 240.dp)
                                     ) {
-                                        if (availableModels.isEmpty()) {
-                                            DropdownMenuItem(
-                                                text = { Text("点击刷新拉取模型", style = AppTypography.BodySmall) },
-                                                onClick = { viewModel.fetchModelsForCurrentSession() }
-                                            )
-                                        } else {
-                                            availableModels.forEach { model ->
+                                        val state = modelListState
+                                        when (state) {
+                                            is ModelListState.Loading -> {
                                                 DropdownMenuItem(
-                                                    text = { Text(model, style = AppTypography.BodyMedium) },
-                                                    onClick = {
-                                                        viewModel.updateCurrentSessionConfig { s -> s.copy(model = model) }
-                                                        showModelDropdown = false
+                                                    text = {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            CircularProgressIndicator(
+                                                                modifier = Modifier.size(16.dp),
+                                                                strokeWidth = 2.dp
+                                                            )
+                                                            Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                                                            Text("正在拉取模型列表…", style = AppTypography.BodySmall)
+                                                        }
+                                                    },
+                                                    onClick = {}
+                                                )
+                                            }
+                                            is ModelListState.Error -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Column {
+                                                            Text(
+                                                                "拉取失败：${state.message}",
+                                                                style = AppTypography.BodySmall,
+                                                                color = MaterialTheme.colorScheme.error
+                                                            )
+                                                            Spacer(modifier = Modifier.height(AppSpacing.Xs))
+                                                            Text(
+                                                                "点击重试",
+                                                                style = AppTypography.LabelSmall,
+                                                                color = MaterialTheme.colorScheme.primary
+                                                            )
+                                                        }
+                                                    },
+                                                    onClick = { viewModel.fetchModelsForCurrentSession() }
+                                                )
+                                            }
+                                            is ModelListState.Empty -> {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            "API 返回了空模型列表，点击重新拉取",
+                                                            style = AppTypography.BodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    },
+                                                    onClick = { viewModel.fetchModelsForCurrentSession() }
+                                                )
+                                            }
+                                            is ModelListState.Success -> {
+                                                if (availableModels.isEmpty()) {
+                                                    DropdownMenuItem(
+                                                        text = { Text("未拉取到模型", style = AppTypography.BodySmall) },
+                                                        onClick = { viewModel.fetchModelsForCurrentSession() }
+                                                    )
+                                                } else {
+                                                    availableModels.forEach { model ->
+                                                        DropdownMenuItem(
+                                                            text = { Text(model, style = AppTypography.BodyMedium) },
+                                                            onClick = {
+                                                                viewModel.updateCurrentSessionConfig { s -> s.copy(model = model) }
+                                                                showModelDropdown = false
+                                                            }
+                                                        )
                                                     }
+                                                }
+                                            }
+                                            is ModelListState.Idle -> {
+                                                DropdownMenuItem(
+                                                    text = { Text("点击拉取模型列表", style = AppTypography.BodySmall) },
+                                                    onClick = { viewModel.fetchModelsForCurrentSession() }
                                                 )
                                             }
                                         }

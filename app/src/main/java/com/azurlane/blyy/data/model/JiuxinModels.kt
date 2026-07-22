@@ -29,7 +29,32 @@ enum class ChatMessageType {
 }
 
 /**
+ * 消息发送状态机
+ *
+ * 状态流转：
+ * SENDING → SUCCESS（正常完成）
+ * SENDING → FAILED（网络错误 / 解析失败 / API 错误）
+ * FAILED  → SENDING（用户点击重试）
+ * FAILED  → SUCCESS（重试成功）
+ *
+ * 仅对 [ChatMessageType.USER] 和 [ChatMessageType.AI] 有效；
+ * VOICE / STICKER / SYSTEM 消息恒为 SUCCESS（无需网络等待）。
+ *
+ * 向后兼容：旧数据反序列化时 [status] 字段缺失，默认 [SUCCESS]，
+ * 不会破坏已有聊天记录。
+ */
+enum class MessageStatus {
+    SENDING,    // 发送中 / AI 回复生成中
+    SUCCESS,    // 发送成功
+    FAILED      // 发送失败（可重试）
+}
+
+/**
  * 聊天消息
+ *
+ * @param status 消息发送状态，参见 [MessageStatus]。
+ *  旧数据反序列化时缺失该字段会被 [kotlinx.serialization] 忽略（需 Json 配置 ignoreUnknownKeys），
+ *  实际值默认为 [MessageStatus.SUCCESS]，保证向后兼容。
  */
 @Serializable
 data class ChatMessage(
@@ -41,7 +66,9 @@ data class ChatMessage(
     val voiceUrl: String = "",
     val stickerUrl: String = "", // 新增表情包URL字段
     val dialogue: String = "",
-    val avatarUrl: String = ""
+    val avatarUrl: String = "",
+    /** 消息发送状态（SENDING/SUCCESS/FAILED），默认 SUCCESS 保证旧数据兼容 */
+    val status: String = MessageStatus.SUCCESS.name
 )
 
 /**

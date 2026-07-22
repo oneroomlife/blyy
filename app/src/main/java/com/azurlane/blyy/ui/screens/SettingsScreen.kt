@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.PersonSearch
+import androidx.compose.material.icons.rounded.AppShortcut
 import androidx.compose.material.icons.rounded.Sailing
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material3.Icon
@@ -65,6 +66,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onNavigateToAssistantConfig: () -> Unit = {},
     onNavigateToJiuxinConfig: () -> Unit = {},
+    onNavigateToAppIconSettings: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiStyle by viewModel.uiStyle.collectAsStateWithLifecycle()
@@ -190,6 +192,20 @@ fun SettingsScreen(
                         title = "啾信配置",
                         description = "配置 API 密钥、人格提示词、聊天选项",
                         onClick = onNavigateToJiuxinConfig
+                    )
+                }
+
+                // ── 应用快捷方式 — 跳转入口 ──
+                BlyySectionPanel(
+                    title = "应用快捷方式",
+                    icon = Icons.Rounded.AppShortcut,
+                    accentColor = MaterialTheme.colorScheme.tertiary
+                ) {
+                    SettingsNavigationRow(
+                        icon = Icons.Rounded.AppShortcut,
+                        title = "自定义 app 快捷方式",
+                        description = "从相册选择图片创建桌面快捷方式",
+                        onClick = onNavigateToAppIconSettings
                     )
                 }
 

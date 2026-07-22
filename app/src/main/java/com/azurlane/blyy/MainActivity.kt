@@ -151,6 +151,7 @@ import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinChatScreen
 import com.azurlane.blyy.ui.screens.ConversationListScreen
+import com.azurlane.blyy.ui.screens.IconSettingsScreen
 import com.azurlane.blyy.ui.screens.LeaderboardScreen
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
@@ -385,7 +386,8 @@ fun AppContent() {
             currentDestination?.route != "jiuxin_config" &&
             currentDestination?.route != "jiuxin_chat" &&
             currentDestination?.route != "jiuxin_ship_config" &&
-            currentDestination?.route != "jiuxin_conversation_list"
+            currentDestination?.route != "jiuxin_conversation_list" &&
+            currentDestination?.route != "app_icon_settings"
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
 
@@ -792,7 +794,13 @@ fun AppContent() {
                         SettingsScreen(
                             onBack = { navController.popBackStack() },
                             onNavigateToAssistantConfig = { navController.navigate("assistant_config") },
-                            onNavigateToJiuxinConfig = { navController.navigate("jiuxin_config") }
+                            onNavigateToJiuxinConfig = { navController.navigate("jiuxin_config") },
+                            onNavigateToAppIconSettings = { navController.navigate("app_icon_settings") }
+                        )
+                    }
+                    composable("app_icon_settings") {
+                        IconSettingsScreen(
+                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable("assistant") {

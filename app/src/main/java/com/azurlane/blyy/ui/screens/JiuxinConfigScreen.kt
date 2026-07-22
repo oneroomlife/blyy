@@ -51,6 +51,7 @@ import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -106,6 +107,7 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
+import com.azurlane.blyy.viewmodel.ModelListState
 import kotlinx.coroutines.launch
 
 @Composable
@@ -130,6 +132,7 @@ fun JiuxinConfigScreen(
     val connectionState by viewModel.connectionTestState.collectAsStateWithLifecycle()
     val selectedModel by viewModel.selectedModel.collectAsStateWithLifecycle()
     val availableModels by viewModel.availableModels.collectAsStateWithLifecycle()
+    val modelListState by viewModel.modelListState.collectAsStateWithLifecycle()
     val stickersEnabled by viewModel.stickersEnabled.collectAsStateWithLifecycle()
     val stickerChance by viewModel.stickerChance.collectAsStateWithLifecycle()
     val presets by viewModel.presets.collectAsStateWithLifecycle()
@@ -227,6 +230,7 @@ fun JiuxinConfigScreen(
                         apiKey = apiKey,
                         selectedModel = selectedModel,
                         availableModels = availableModels,
+                        modelListState = modelListState,
                         connectionState = connectionState,
                         showApiKey = showApiKey,
                         isModelExpanded = isModelExpanded,
@@ -984,6 +988,7 @@ private fun ApiSection(
     apiKey: String,
     selectedModel: String,
     availableModels: List<String>,
+    modelListState: ModelListState,
     connectionState: ConnectionTestState,
     showApiKey: Boolean,
     isModelExpanded: Boolean,
@@ -1061,19 +1066,76 @@ private fun ApiSection(
                         onDismissRequest = { if (isModelExpanded) onToggleModelExpanded() },
                         modifier = Modifier.fillMaxWidth(0.8f).heightIn(max = 300.dp)
                     ) {
-                        if (availableModels.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("未拉取到模型", style = AppTypography.BodySmall) },
-                                onClick = { onToggleModelExpanded(); onFetchModels() }
-                            )
-                        } else {
-                            availableModels.forEach { model ->
+                        when (modelListState) {
+                            is ModelListState.Loading -> {
                                 DropdownMenuItem(
-                                    text = { Text(model, style = AppTypography.BodyMedium) },
-                                    onClick = {
-                                        onSaveModel(model)
-                                        if (isModelExpanded) onToggleModelExpanded()
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp
+                                            )
+                                            Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                                            Text("正在拉取模型列表…", style = AppTypography.BodySmall)
+                                        }
+                                    },
+                                    onClick = {}
+                                )
+                            }
+                            is ModelListState.Error -> {
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                "拉取失败：${modelListState.message}",
+                                                style = AppTypography.BodySmall,
+                                                color = MaterialTheme.colorScheme.error
+                                            )
+                                            Spacer(modifier = Modifier.height(AppSpacing.Xs))
+                                            Text(
+                                                "点击重试",
+                                                style = AppTypography.LabelSmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    },
+                                    onClick = { onFetchModels() }
+                                )
+                            }
+                            is ModelListState.Empty -> {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "API 返回了空模型列表，点击重新拉取",
+                                            style = AppTypography.BodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    onClick = { onFetchModels() }
+                                )
+                            }
+                            is ModelListState.Success -> {
+                                if (availableModels.isEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("未拉取到模型", style = AppTypography.BodySmall) },
+                                        onClick = { onToggleModelExpanded(); onFetchModels() }
+                                    )
+                                } else {
+                                    availableModels.forEach { model ->
+                                        DropdownMenuItem(
+                                            text = { Text(model, style = AppTypography.BodyMedium) },
+                                            onClick = {
+                                                onSaveModel(model)
+                                                if (isModelExpanded) onToggleModelExpanded()
+                                            }
+                                        )
                                     }
+                                }
+                            }
+                            is ModelListState.Idle -> {
+                                DropdownMenuItem(
+                                    text = { Text("点击拉取模型列表", style = AppTypography.BodySmall) },
+                                    onClick = { onFetchModels() }
                                 )
                             }
                         }

@@ -117,6 +117,14 @@ class PlayerSettingsDataStore @Inject constructor(
         private val ARCHIVE_CACHE_TIMESTAMP_DOCK_KEY = androidx.datastore.preferences.core.longPreferencesKey("archive_cache_ts_dock")
         private val ARCHIVE_CACHE_TIMESTAMP_STUDENT_KEY = androidx.datastore.preferences.core.longPreferencesKey("archive_cache_ts_student")
 
+        // ── 自定义 App 图标 ──
+        /** 当前图标类型（DEFAULT / CLASSIC / BLUE / PURPLE / CUSTOM），对应 AppIconType 枚举 */
+        private val APP_ICON_TYPE_KEY = stringPreferencesKey("app_icon_type")
+        /** 自定义图标的内部存储路径（仅 CUSTOM 类型有效，空表示未设置） */
+        private val APP_CUSTOM_ICON_PATH_KEY = stringPreferencesKey("app_custom_icon_path")
+        /** 图标选择时间戳（用于升级后保持设置、排查切换问题） */
+        private val APP_ICON_SELECTED_AT_KEY = androidx.datastore.preferences.core.longPreferencesKey("app_icon_selected_at")
+
         /** 档案缓存过期时间：5 分钟（毫秒） */
         const val ARCHIVE_CACHE_EXPIRY_MS = 5 * 60 * 1000L
     }
@@ -562,6 +570,34 @@ class PlayerSettingsDataStore @Inject constructor(
         val timestamp = getArchiveCacheTimestamp(archiveType)
         if (timestamp == 0L) return true
         return System.currentTimeMillis() - timestamp > ARCHIVE_CACHE_EXPIRY_MS
+    }
+
+    // ── 自定义 App 图标偏好 ──
+
+    /** 当前图标类型（DEFAULT / CLASSIC / BLUE / PURPLE / CUSTOM） */
+    val appIconType: Flow<String> = context.dataStore.data
+        .map { it[APP_ICON_TYPE_KEY] ?: "DEFAULT" }
+
+    /** 自定义图标内部存储路径（仅 CUSTOM 类型有效） */
+    val appCustomIconPath: Flow<String> = context.dataStore.data
+        .map { it[APP_CUSTOM_ICON_PATH_KEY] ?: "" }
+
+    /** 图标选择时间戳 */
+    val appIconSelectedAt: Flow<Long> = context.dataStore.data
+        .map { it[APP_ICON_SELECTED_AT_KEY] ?: 0L }
+
+    /**
+     * 保存图标选择。
+     *
+     * @param type 图标类型枚举名（见 [com.azurlane.blyy.util.AppIconType]）
+     * @param customPath 自定义图标路径（仅 CUSTOM 类型需要，其它传空）
+     */
+    suspend fun setAppIcon(type: String, customPath: String = "") {
+        context.dataStore.edit {
+            it[APP_ICON_TYPE_KEY] = type
+            it[APP_CUSTOM_ICON_PATH_KEY] = customPath
+            it[APP_ICON_SELECTED_AT_KEY] = System.currentTimeMillis()
+        }
     }
 }
 
