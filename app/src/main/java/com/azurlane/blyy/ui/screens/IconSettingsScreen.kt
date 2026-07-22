@@ -5,7 +5,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -30,29 +29,26 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Warning
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,7 +74,7 @@ import com.azurlane.blyy.viewmodel.SettingsViewModel.IconSwitchState
  * 1. 顶栏（返回按钮 + 标题）
  * 2. 大图标预览区（居中展示当前图标，带阴影和渐变背景）
  * 3. 不支持提示 / 需授权提示（条件显示）
- * 4. 操作区（从相册选择 / 移除自定义快捷方式）
+ * 4. 操作区（从相册选择 + 权限提示）
  *
  * 圆角一致性：所有图标预览容器与图片本身使用相同的 [iconShape]，
  * 消除"图片方角 + 容器圆角"的视觉差异。
@@ -86,6 +82,7 @@ import com.azurlane.blyy.viewmodel.SettingsViewModel.IconSwitchState
 @Composable
 fun IconSettingsScreen(
     onBack: () -> Unit,
+    onNavigateToCropper: (Uri) -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val currentType by viewModel.appIconType.collectAsStateWithLifecycle()
@@ -96,17 +93,12 @@ fun IconSettingsScreen(
 
     val context = LocalContext.current
 
-    // 待确认的自定义图标 URI
-    var pendingCustomUri by remember { mutableStateOf<Uri?>(null) }
-    // 待确认的移除操作
-    var showRemoveDialog by remember { mutableStateOf(false) }
-
-    // 系统相册选择器
+    // 系统相册选择器 — 选图后直接跳转裁剪页
     val pickImageLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
-            pendingCustomUri = uri
+            onNavigateToCropper(uri)
         }
     }
 
@@ -179,45 +171,12 @@ fun IconSettingsScreen(
                                 ActivityResultContracts.PickVisualMedia.ImageOnly
                             )
                         )
-                    },
-                    onRemoveCustom = { showRemoveDialog = true }
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(AppSpacing.Xxl))
             }
         }
-    }
-
-    // ── 确认弹窗：自定义快捷方式 ──
-    pendingCustomUri?.let { uri ->
-        ConfirmDialog(
-            title = if (isCustom) "更换快捷方式图标" else "创建自定义快捷方式",
-            message = if (isCustom)
-                "将从所选图片生成新的图标，并静默更新桌面快捷方式。"
-            else
-                "若创建失败请检查应用权限",
-            confirmText = if (isCustom) "更换" else "创建",
-            onConfirm = {
-                viewModel.applyCustomIcon(uri)
-                pendingCustomUri = null
-            },
-            onDismiss = { pendingCustomUri = null }
-        )
-    }
-
-    // ── 确认弹窗：移除自定义快捷方式 ──
-    if (showRemoveDialog) {
-        ConfirmDialog(
-            title = "移除自定义快捷方式",
-            message = "将禁用桌面上的自定义快捷方式（图标变灰），并清除应用内的图标文件。\n" +
-                "如需完全删除桌面上的灰色图标，请手动删除。",
-            confirmText = "移除",
-            onConfirm = {
-                viewModel.removeCustomIcon()
-                showRemoveDialog = false
-            },
-            onDismiss = { showRemoveDialog = false }
-        )
     }
 }
 
@@ -310,9 +269,9 @@ private fun IconPreviewCard(
                 // 存储的自定义图标是全幅 432×432 Bitmap，传给 createWithAdaptiveBitmap 后，
                 // 启动器只显示中心安全区域（66/108 ≈ 61.1%），外围被裁剪。
                 //
-                // 预览必须只显示中心安全区域，内容范围才能与实际一致。
-                // 做法：AsyncImage 容器尺寸 = 预览容器 × SAFE_ZONE_RATIO，
-                // 配合 ContentScale.Crop 从中心裁剪填满 — 显示的正好是中心安全区域内容。
+                // 预览用 graphicsLayer 将图片放大 1/SAFE_ZONE_RATIO ≈ 1.636 倍，
+                // clip 裁掉超出部分 — 只显示中心安全区域，与启动器裁剪效果一致。
+                // AsyncImage 占满整个容器（fillMaxSize），无空隙。
                 //
                 // 关键：自定义图标文件路径固定为 custom_icon.png，用户更换图标后文件内容变了
                 // 但路径不变。若不设置缓存键，Coil 会命中内存/磁盘缓存，预览不刷新。
@@ -330,8 +289,11 @@ private fun IconPreviewCard(
                         model = imageRequest,
                         contentDescription = "自定义快捷方式图标预览",
                         modifier = Modifier
-                            .fillMaxWidth(SAFE_ZONE_RATIO)
-                            .aspectRatio(1f)
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = 1f / SAFE_ZONE_RATIO
+                                scaleY = 1f / SAFE_ZONE_RATIO
+                            }
                             .clip(iconShape),
                         contentScale = ContentScale.Crop
                     )
@@ -495,14 +457,18 @@ private fun NeedSettingsCard(onOpenSettings: () -> Unit) {
 
 /**
  * 操作区
+ *
+ * 包含主操作按钮（从相册选择/更换图标）和权限提示文字。
+ * 移除了"移除自定义快捷方式"功能 — Android 不允许应用直接删除 pinned shortcut，
+ * 该功能在多数启动器上只会留下灰色图标，反而造成困扰。
+ * 用户如需移除，可直接在桌面长按拖拽删除。
  */
 @Composable
 private fun ActionSection(
     isCustom: Boolean,
     isProcessing: Boolean,
     isSupported: Boolean,
-    onPickFromGallery: () -> Unit,
-    onRemoveCustom: () -> Unit
+    onPickFromGallery: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -517,60 +483,15 @@ private fun ActionSection(
             modifier = Modifier.fillMaxWidth()
         )
 
-        // 移除按钮 — 仅在已有自定义快捷方式时显示
-        AnimatedVisibility(
-            visible = isCustom && !isProcessing,
-            enter = fadeIn() + scaleIn(initialScale = 0.95f),
-            exit = fadeOut() + scaleOut(targetScale = 0.95f)
-        ) {
-            BlyySecondaryButton(
-                text = "移除自定义快捷方式",
-                onClick = onRemoveCustom,
-                enabled = true,
-                icon = Icons.Rounded.Delete,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
+        // 功能提示 — 创建失败时引导用户检查权限
+        Text(
+            text = "如创建失败请检查应用权限",
+            style = AppTypography.BodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
-}
-
-/**
- * 通用确认弹窗
- */
-@Composable
-private fun ConfirmDialog(
-    title: String,
-    message: String,
-    confirmText: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = title,
-                style = AppTypography.TitleMedium,
-                fontWeight = FontWeight.SemiBold
-            )
-        },
-        text = {
-            Text(
-                text = message,
-                style = AppTypography.BodyMedium
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text(confirmText)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
-    )
 }
 
 // ── 扩展工具 ──

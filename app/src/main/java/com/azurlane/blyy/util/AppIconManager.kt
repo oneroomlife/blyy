@@ -2,6 +2,7 @@ package com.azurlane.blyy.util
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ShortcutManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -67,7 +68,8 @@ sealed class PinShortcutResult {
  * 2. 调用 [pinCustomShortcut] → 系统弹出"添加到主屏幕"确认（首次）
  * 3. 桌面出现带用户图标的快捷方式，启动器自动裁剪为系统形状
  * 4. 后续更新图标 → 再次调用 [pinCustomShortcut] 静默更新
- * 5. 恢复默认 → [removeCustomShortcut] 禁用快捷方式
+ *
+ * 注：Android 不允许应用直接删除 pinned shortcut，如需移除请用户在桌面长按拖拽删除。
  *
  * @param context 应用 Context
  */
@@ -195,6 +197,119 @@ class AppIconManager(private val context: Context) {
     }
 
     /**
+     * 从用户选择的图片 URI 按裁剪参数生成自定义图标
+     *
+     * 用户在裁剪页通过拖动/缩放调整图片位置，本方法根据裁剪参数从原图中
+     * 截取对应区域，缩放到 432×432 全幅并保存为 PNG。
+     *
+     * 裁剪参数含义（与 ImageCropperScreen 中的预览状态对应）：
+     * - [scale]：图片在裁剪框中的缩放倍数（1.0 = 原始填满，>1 = 放大）
+     * - [offsetX]/[offsetY]：图片相对裁剪框中心的偏移（px，已限制在合理范围）
+     * - [cropBoxSizePx]：裁剪框边长（px）
+     *
+     * 裁剪原理：
+     * 1. 原图以 ContentScale.Crop 填满 cropBoxSizePx×cropBoxSizePx 的框（取短边缩放）
+     * 2. 用户 scale 进一步放大，offset 平移
+     * 3. 反推到原图坐标：计算原图中对应的裁剪区域
+     *
+     * 必须在 IO 线程调用。
+     *
+     * @return 保存的图标文件绝对路径，失败返回 null
+     */
+    fun generateCustomIconWithCrop(
+        sourceUri: Uri,
+        scale: Float,
+        offsetX: Float,
+        offsetY: Float,
+        cropBoxSizePx: Float
+    ): String? {
+        return try {
+            // 解码原图（降采样避免 OOM，目标尺寸 = 裁剪框对应原图区域 × 输出缩放比）
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, boundsOptions)
+            }
+            if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) {
+                Log.e(TAG, "Cannot decode image bounds from $sourceUri")
+                return null
+            }
+
+            val srcW = boundsOptions.outWidth
+            val srcH = boundsOptions.outHeight
+
+            // 原图以 ContentScale.Crop 填满裁剪框时的缩放比 = cropBoxSizePx / min(srcW, srcH)
+            val baseScale = cropBoxSizePx / minOf(srcW, srcH).toFloat()
+            // 用户缩放后的实际缩放比
+            val actualScale = baseScale * scale
+
+            // 裁剪框在原图中对应的边长（px）
+            // 预览中裁剪框显示的就是 cropBoxSizePx，反推到原图 = cropBoxSizePx / actualScale
+            val cropSrcSize = (cropBoxSizePx / actualScale).toInt().coerceAtMost(minOf(srcW, srcH))
+
+            // 偏移反推到原图坐标
+            // 预览中图片中心相对裁剪框中心的偏移 = offset，反推到原图 = offset / actualScale
+            val srcOffsetX = (offsetX / actualScale).toInt()
+            val srcOffsetY = (offsetY / actualScale).toInt()
+
+            // 计算裁剪区域起点（原图坐标）
+            // ContentScale.Crop 默认居中，所以原图中心 = (srcW/2, srcH/2)
+            // 用户 offset 表示图片移动了 offset，所以裁剪区域中心 = 原图中心 - srcOffset
+            val cropCenterX = srcW / 2 - srcOffsetX
+            val cropCenterY = srcH / 2 - srcOffsetY
+            val cropLeft = (cropCenterX - cropSrcSize / 2).coerceIn(0, srcW - cropSrcSize)
+            val cropTop = (cropCenterY - cropSrcSize / 2).coerceIn(0, srcH - cropSrcSize)
+
+            // 采样率：避免解码过大区域
+            val sampleSize = calculateSampleSize(srcW, srcH, ADAPTIVE_ICON_SIZE_PX, ADAPTIVE_ICON_SIZE_PX)
+
+            // 解码
+            val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val sourceBitmap = context.contentResolver.openInputStream(sourceUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, decodeOptions)
+            } ?: run {
+                Log.e(TAG, "Failed to decode bitmap from $sourceUri")
+                return null
+            }
+
+            // 调整裁剪坐标到采样后的尺寸
+            val sampledCropLeft = (cropLeft / sampleSize).toInt()
+            val sampledCropTop = (cropTop / sampleSize).toInt()
+            val sampledCropSize = (cropSrcSize / sampleSize).toInt()
+                .coerceAtMost(minOf(sourceBitmap.width, sourceBitmap.height))
+                .coerceAtLeast(1)
+
+            // 裁剪
+            val croppedBitmap = Bitmap.createBitmap(
+                sourceBitmap,
+                sampledCropLeft.coerceIn(0, sourceBitmap.width - sampledCropSize),
+                sampledCropTop.coerceIn(0, sourceBitmap.height - sampledCropSize),
+                sampledCropSize,
+                sampledCropSize
+            )
+            if (sourceBitmap !== croppedBitmap) sourceBitmap.recycle()
+
+            // 缩放到 432×432
+            val scaledBitmap = Bitmap.createScaledBitmap(
+                croppedBitmap, ADAPTIVE_ICON_SIZE_PX, ADAPTIVE_ICON_SIZE_PX, true
+            )
+            if (croppedBitmap !== scaledBitmap) croppedBitmap.recycle()
+
+            // 保存为 PNG
+            val iconFile = File(iconDir, CUSTOM_ICON_FILE)
+            FileOutputStream(iconFile).use { out ->
+                scaledBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            scaledBitmap.recycle()
+
+            Log.i(TAG, "Custom icon generated with crop: ${iconFile.absolutePath} (crop=${cropSrcSize}x${cropSrcSize} at ($cropLeft,$cropTop), scale=$scale)")
+            iconFile.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to generate custom icon with crop from $sourceUri", e)
+            null
+        }
+    }
+
+    /**
      * 创建/更新自定义快捷方式
      *
      * - **首次创建**：调用 [ShortcutManagerCompat.requestPinShortcut]，
@@ -267,34 +382,6 @@ class AppIconManager(private val context: Context) {
     }
 
     /**
-     * 移除自定义快捷方式
-     *
-     * 注意：Android 系统不允许应用直接删除用户固定的快捷方式。
-     * [ShortcutManagerCompat.disableShortcuts] 会将快捷方式标记为"已禁用"，
-     * 图标变灰且点击时显示提示信息。用户需手动长按拖拽删除。
-     *
-     * @param disabledMessage 用户点击已禁用快捷方式时看到的提示
-     * @return true 表示禁用请求已处理
-     */
-    fun removeCustomShortcut(disabledMessage: String = "自定义快捷方式已移除，请长按删除"): Boolean {
-        return try {
-            val shortcuts = ShortcutManagerCompat.getShortcuts(
-                context, ShortcutManagerCompat.FLAG_MATCH_PINNED
-            )
-            if (shortcuts.any { it.id == SHORTCUT_ID }) {
-                ShortcutManagerCompat.disableShortcuts(
-                    context, listOf(SHORTCUT_ID), disabledMessage
-                )
-                Log.i(TAG, "Custom shortcut disabled")
-            }
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to remove custom shortcut", e)
-            false
-        }
-    }
-
-    /**
      * 查询当前是否已存在自定义快捷方式
      */
     fun hasCustomShortcut(): Boolean {
@@ -336,17 +423,6 @@ class AppIconManager(private val context: Context) {
     fun getCustomIconPath(): String? {
         val iconFile = File(iconDir, CUSTOM_ICON_FILE)
         return if (iconFile.exists()) iconFile.absolutePath else null
-    }
-
-    /**
-     * 删除自定义图标文件
-     */
-    fun clearCustomIcon() {
-        val iconFile = File(iconDir, CUSTOM_ICON_FILE)
-        if (iconFile.exists()) {
-            iconFile.delete()
-            Log.d(TAG, "Custom icon file cleared")
-        }
     }
 
     // ── 内部工具方法 ──

@@ -152,6 +152,7 @@ import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinChatScreen
 import com.azurlane.blyy.ui.screens.ConversationListScreen
 import com.azurlane.blyy.ui.screens.IconSettingsScreen
+import com.azurlane.blyy.ui.screens.ImageCropperScreen
 import com.azurlane.blyy.ui.screens.LeaderboardScreen
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
@@ -387,7 +388,8 @@ fun AppContent() {
             currentDestination?.route != "jiuxin_chat" &&
             currentDestination?.route != "jiuxin_ship_config" &&
             currentDestination?.route != "jiuxin_conversation_list" &&
-            currentDestination?.route != "app_icon_settings"
+            currentDestination?.route != "app_icon_settings" &&
+            currentDestination?.route?.startsWith("image_cropper") != true
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
 
@@ -800,6 +802,24 @@ fun AppContent() {
                     }
                     composable("app_icon_settings") {
                         IconSettingsScreen(
+                            onBack = { navController.popBackStack() },
+                            onNavigateToCropper = { imageUri ->
+                                // 将图片 URI 编码后作为路径参数传递
+                                val encoded = android.net.Uri.encode(imageUri.toString())
+                                navController.navigate("image_cropper/$encoded")
+                            }
+                        )
+                    }
+                    composable(
+                        route = "image_cropper/{imageUri}",
+                        arguments = listOf(
+                            navArgument("imageUri") { type = NavType.StringType }
+                        )
+                    ) { backStackEntry ->
+                        val imageUriStr = backStackEntry.arguments?.getString("imageUri") ?: ""
+                        val imageUri = android.net.Uri.parse(imageUriStr)
+                        ImageCropperScreen(
+                            imageUri = imageUri,
                             onBack = { navController.popBackStack() }
                         )
                     }

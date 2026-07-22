@@ -235,29 +235,71 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 应用自定义图标 — 从裁剪参数生成图标并创建桌面快捷方式
+     *
+     * 用户在 ImageCropperScreen 调整裁剪后调用此方法。
+     * 流程：
+     * 1. 用裁剪参数从原图截取区域 → 缩放到 432×432 PNG
+     * 2. 创建/更新桌面快捷方式
+     * 3. 成功后回调 [onApplied]（通常用于返回上一页）
+     *
+     * @param imageUri 原图 URI
+     * @param scale 用户缩放倍数
+     * @param offsetX/offsetY 用户偏移（px）
+     * @param cropBoxSizePx 裁剪框边长（px）
+     * @param onApplied 成功回调
+     */
+    fun applyCustomIconFromBitmap(
+        imageUri: Uri,
+        scale: Float,
+        offsetX: Float,
+        offsetY: Float,
+        cropBoxSizePx: Float,
+        onApplied: () -> Unit
+    ) {
+        _iconSwitching.value = IconSwitchState.Switching
+        viewModelScope.launch {
+            val iconPath = withContext(Dispatchers.IO) {
+                appIconManager.generateCustomIconWithCrop(
+                    sourceUri = imageUri,
+                    scale = scale,
+                    offsetX = offsetX,
+                    offsetY = offsetY,
+                    cropBoxSizePx = cropBoxSizePx
+                )
+            }
+            if (iconPath == null) {
+                _iconSwitching.value = IconSwitchState.Error("图片处理失败，请重试")
+                return@launch
+            }
+
+            val result = withContext(Dispatchers.IO) {
+                appIconManager.pinCustomShortcut(iconPath)
+            }
+
+            when (result) {
+                is PinShortcutResult.Updated -> {
+                    settings.setAppIcon(AppIconType.CUSTOM.id, iconPath)
+                    _iconSwitching.value = IconSwitchState.Success("图标已创建/更新")
+                    onApplied()
+                }
+                is PinShortcutResult.NotSupported -> {
+                    _iconSwitching.value = IconSwitchState.NeedSettings
+                }
+                is PinShortcutResult.IconNotFound -> {
+                    _iconSwitching.value = IconSwitchState.Error("图标文件丢失，请重试")
+                }
+                is PinShortcutResult.Failed -> {
+                    _iconSwitching.value = IconSwitchState.Error(result.message)
+                }
+            }
+        }
+    }
+
     /** 打开系统应用详情页，引导用户开启快捷方式权限 */
     fun openShortcutSettings() {
         appIconManager.openAppShortcutSettings()
-    }
-
-    /**
-     * 移除自定义快捷方式
-     *
-     * 禁用桌面上的自定义快捷方式（图标变灰），同时清理内部存储的图标文件。
-     * 用户需手动长按拖拽删除已禁用的快捷方式。
-     */
-    fun removeCustomIcon() {
-        _iconSwitching.value = IconSwitchState.Switching
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                appIconManager.removeCustomShortcut()
-                appIconManager.clearCustomIcon()
-            }
-            settings.setAppIcon(AppIconType.DEFAULT.id, "")
-            _iconSwitching.value = IconSwitchState.Success(
-                    "自定义快捷方式已移除，请长按桌面灰色图标拖拽删除"
-                )
-        }
     }
 
     /** 清除图标操作状态（UI 显示成功/错误后调用） */
