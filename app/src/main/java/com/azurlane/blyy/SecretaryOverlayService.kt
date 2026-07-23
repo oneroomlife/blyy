@@ -50,6 +50,8 @@ class SecretaryOverlayService : Service() {
     private var composeView: ComposeView? = null
     private var overlayLayoutParams: WindowManager.LayoutParams? = null
     private var lifecycleOwner: FloatingWindowLifecycleOwner? = null
+    /** 气泡区域高度(px)，用于允许窗口向上溢出该高度使立绘可拖到屏幕顶部 */
+    private var bubbleHeightPx: Int = 0
     
     private var serviceScope = CoroutineScope(Dispatchers.Main + Job())
 
@@ -77,16 +79,27 @@ class SecretaryOverlayService : Service() {
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
+            // 悬浮窗尺寸需容纳气泡(220dp宽) + 立绘(110x165dp)，
+            // 否则气泡向上偏移后会超出 WindowManager 区域被裁剪不可见。
+            // 高度 = 气泡最大高度 200dp + 立绘高度 165dp = 365dp
+            val density = resources.displayMetrics.density
+            val overlayWidthPx = (220 * density).toInt()
+            val overlayHeightPx = (365 * density).toInt()
+            bubbleHeightPx = (200 * density).toInt()
             val params = WindowManager.LayoutParams(
-                300,
-                450,
+                overlayWidthPx,
+                overlayHeightPx,
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                 } else {
                     WindowManager.LayoutParams.TYPE_PHONE
                 },
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or 
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                // FLAG_LAYOUT_NO_LIMITS: 允许窗口向上溢出屏幕，使立绘（位于窗口底部）
+                // 可拖到屏幕最上方；溢出部分为顶部气泡区域，可接受不可见。
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
             )
             params.gravity = Gravity.TOP or Gravity.START
@@ -131,7 +144,7 @@ class SecretaryOverlayService : Service() {
                             SecretaryChibiOverlay(
                                 figureUrl = displayFigureUrl,
                                 shipName = displayShipName,
-                                dialogue = if (secretaryState.figureUrl.isNotEmpty()) "指挥官，我在屏幕上啦！" else null,
+                                dialogue = if (secretaryState.dialogueEnabled) secretaryState.currentDialogue else null,
                                 isSystemOverlay = true,
                                 onTap = { 
                                     Log.d(TAG, "showOverlay: 悬浮窗被点击")
@@ -151,11 +164,14 @@ class SecretaryOverlayService : Service() {
                                 onPositionChange = { dx, dy ->
                                     overlayLayoutParams?.let { lp ->
                                         val displayMetrics = resources.displayMetrics
-                                        val maxX = displayMetrics.widthPixels - 300
-                                        val maxY = displayMetrics.heightPixels - 450
-                                        
+                                        val maxX = displayMetrics.widthPixels - lp.width
+                                        val maxY = displayMetrics.heightPixels - lp.height
+                                        // 允许 y 为负，最低到 -气泡高度：立绘位于窗口底部，
+                                        // y=-气泡高度 时立绘顶部正好贴屏幕顶部，解决无法拖到最上方的问题。
+                                        val minY = -bubbleHeightPx
+
                                         lp.x = (lp.x + dx.toInt()).coerceIn(0, maxX)
-                                        lp.y = (lp.y + dy.toInt()).coerceIn(0, maxY)
+                                        lp.y = (lp.y + dy.toInt()).coerceIn(minY, maxY)
                                         windowManager?.updateViewLayout(composeView, lp)
                                     }
                                 }

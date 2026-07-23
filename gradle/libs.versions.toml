@@ -29,6 +29,10 @@ mockitoKotlin = "5.4.0"
 turbine = "1.2.0"
 kotlinxCoroutinesTest = "1.10.2"
 zstdJni = "1.5.7-6"
+# Spine 3.8.99 骨骼动画（碧蓝航线 SD 小人） + libgdx 后端
+# 注意：碧蓝航线 sd/ 资源是 Spine 3.8.99 二进制格式，必须用 3.8 runtime，4.x 不兼容
+spineLibgdx = "3.8.99.1"
+libgdx = "1.13.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -79,6 +83,10 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 # 标准 JAR 仅含桌面 Linux .so（/linux/aarch64/...），Android 会因找不到 arm64-v8a .so
 # 抛 UnsatisfiedLinkError 闪退。AAR 包含全部 4 个 Android ABI 的 native 库。
 zstd-jni = { group = "com.github.luben", name = "zstd-jni", version.ref = "zstdJni" }
+# Spine 3.8 runtime + libgdx 后端（gdx-backend-android 含 AAR + AndroidGL20/AndroidFiles 等桥接类）
+spine-libgdx = { group = "com.esotericsoftware.spine", name = "spine-libgdx", version.ref = "spineLibgdx" }
+libgdx-core = { group = "com.badlogicgames.gdx", name = "gdx", version.ref = "libgdx" }
+libgdx-backend-android = { group = "com.badlogicgames.gdx", name = "gdx-backend-android", version.ref = "libgdx" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

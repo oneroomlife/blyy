@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.util.AppUpdateChecker
+import com.azurlane.blyy.util.NetworkDriveLink
 import com.azurlane.blyy.util.UpdateInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,7 @@ import javax.inject.Inject
  * - 在 ViewModel 初始化时立即触发一次更新检测（无延迟，确保弹窗及时弹出）
  * - 持有检测结果 [updateInfo]，确保配置变更（如旋转屏幕）时状态不丢失
  * - 提供 [dismissUpdate] 供 UI 在用户操作后清除弹窗状态
+ * - 提供 [refreshDriveLink] 供 UI 在用户点击"通过网盘更新"时实时获取最新网盘链接
  *
  * 设计说明：
  * - [AppUpdateChecker] 是 @Singleton，内部已处理用户跳过版本、自动检测开关等逻辑
@@ -37,6 +39,10 @@ class UpdateCheckViewModel @Inject constructor(
 
     private val _updateInfo = MutableStateFlow<UpdateInfo?>(null)
     val updateInfo: StateFlow<UpdateInfo?> = _updateInfo.asStateFlow()
+
+    /** 网盘链接刷新中标记，供 UI 显示 loading 状态 */
+    private val _isRefreshingDriveLink = MutableStateFlow(false)
+    val isRefreshingDriveLink: StateFlow<Boolean> = _isRefreshingDriveLink.asStateFlow()
 
     init {
         checkForUpdateOnStartup()
@@ -66,5 +72,41 @@ class UpdateCheckViewModel @Inject constructor(
      */
     fun dismissUpdate() {
         _updateInfo.value = null
+    }
+
+    /**
+     * 强制刷新网盘链接（绕过内存缓存）。
+     *
+     * 供 UI 在用户点击"通过网盘更新"按钮时调用。确保打开浏览器时使用的是
+     * GitHub 仓库中最新的网盘链接，而非启动检查时缓存的旧链接。
+     *
+     * 流程：
+     * 1. 设置 [_isRefreshingDriveLink] 为 true，UI 显示 loading
+     * 2. 调用 [AppUpdateChecker.refreshDriveLink] 获取最新链接
+     * 3. 用最新链接更新 [_updateInfo] 中的 driveLink 字段
+     * 4. 设置 [_isRefreshingDriveLink] 为 false
+     *
+     * @param onResult 回调，返回最新的网盘链接（可能为 null 表示获取失败）
+     */
+    fun refreshDriveLink(onResult: (NetworkDriveLink?) -> Unit) {
+        viewModelScope.launch {
+            _isRefreshingDriveLink.value = true
+            try {
+                val latestLink = updateChecker.refreshDriveLink()
+                if (latestLink != null) {
+                    // 用最新链接更新当前 updateInfo
+                    _updateInfo.value?.let { current ->
+                        _updateInfo.value = current.copy(driveLink = latestLink)
+                        Log.i(TAG, "Drive link refreshed: ${latestLink.label} -> ${latestLink.url}")
+                    }
+                }
+                onResult(latestLink)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to refresh drive link", e)
+                onResult(null)
+            } finally {
+                _isRefreshingDriveLink.value = false
+            }
+        }
     }
 }

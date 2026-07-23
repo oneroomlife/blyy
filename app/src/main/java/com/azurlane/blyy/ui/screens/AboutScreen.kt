@@ -74,10 +74,10 @@ import com.azurlane.blyy.ui.theme.BlyyShapes
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
+import com.azurlane.blyy.util.UpdateChannel
 import com.azurlane.blyy.viewmodel.AboutIntent
 import com.azurlane.blyy.viewmodel.AboutState
 import com.azurlane.blyy.viewmodel.AboutViewModel
-import com.azurlane.blyy.viewmodel.UpdateChannel
 import com.azurlane.blyy.viewmodel.UpdateStatus
 
 private const val REPO_URL = "https://github.com/oneroomlife/blyy"

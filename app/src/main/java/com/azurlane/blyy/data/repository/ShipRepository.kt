@@ -1015,11 +1015,16 @@ class ShipRepository @Inject constructor(
      * 获取学生语音数据
      * 需要使用 WebView 渲染 JS 动态页面
      *
-     * 页面结构（JS 渲染后）：
-     *   .list-group#{tabId} > .list-group-item > .item-title (场景名)
+     * gamekee.com 新版 Vue SPA 页面结构（点击语音台词 tab 后渲染）：
+     *   .voice-header > .voice-header-l > .avatar > img（头像）
+     *   .list-group#{tabId} > .list-group-item > .item-header > .item-header-title（场景名）
      *   .list-group-item > .dub > .dub-item > audio[id=voice_audio_{tabId}_{lang}_{idx}]
-     *   .list-group-item > .voice-desc (对话文本)
-     *   .list-group-item > .translate-box > .list > .text-name (日文/官翻标签) + 文本
+     *   .list-group-item > .dub-desc（中文对话文本）
+     *   .list-group-item > .dub-content > .list > .dub-name（日文/官翻标签）+ 文本
+     *
+     * tab 索引对照（侧边栏 nav|N）：
+     *   0=角色技能, 1=学生档案, 2=语音台词, 3=影画鉴赏, 4=养成模拟, 5=角色评测
+     * 语音内容需通过 ?tab=2 触发 WebViewHtmlFetcher 主动点击侧边栏 tab 后才会渲染。
      *
      * @param studentLink 学生详情页链接（如 https://www.gamekee.com/ba/tj/59934.html）
      * @return Triple<语音列表, 头像URL, 皮肤立绘Map>
@@ -1031,16 +1036,24 @@ class ShipRepository @Inject constructor(
 
             try {
                 // 使用 WebView 渲染 JS 动态页面
-                val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(context, voiceUrl, waitMs = 8000L)
+                // contentSelector=".dub-item"：动态检测语音内容是否渲染完成，无需固定等待 12s
+                // 内容通常 3-5s 内渲染完成，检测到后立即返回
+                val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(
+                    context, voiceUrl, waitMs = 12000L, contentSelector = ".dub-item"
+                )
                 val doc = Jsoup.parse(html)
 
-                // 提取头像
+                // 提取头像：.voice-header 是外层容器，.avatar 在 .voice-header-l 内
                 val avatarImg = doc.select(".voice-header .avatar img").firstOrNull()
                 val rawAvatar = avatarImg?.attr("src")?.trim()?.trimEnd(',', ' ') ?: ""
                 val avatarUrl = if (rawAvatar.isNotEmpty()) cleanGamekeeImageUrl(formatGamekeeUrl(rawAvatar)) else ""
 
-                // 提取学生名
-                val studentName = doc.select(".voice-header .name").text().trim()
+                // 提取学生名（新版 SPA 中学生名可能在 .role-info 或 .voice-header 相关区域）
+                val studentName = doc.select(".voice-header .name").text().ifEmpty {
+                    doc.select(".voice-header .role-name").text().ifEmpty {
+                        doc.select(".voice-header-l .name").text()
+                    }
+                }.trim()
 
                 // 提取皮肤立绘（官方介绍图作为默认立绘）
                 val skinFigureMap = mutableMapOf<String, String>()
@@ -1055,9 +1068,9 @@ class ShipRepository @Inject constructor(
                     val listGroup = doc.select(".list-group#$tabId")
                     listGroup.select(".list-group-item").forEach { item ->
                         try {
-                            // 场景名：.item-title（非 .item-header-title）
-                            val scene = item.select(".item-title").text().trim()
-                            if (scene.isEmpty()) return@forEach
+                            // 场景名：新版使用 .item-header-title（旧版为 .item-title）
+                            val scene = item.select(".item-header-title").text().trim()
+                            if (scene.isEmpty() || scene == "标题") return@forEach
 
                             // 提取音频：audio id 格式 voice_audio_{tabId}_{lang}_{index}
                             val dubItems = item.select(".dub-item")
@@ -1076,13 +1089,13 @@ class ShipRepository @Inject constructor(
                             }
 
                             // 提取对话文本
-                            // .voice-desc 包含中文描述，.translate-box .list 包含日文/官翻翻译
-                            var cnText = item.select(".voice-desc").text().trim()
+                            // 新版结构：.dub-desc 包含中文描述，.dub-content .list 包含日文/官翻翻译
+                            var cnText = item.select(".dub-desc").text().trim()
                             var jpText = ""
 
-                            // 解析翻译框：.translate-box .list，每个 .list 内有 .text-name 标签
-                            item.select(".translate-box .list").forEach { listEl ->
-                                val textName = listEl.select(".text-name").text().trim()
+                            // 解析翻译框：新版 .dub-content .list，每个 .list 内有 .dub-name 标签
+                            item.select(".dub-content .list").forEach { listEl ->
+                                val textName = listEl.select(".dub-name").text().trim()
                                 // 移除标签文本，获取纯内容
                                 val fullText = listEl.text().trim()
                                 val content = if (textName.isNotEmpty() && fullText.startsWith(textName)) {
@@ -1119,6 +1132,8 @@ class ShipRepository @Inject constructor(
                 }
 
                 if (voices.isEmpty()) {
+                    // 解析失败：清除 HTML 缓存，防止重试命中未渲染的 HTML（缓存污染）
+                    WebViewHtmlFetcher.invalidateCache(voiceUrl)
                     throw IllegalStateException("未找到学生语音数据，页面可能未完全加载。")
                 }
 
@@ -1134,15 +1149,17 @@ class ShipRepository @Inject constructor(
      * 获取学生立绘数据
      * 立绘页同样为 Vue.js SPA，需要使用 WebView 渲染后解析。
      *
-     * 页面结构（JS 渲染后）：
-     *   #gfjs.img-swiper — 官方介绍（轮播图）
-     *   #hydt.base-content — 回忆大厅
-     *   #sdj-jp.base-content — 设定集-日文
-     *   #sdj-cn.base-content — 设定集-繁中
-     *   #yhs.base-content — 本家画
-     *   #gfys.base-content — 官方衍生
-     *   #emoji.base-content — 表情
-     *   #video.base-content — 视频
+     * gamekee.com 新版 Vue SPA 页面结构（点击影画鉴赏 tab=3 后渲染）：
+     *   #gfjs.header-container > .sdj > .image-list > img.item（官方介绍）
+     *   #hydt.header-container > img.hydt（回忆大厅）
+     *   #sdj-jp.header-container > .sdj > .image-list > img.item（设定集-日文）
+     *   #sdj-cn.header-container > .sdj > .image-list > img.item（设定集-繁中）
+     *   #yhs.header-container > .sdj（本家画）
+     *   #gfys.header-container > .sdj > .image-list（官方衍生）
+     *   #emoji.header-container > .emoji-box > .gallery-top > .swiper-container（表情）
+     *   #video.header-container > .el-scrollbar（视频）
+     *
+     * 立绘内容需通过 ?tab=3 触发 WebViewHtmlFetcher 主动点击侧边栏 tab 后才会渲染。
      *
      * @param studentLink 学生详情页链接
      * @return StudentGallery 包含 8 个分类标签的立绘数据
@@ -1153,11 +1170,18 @@ class ShipRepository @Inject constructor(
 
         try {
             // 立绘页也是 Vue.js SPA，需要 WebView 渲染
-            val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(context, galleryUrl, waitMs = 8000L)
+            // contentSelector=".header-container"：动态检测立绘容器是否渲染完成，无需固定等待 12s
+            val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(
+                context, galleryUrl, waitMs = 12000L, contentSelector = ".header-container"
+            )
             val doc = Jsoup.parse(html)
 
             val tabs = mutableListOf<StudentGalleryTab>()
-            val studentName = doc.select(".voice-header .name").text().ifEmpty { "学生" }
+            val studentName = doc.select(".voice-header .name").text().ifEmpty {
+                doc.select(".voice-header .role-name").text().ifEmpty {
+                    doc.select(".voice-header-l .name").text()
+                }
+            }.ifEmpty { "学生" }
 
             StudentGallery.TAB_ID_MAP.forEach { (containerId, tabName) ->
                 val images = mutableListOf<StudentGalleryImage>()
@@ -1244,6 +1268,8 @@ class ShipRepository @Inject constructor(
             Log.d(TAG, "Found student gallery: ${tabs.size} tabs, $totalItems items, name=$studentName")
 
             if (totalItems == 0) {
+                // 解析失败：清除 HTML 缓存，防止重试命中未渲染的 HTML（缓存污染）
+                WebViewHtmlFetcher.invalidateCache(galleryUrl)
                 Log.w(TAG, "Gallery has 0 items, page may not have fully loaded")
             }
 

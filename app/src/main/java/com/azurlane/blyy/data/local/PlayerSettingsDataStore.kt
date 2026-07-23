@@ -48,6 +48,7 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_AVATAR_URL_KEY = stringPreferencesKey("secretary_avatar_url")
         private val SECRETARY_AUTO_PLAY_ENABLED_KEY = booleanPreferencesKey("secretary_auto_play_enabled")
         private val SECRETARY_AUTO_PLAY_INTERVAL_KEY = intPreferencesKey("secretary_auto_play_interval")
+        private val SECRETARY_DIALOGUE_ENABLED_KEY = booleanPreferencesKey("secretary_dialogue_enabled")
         
         // 语音语言
         private val VOICE_LANGUAGE_KEY = stringPreferencesKey("voice_language")
@@ -67,6 +68,10 @@ class PlayerSettingsDataStore @Inject constructor(
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
+
+        // 网盘链接持久化缓存（跨重启兜底，避免 CDN 缓存或网络失败导致 App 拿不到链接）
+        private val CACHED_DRIVE_LINK_JSON_KEY = stringPreferencesKey("cached_drive_link_json")
+        private val CACHED_DRIVE_LINK_AT_KEY = androidx.datastore.preferences.core.longPreferencesKey("cached_drive_link_at")
 
         // 小助手配置
         private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
@@ -163,6 +168,7 @@ class PlayerSettingsDataStore @Inject constructor(
     val secretaryAvatarUrl: Flow<String> = context.dataStore.data.map { it[SECRETARY_AVATAR_URL_KEY] ?: "" }
     val secretaryAutoPlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
     val secretaryAutoPlayIntervalMinutes: Flow<Int> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
+    val secretaryDialogueEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_DIALOGUE_ENABLED_KEY] ?: true }
     
     // 悬浮窗状态
     val secretaryOverlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
@@ -226,6 +232,12 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_AUTO_PLAY_ENABLED_KEY] = enabled
             prefs[SECRETARY_AUTO_PLAY_INTERVAL_KEY] = intervalMinutes.coerceIn(1, 60)
+        }
+    }
+
+    suspend fun setSecretaryDialogueEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_DIALOGUE_ENABLED_KEY] = enabled
         }
     }
     
@@ -547,6 +559,35 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { prefs ->
             prefs.remove(LEADERBOARD_CACHE_JSON_KEY)
             prefs.remove(LEADERBOARD_CACHE_TIMESTAMP_KEY)
+        }
+    }
+
+    // ── 网盘链接持久化缓存 ──
+
+    /**
+     * 读取网盘链接持久化缓存。
+     * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
+     */
+    suspend fun getCachedDriveLink(): Pair<String, Long>? {
+        val prefs = context.dataStore.data.first()
+        val json = prefs[CACHED_DRIVE_LINK_JSON_KEY] ?: return null
+        val ts = prefs[CACHED_DRIVE_LINK_AT_KEY] ?: 0L
+        return json to ts
+    }
+
+    /** 写入网盘链接持久化缓存（JSON + 当前时间戳） */
+    suspend fun setCachedDriveLink(json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[CACHED_DRIVE_LINK_JSON_KEY] = json
+            prefs[CACHED_DRIVE_LINK_AT_KEY] = System.currentTimeMillis()
+        }
+    }
+
+    /** 清空网盘链接持久化缓存 */
+    suspend fun clearCachedDriveLink() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(CACHED_DRIVE_LINK_JSON_KEY)
+            prefs.remove(CACHED_DRIVE_LINK_AT_KEY)
         }
     }
 

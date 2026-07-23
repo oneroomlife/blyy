@@ -26,7 +26,11 @@ data class SecretaryManagerState(
     val isLoadingVoices: Boolean = false,
     val autoPlayEnabled: Boolean = false,
     val autoPlayIntervalMinutes: Int = 5,
-    val voiceLanguage: VoiceLanguage = VoiceLanguage.CN
+    val voiceLanguage: VoiceLanguage = VoiceLanguage.CN,
+    /** 当前播放语音的台词文本（null 表示无台词显示） */
+    val currentDialogue: String? = null,
+    /** 台词弹窗开关（true=显示，false=隐藏） */
+    val dialogueEnabled: Boolean = true
 )
 
 @Singleton
@@ -44,7 +48,9 @@ class SecretaryManager @Inject constructor(
     private val _voices = MutableStateFlow<List<VoiceLine>>(emptyList())
     private val _isLoadingVoices = MutableStateFlow(false)
     private val _voiceLanguage = MutableStateFlow(VoiceLanguage.CN)
+    private val _currentDialogue = MutableStateFlow<String?>(null)
     private var autoPlayJob: Job? = null
+    private var dialogueClearJob: Job? = null
     
     companion object {
         private const val TAG = "SecretaryManager"
@@ -58,7 +64,9 @@ class SecretaryManager @Inject constructor(
         _isLoadingVoices,
         _voiceLanguage,
         settingsDataStore.secretaryAutoPlayEnabled,
-        settingsDataStore.secretaryAutoPlayIntervalMinutes
+        settingsDataStore.secretaryAutoPlayIntervalMinutes,
+        _currentDialogue,
+        settingsDataStore.secretaryDialogueEnabled
     ) { args ->
         SecretaryManagerState(
             shipName = args[0] as String,
@@ -68,7 +76,9 @@ class SecretaryManager @Inject constructor(
             isLoadingVoices = args[4] as Boolean,
             voiceLanguage = args[5] as VoiceLanguage,
             autoPlayEnabled = args[6] as Boolean,
-            autoPlayIntervalMinutes = args[7] as Int
+            autoPlayIntervalMinutes = args[7] as Int,
+            currentDialogue = args[8] as String?,
+            dialogueEnabled = args[9] as Boolean
         )
     }.stateIn(
         scope = scope,
@@ -98,6 +108,15 @@ class SecretaryManager @Inject constructor(
         scope.launch {
             settingsDataStore.voiceLanguage.collect { lang ->
                 _voiceLanguage.value = lang
+            }
+        }
+        scope.launch {
+            settingsDataStore.secretaryDialogueEnabled.collect { enabled ->
+                // 开关关闭时立即清除残留台词
+                if (!enabled) {
+                    dialogueClearJob?.cancel()
+                    _currentDialogue.value = null
+                }
             }
         }
     }
@@ -212,14 +231,24 @@ class SecretaryManager @Inject constructor(
             if (_shipName.value.isNotEmpty()) loadVoicesInBackground(_shipName.value)
             return
         }
+        val randomVoice = voices.random()
+        // 更新台词弹窗内容，8 秒后自动清除（仅在开关开启时显示）
+        val cleanDialogue = randomVoice.dialogue.replace("\n", " ").replace("\r", "").trim()
+        if (state.value.dialogueEnabled) {
+            _currentDialogue.value = cleanDialogue.ifEmpty { null }
+            dialogueClearJob?.cancel()
+            dialogueClearJob = scope.launch {
+                delay(8000)
+                _currentDialogue.value = null
+            }
+        }
         onController { player ->
-            val randomVoice = voices.random()
             val mediaItem = createMediaItem(randomVoice)
             player.setMediaItem(mediaItem)
             player.repeatMode = Player.REPEAT_MODE_OFF
             player.prepare()
             player.play()
-            Log.d(TAG, "playRandomVoice: 播放语音 ${randomVoice.scene}")
+            Log.d(TAG, "playRandomVoice: 播放语音 ${randomVoice.scene}, dialogue=$cleanDialogue")
         }
     }
 
@@ -279,6 +308,12 @@ class SecretaryManager @Inject constructor(
     fun setVoiceLanguage(language: VoiceLanguage) {
         scope.launch {
             settingsDataStore.setVoiceLanguage(language)
+        }
+    }
+
+    fun setDialogueEnabled(enabled: Boolean) {
+        scope.launch {
+            settingsDataStore.setSecretaryDialogueEnabled(enabled)
         }
     }
 

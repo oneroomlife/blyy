@@ -35,6 +35,41 @@ data class UpdateInfo(
 )
 
 /**
+ * 手动检查更新结果（"关于"页使用）。
+ *
+ * 比 [UpdateInfo] 多了"已是最新版本"状态，因为手动检查需要明确告知用户当前状态，
+ * 而启动自动检查仅在发现新版本时才弹窗。
+ *
+ * @param status    检查结果状态
+ * @param updateInfo 当 status 为 [ManualCheckStatus.UPDATE_AVAILABLE] 时的更新信息
+ * @param errorMessage 当 status 为 [ManualCheckStatus.ERROR] 时的错误信息
+ */
+data class ManualCheckResult(
+    val status: ManualCheckStatus,
+    val updateInfo: UpdateInfo? = null,
+    val errorMessage: String? = null
+)
+
+enum class ManualCheckStatus {
+    /** 发现新版本 */
+    UPDATE_AVAILABLE,
+    /** 当前已是最新版本 */
+    UP_TO_DATE,
+    /** 检查失败 */
+    ERROR
+}
+
+/**
+ * 更新渠道。
+ * - STABLE：稳定版，使用 /releases/latest 接口
+ * - BETA：测试版，使用 /releases 列表取第一个（通常是预发布版本）
+ */
+enum class UpdateChannel(val displayName: String) {
+    STABLE("稳定版"),
+    BETA("测试版")
+}
+
+/**
  * 应用启动时自动检测更新的工具类。
  *
  * 职责：
@@ -62,14 +97,21 @@ class AppUpdateChecker @Inject constructor(
     companion object {
         private const val TAG = "AppUpdateChecker"
         private const val GITHUB_API_LATEST = "https://api.github.com/repos/oneroomlife/blyy/releases/latest"
+        private const val GITHUB_API_LIST = "https://api.github.com/repos/oneroomlife/blyy/releases"
         private const val GITHUB_RELEASE_PAGE = "https://github.com/oneroomlife/blyy/releases"
         private const val CONNECT_TIMEOUT_MS = 4_000
         private const val READ_TIMEOUT_MS = 5_000
         private const val MAX_RETRIES = 1
         private const val RETRY_DELAY_MS = 400L
 
-        /** Release 信息缓存有效期（毫秒）。短缓存让连续启动秒级返回，同时保证及时性。 */
-        private const val RELEASE_CACHE_TTL_MS = 10 * 60 * 1000L
+        /** Release 信息缓存有效期（毫秒）。短缓存让连续启动秒级返回，同时保证及时性。
+         *  从 10 分钟缩短到 3 分钟：GitHub 上发布新版本后，App 在 3 分钟内即可感知到，
+         *  避免"GitHub 已发新版本但 App 长期提示已是最新"的问题。 */
+        private const val RELEASE_CACHE_TTL_MS = 3 * 60 * 1000L
+
+        /** 过期 Release 缓存最大有效期（毫秒）。所有重试失败降级返回过期缓存时，
+         *  超过此时间的缓存视为不可靠，不返回（避免用户看到很久以前的版本信息）。 */
+        private const val STALE_RELEASE_MAX_AGE_MS = 60 * 60 * 1000L
     }
 
     /** 缓存的 release 原始三元组 (version, changelog, downloadUrl) 与时间戳 */
@@ -167,9 +209,103 @@ class AppUpdateChecker @Inject constructor(
      */
     fun getAppVersion(): String = currentVersion
 
-    private suspend fun fetchLatestReleaseWithRetry(forceRefresh: Boolean): Triple<String, String, String>? {
+    /**
+     * 强制刷新网盘链接（绕过内存缓存）。
+     *
+     * 供 UI 在用户点击"通过网盘更新"时调用，确保打开的是 GitHub 仓库中最新的网盘链接，
+     * 而非启动检查时缓存的旧链接。即使启动后过了一段时间，也能拿到开发者最新配置的网盘地址。
+     *
+     * 内部使用多源版本择优策略：三源并发，取 version 最大的结果，绝不返回旧链接。
+     *
+     * @return 最新的网盘链接；获取失败时降级返回缓存（内存/持久化），全部不可用则返回 null
+     */
+    suspend fun refreshDriveLink(): NetworkDriveLink? {
+        return try {
+            driveLinkProvider.getLink(forceRefresh = true)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to refresh drive link: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * 手动检查更新（"关于"页使用）。
+     *
+     * 与 [checkForUpdate] 的区别：
+     * - 忽略"自动检测开关"和"跳过版本"设置（用户主动检查，应给出明确结果）
+     * - 强制刷新 release 缓存和网盘链接缓存（确保拿到最新信息）
+     * - 返回 [ManualCheckResult]，包含"已是最新版本"状态（启动检查不区分此状态）
+     * - 支持选择更新渠道（STABLE / BETA）
+     *
+     * 网盘链接使用多源版本择优策略（forceRefresh=true），确保拿到最新链接。
+     *
+     * @param channel 更新渠道，默认 STABLE
+     * @return 检查结果（UPDATE_AVAILABLE / UP_TO_DATE / ERROR）
+     */
+    suspend fun forceCheckUpdate(channel: UpdateChannel = UpdateChannel.STABLE): ManualCheckResult {
+        return try {
+            coroutineScope {
+                // 并行：release 信息（强制刷新）+ 网盘链接（强制刷新，多源版本择优）
+                val releaseDeferred = async { fetchLatestReleaseWithRetry(forceRefresh = true, channel = channel) }
+                val driveLinkDeferred = async {
+                    try {
+                        driveLinkProvider.getLink(forceRefresh = true)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to load drive link during manual check: ${e.message}")
+                        null
+                    }
+                }
+
+                val result = releaseDeferred.await()
+                if (result == null) {
+                    Log.w(TAG, "Manual check: failed to fetch release info")
+                    return@coroutineScope ManualCheckResult(
+                        ManualCheckStatus.ERROR,
+                        errorMessage = "无法获取更新信息，请检查网络后重试"
+                    )
+                }
+
+                val (latestVersion, changelog, downloadUrl) = result
+                Log.i(TAG, "Manual check: Current=$currentVersion, Latest=$latestVersion, channel=$channel")
+
+                val driveLink = driveLinkDeferred.await()
+
+                if (isNewerVersion(latestVersion)) {
+                    Log.i(TAG, "Manual check: update available v$latestVersion (hasDriveLink=${driveLink != null})")
+                    ManualCheckResult(
+                        ManualCheckStatus.UPDATE_AVAILABLE,
+                        updateInfo = UpdateInfo(
+                            versionName = latestVersion,
+                            changelog = changelog.ifEmpty { "暂无更新日志" },
+                            downloadUrl = downloadUrl.ifEmpty { GITHUB_RELEASE_PAGE },
+                            driveLink = driveLink,
+                            currentVersion = currentVersion
+                        )
+                    )
+                } else {
+                    Log.i(TAG, "Manual check: app is up to date (v$latestVersion)")
+                    ManualCheckResult(ManualCheckStatus.UP_TO_DATE)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Manual check failed", e)
+            val errorMessage = when {
+                e.message?.contains("timeout", ignoreCase = true) == true -> "连接超时，请检查网络"
+                e.message?.contains("no host", ignoreCase = true) == true -> "网络连接失败"
+                e.message?.contains("UnknownHost", ignoreCase = true) == true -> "无法解析服务器地址"
+                else -> "网络错误: ${e.message}"
+            }
+            ManualCheckResult(ManualCheckStatus.ERROR, errorMessage = errorMessage)
+        }
+    }
+
+    private suspend fun fetchLatestReleaseWithRetry(
+        forceRefresh: Boolean,
+        channel: UpdateChannel = UpdateChannel.STABLE
+    ): Triple<String, String, String>? {
         // 缓存命中且未过期时直接返回，避免每次启动都发起网络请求
-        if (!forceRefresh) {
+        // 注意：仅 STABLE 渠道使用缓存，BETA 渠道每次都强制请求（避免缓存影响）
+        if (!forceRefresh && channel == UpdateChannel.STABLE) {
             val cached = cachedRelease
             if (cached != null && System.currentTimeMillis() - cachedReleaseAt < RELEASE_CACHE_TTL_MS) {
                 Log.d(TAG, "Returning cached release info (age=${System.currentTimeMillis() - cachedReleaseAt}ms)")
@@ -178,11 +314,13 @@ class AppUpdateChecker @Inject constructor(
         }
 
         repeat(MAX_RETRIES) { attempt ->
-            val result = fetchLatestRelease()
+            val result = fetchLatestRelease(channel)
             if (result != null) {
-                // 写入缓存
-                cachedRelease = result
-                cachedReleaseAt = System.currentTimeMillis()
+                // 仅缓存 STABLE 渠道结果
+                if (channel == UpdateChannel.STABLE) {
+                    cachedRelease = result
+                    cachedReleaseAt = System.currentTimeMillis()
+                }
                 return result
             }
             if (attempt < MAX_RETRIES - 1) {
@@ -190,24 +328,37 @@ class AppUpdateChecker @Inject constructor(
                 kotlinx.coroutines.delay(RETRY_DELAY_MS)
             }
         }
-        // 所有重试失败：若有过期缓存，降级返回过期缓存（保证可用性优先于及时性）
-        cachedRelease?.let {
-            Log.w(TAG, "All retries failed, returning stale release cache")
-            return it
+        // 所有重试失败：若有过期缓存且未超过最大有效期，降级返回（保证可用性优先于及时性）
+        // 仅 STABLE 渠道可降级到缓存
+        if (channel == UpdateChannel.STABLE) {
+            cachedRelease?.let {
+                val age = System.currentTimeMillis() - cachedReleaseAt
+                if (age <= STALE_RELEASE_MAX_AGE_MS) {
+                    Log.w(TAG, "All retries failed, returning stale release cache (age=${age}ms)")
+                    return it
+                } else {
+                    Log.w(TAG, "Stale release cache is too old (age=${age}ms > max=$STALE_RELEASE_MAX_AGE_MS), discarding")
+                }
+            }
         }
         return null
     }
 
-    private suspend fun fetchLatestRelease(): Triple<String, String, String>? =
+    private suspend fun fetchLatestRelease(channel: UpdateChannel = UpdateChannel.STABLE): Triple<String, String, String>? =
         withContext(Dispatchers.IO) {
             var connection: HttpURLConnection? = null
             try {
-                Log.d(TAG, "Fetching from: $GITHUB_API_LATEST")
-                val url = URL(GITHUB_API_LATEST)
+                val apiUrl = if (channel == UpdateChannel.BETA) GITHUB_API_LIST else GITHUB_API_LATEST
+                Log.d(TAG, "Fetching from: $apiUrl (channel=$channel)")
+                val url = URL(apiUrl)
                 connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
                 connection.setRequestProperty("User-Agent", "BLYY-Android-App/${currentVersion}")
+                // 反代理缓存：阻止中间层（运营商/CDN）缓存 API 响应，保证拿到最新 Release
+                // 注意：GitHub API 本身支持 ETag，但加 no-cache 不影响 ETag 协商，仅阻止中间代理直接返回缓存
+                connection.setRequestProperty("Cache-Control", "no-cache")
+                connection.setRequestProperty("Pragma", "no-cache")
                 connection.connectTimeout = CONNECT_TIMEOUT_MS
                 connection.readTimeout = READ_TIMEOUT_MS
                 connection.instanceFollowRedirects = true
@@ -219,7 +370,7 @@ class AppUpdateChecker @Inject constructor(
                     HttpURLConnection.HTTP_OK -> {
                         val response = connection.inputStream.bufferedReader().use { it.readText() }
                         Log.d(TAG, "Response length: ${response.length}")
-                        parseReleaseResponse(response)
+                        parseReleaseResponse(response, channel)
                     }
                     HttpURLConnection.HTTP_NOT_FOUND -> {
                         Log.e(TAG, "Release not found (404) - no releases published yet")
@@ -243,9 +394,18 @@ class AppUpdateChecker @Inject constructor(
             }
         }
 
-    private fun parseReleaseResponse(response: String): Triple<String, String, String>? {
+    private fun parseReleaseResponse(
+        response: String,
+        channel: UpdateChannel = UpdateChannel.STABLE
+    ): Triple<String, String, String>? {
         return try {
-            val release = JSONObject(response)
+            val release = if (channel == UpdateChannel.BETA) {
+                // BETA 渠道：/releases 返回数组，取第一个（通常是最新的预发布版本）
+                val releases = org.json.JSONArray(response)
+                if (releases.length() > 0) releases.getJSONObject(0) else return null
+            } else {
+                JSONObject(response)
+            }
             val tagName = release.getString("tag_name").removePrefix("v")
             val body = release.optString("body", "").trim()
             val htmlUrl = release.optString("html_url", GITHUB_RELEASE_PAGE)
@@ -273,7 +433,7 @@ class AppUpdateChecker @Inject constructor(
                 Log.d(TAG, "No APK asset found, using release page: $htmlUrl")
             }
 
-            Log.i(TAG, "Parsed release: version=$tagName, hasChangelog=${body.isNotEmpty()}, hasApk=${downloadUrl != htmlUrl}")
+            Log.i(TAG, "Parsed release: version=$tagName, channel=$channel, hasChangelog=${body.isNotEmpty()}, hasApk=${downloadUrl != htmlUrl}")
             // 修复：Triple 顺序必须与解构顺序一致 (version, changelog, downloadUrl)
             Triple(tagName, formattedChangelog, downloadUrl)
         } catch (e: Exception) {

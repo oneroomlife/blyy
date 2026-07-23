@@ -77,6 +77,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.Surface
@@ -430,12 +431,14 @@ fun AppContent() {
         val updateCheckViewModel: UpdateCheckViewModel = hiltViewModel()
         val updateChecker: AppUpdateChecker = updateCheckViewModel.updateChecker
         val updateInfo by updateCheckViewModel.updateInfo.collectAsStateWithLifecycle()
+        val isRefreshingDriveLink by updateCheckViewModel.isRefreshingDriveLink.collectAsStateWithLifecycle()
 
         if (updateInfo != null) {
             // 先捕获当前值，避免回调中 updateInfo 已被置空导致 NPE
             val currentUpdateInfo = updateInfo!!
             UpdateAvailableDialog(
                 updateInfo = currentUpdateInfo,
+                isRefreshingDriveLink = isRefreshingDriveLink,
                 onUpdateViaGithub = {
                     try {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl))
@@ -447,17 +450,23 @@ fun AppContent() {
                     updateCheckViewModel.dismissUpdate()
                 },
                 onUpdateViaDrive = {
-                    val driveLink = currentUpdateInfo.driveLink
-                    if (driveLink != null) {
-                        try {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(driveLink.url))
-                            context.startActivity(intent)
-                        } catch (e: Exception) {
-                            Log.e("MainActivity", "Failed to open drive URL", e)
-                            Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
+                    // 点击"通过网盘更新"时，先强制刷新网盘链接，确保打开的是 GitHub 仓库中最新的链接
+                    // 而非启动检查时缓存的旧链接。刷新期间 UI 显示 loading 状态。
+                    updateCheckViewModel.refreshDriveLink { latestLink ->
+                        val linkToOpen = latestLink ?: currentUpdateInfo.driveLink
+                        if (linkToOpen != null) {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(linkToOpen.url))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                Log.e("MainActivity", "Failed to open drive URL", e)
+                                Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "网盘链接获取失败，请稍后重试或使用 GitHub 更新", Toast.LENGTH_SHORT).show()
                         }
+                        updateCheckViewModel.dismissUpdate()
                     }
-                    updateCheckViewModel.dismissUpdate()
                 },
                 onSkipVersion = {
                     // 用户点击"稍后自行更新"按钮 → 记录跳过版本，下次启动不再提示
@@ -884,7 +893,10 @@ fun AppContent() {
                                     activity?.stopOverlayService()
                                 }
                             },
-                            isOverlayEnabled = overlayEnabled
+                            isOverlayEnabled = overlayEnabled,
+                            onToggleDialogue = { enabled ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetDialogueEnabled(enabled))
+                            }
                         )
                     }
                     composable("secretary_random") {
@@ -926,7 +938,7 @@ fun AppContent() {
                     SecretaryChibiOverlay(
                         figureUrl = secretaryState.figureUrl,
                         shipName = secretaryState.shipName,
-                        dialogue = null,
+                        dialogue = if (secretaryState.dialogueEnabled) secretaryState.currentDialogue else null,
                         modifier = Modifier.fillMaxSize(),
                         onTap = {
                             secretaryViewModel.ensureVoicesLoaded(secretaryState.shipName)
@@ -1705,6 +1717,7 @@ private fun ModernDrawerItem(
 @Composable
 private fun UpdateAvailableDialog(
     updateInfo: UpdateInfo,
+    isRefreshingDriveLink: Boolean = false,
     onUpdateViaGithub: () -> Unit,
     onUpdateViaDrive: () -> Unit,
     onSkipVersion: () -> Unit,
@@ -1913,6 +1926,7 @@ private fun UpdateAvailableDialog(
                             title = "通过${driveLink.label}更新",
                             subtitle = driveLink.note.ifEmpty { "备用下载渠道" },
                             accentColor = AppColors.Accent.GoldDark,
+                            isLoading = isRefreshingDriveLink,
                             onClick = onUpdateViaDrive
                         )
                     }
@@ -1943,6 +1957,7 @@ private fun UpdateChannelOption(
     title: String,
     subtitle: String,
     accentColor: Color,
+    isLoading: Boolean = false,
     onClick: () -> Unit
 ) {
     val isDark = LocalIsDark.current
@@ -1962,6 +1977,7 @@ private fun UpdateChannelOption(
 
     Surface(
         onClick = onClick,
+        enabled = !isLoading,
         shape = shape,
         color = containerColor,
         border = androidx.compose.foundation.BorderStroke(
@@ -1991,12 +2007,20 @@ private fun UpdateChannelOption(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(18.dp)
-                )
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = accentColor
+                    )
+                } else {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
             Column(
                 modifier = Modifier.weight(1f),

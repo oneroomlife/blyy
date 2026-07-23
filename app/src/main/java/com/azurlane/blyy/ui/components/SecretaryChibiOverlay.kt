@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -41,18 +42,22 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.util.LocalSdResolver
 import kotlin.math.roundToInt
 
 @Composable
@@ -70,6 +75,10 @@ fun SecretaryChibiOverlay(
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val hapticFeedback = LocalHapticFeedback.current
+    val context = LocalContext.current
+
+    // 尝试解析 SD 小人动画资源；解析到则用 Spine 渲染，否则回退静态立绘
+    val sdAssetName = remember(shipName) { LocalSdResolver.resolve(context, shipName) }
 
     val screenWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeight = with(density) { configuration.screenHeightDp.dp.toPx() }
@@ -104,48 +113,55 @@ fun SecretaryChibiOverlay(
     )
 
     val isDark = LocalIsDark.current
-    val bubbleMaxHeight = 200.dp
-    val bubbleWidth = 220.dp
+
+    // 气泡实际高度（px），由 onGloballyPositioned 动态测量，用于让气泡底部始终位于立绘头顶上方固定间距，
+    // 避免气泡高度随文本行数变化时与立绘重叠。
+    var bubbleHeightPx by remember { mutableFloatStateOf(0f) }
     
     // 我们用一个外层 Box 来包裹。
     // 如果是 App 内，使用 fillMaxSize 并根据 localOffset 定位。
     // 如果是 悬浮窗，由于外层 WindowManager 是 WRAP_CONTENT，我们这里不需要全屏，也不需要 offset。
     Box(
-        modifier = if (isSystemOverlay) modifier else modifier.fillMaxSize()
+        modifier = modifier.fillMaxSize()
     ) {
         
-        // 将气泡和小人放在一个相对独立的容器里
+        // 将气泡和小人放在一个相对独立的容器里。
+        // 容器尺寸固定为立绘尺寸，确保气泡 TopCenter 对齐到立绘水平中线（而非更宽的气泡宽度中线），
+        // 这样气泡三角尖正好指向立绘头顶中心，视觉美观。
+        // 悬浮窗模式下容器 align BottomCenter，让气泡向上偏移后仍在 WindowManager 可见区域内。
         Box(
-            modifier = Modifier
-                .run {
-                    if (isSystemOverlay) {
-                        this // 悬浮窗模式下，此 Box 处于坐标 (0,0)，WindowManager 控制整体位置
-                    } else {
-                        offset { IntOffset(localOffsetX.roundToInt(), localOffsetY.roundToInt()) }
-                    }
-                }
+            modifier = if (isSystemOverlay) {
+                Modifier.size(figureWidth, figureHeight).align(Alignment.BottomCenter)
+            } else {
+                Modifier
+                    .size(figureWidth, figureHeight)
+                    .offset { IntOffset(localOffsetX.roundToInt(), localOffsetY.roundToInt()) }
+            }
         ) {
-            
-            // 气泡绘制
+
+            // 气泡绘制：对齐到容器顶部中心（= 立绘水平中线），动态测量气泡高度后整体上移，
+            // 使气泡底部（三角尖顶点）位于立绘头顶上方 6dp，无论文本长短都不与立绘重叠。
             AnimatedVisibility(
                 visible = dialogue != null && !isDragging,
                 enter = fadeIn() + expandVertically(expandFrom = Alignment.Bottom) + scaleIn(transformOrigin = TransformOrigin(0.5f, 1f)),
                 exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Bottom) + scaleOut(transformOrigin = TransformOrigin(0.5f, 1f)),
                 modifier = Modifier
-                    // 将气泡定位在小人的正上方居中位置
                     .align(Alignment.TopCenter)
-                    .offset(y = (-bubbleMaxHeight + 10.dp)) // 向上偏移
-                    .size(bubbleWidth, bubbleMaxHeight)
+                    .onGloballyPositioned { bubbleHeightPx = it.size.height.toFloat() }
+                    .offset {
+                        // align(TopCenter) 使气泡顶部在容器顶部(y=0)，气泡底部在 y=bubbleHeightPx。
+                        // 向上偏移 bubbleHeightPx + 6dp，使气泡底部位于容器顶部上方 6dp（立绘头顶上方）。
+                        val gapPx = with(density) { 6.dp.toPx() }
+                        IntOffset(0, -(bubbleHeightPx + gapPx).roundToInt())
+                    }
             ) {
-                Box(contentAlignment = Alignment.BottomCenter) {
-                    SecretarySpeechBubble(text = dialogue ?: "", isDark = isDark)
-                }
+                SecretarySpeechBubble(text = dialogue ?: "", isDark = isDark)
             }
 
             // 立绘小人本体
             Box(
                 modifier = Modifier
-                    .size(figureWidth, figureHeight)
+                    .fillMaxSize()
                     .scale(scale)
                     .graphicsLayer { this.alpha = alpha }
                     .pointerInput(Unit) {
@@ -178,12 +194,42 @@ fun SecretaryChibiOverlay(
                         }
                     }
             ) {
-                AsyncImage(
-                    model = figureUrl,
-                    contentDescription = "秘书舰 $shipName",
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Fit
-                )
+                if (sdAssetName != null) {
+                    // SD 小人 Spine 动画渲染
+                    // SpineSdView 内部的 GLSurfaceView 会消费整个触摸序列，
+                    // 因此点击与拖动都需通过回调传入 SpineSdView，而非依赖外层 Box 的 pointerInput。
+                    // 拖动逻辑镜像下方 detectDragGestures：悬浮窗模式转发给 Service，App 内模式更新本地坐标。
+                    SpineSdView(
+                        assetName = sdAssetName,
+                        modifier = Modifier.fillMaxSize(),
+                        onTap = {
+                            isTapped = true
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onTap()
+                        },
+                        onDragStart = {
+                            isDragging = true
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        },
+                        onDrag = { dx, dy ->
+                            if (isSystemOverlay) {
+                                onPositionChange?.invoke(dx, dy)
+                            } else {
+                                localOffsetX = (localOffsetX + dx).coerceIn(0f, screenWidth - figureWidthPx)
+                                localOffsetY = (localOffsetY + dy).coerceIn(0f, screenHeight - figureHeightPx)
+                            }
+                        },
+                        onDragEnd = { isDragging = false }
+                    )
+                } else {
+                    // 回退：静态立绘图片
+                    AsyncImage(
+                        model = figureUrl,
+                        contentDescription = "秘书舰 $shipName",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
                 if (isDragging) {
                     Surface(
                         modifier = Modifier
@@ -209,13 +255,10 @@ fun SecretaryChibiOverlay(
 private fun SecretarySpeechBubble(text: String, isDark: Boolean) {
     val bubbleColor = if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
     val textColor = if (isDark) Color.White else Color.Black
-    val hPadding = if (text.length > 40) 16.dp else 12.dp
-    val vPadding = if (text.length > 40) 10.dp else 8.dp
-    val cornerRadius = if (text.length > 60) 16.dp else 12.dp
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
-            shape = RoundedCornerShape(cornerRadius),
+            shape = RoundedCornerShape(12.dp),
             color = bubbleColor,
             tonalElevation = 4.dp,
             shadowElevation = 8.dp,
@@ -223,14 +266,18 @@ private fun SecretarySpeechBubble(text: String, isDark: Boolean) {
         ) {
             Text(
                 text = text,
-                modifier = Modifier.padding(horizontal = hPadding, vertical = vPadding),
+                modifier = Modifier
+                    .widthIn(max = 280.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 style = AppTypography.BodySmall.copy(
-                    fontSize = if (text.length > 80) 11.sp else 13.sp,
-                    lineHeight = if (text.length > 80) 15.sp else 18.sp,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
                     fontWeight = FontWeight.Medium
                 ),
                 color = textColor,
-                textAlign = TextAlign.Center
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
         Canvas(modifier = Modifier.size(12.dp, 6.dp)) {

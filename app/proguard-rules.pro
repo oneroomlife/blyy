@@ -12,6 +12,16 @@
 -dontwarn com.github.luben.zstd.**
 -keepclassmembers class com.github.luben.zstd.** { *; }
 
+# ── Spine + libgdx ──
+# spine-libgdx 3.8 通过反射访问 Attachment 子类，libgdx 通过反射加载 GL 驱动，
+# 必须保留类名与字段名，否则运行时找不到类或字段。
+-keep class com.esotericsoftware.** { *; }
+-keepclassmembers class com.esotericsoftware.** { *; }
+-keep class com.badlogic.** { *; }
+-keepclassmembers class com.badlogic.** { *; }
+-dontwarn com.badlogic.**
+-dontwarn com.esotericsoftware.**
+
 # If your project uses WebView with JS, uncomment the following
 # and specify the fully qualified class name to the JavaScript interface
 # class:

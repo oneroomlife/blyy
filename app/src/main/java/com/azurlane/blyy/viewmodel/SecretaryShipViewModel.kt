@@ -21,7 +21,11 @@ data class SecretaryShipState(
     val isFlipping: Boolean = false,
     val flipRevealedShip: Ship? = null,
     val autoPlayEnabled: Boolean = false,
-    val autoPlayIntervalMinutes: Int = 5
+    val autoPlayIntervalMinutes: Int = 5,
+    /** 当前播放语音的台词文本（null 表示无台词显示） */
+    val currentDialogue: String? = null,
+    /** 台词弹窗开关（true=显示，false=隐藏） */
+    val dialogueEnabled: Boolean = true
 )
 
 sealed class SecretaryShipIntent {
@@ -30,6 +34,7 @@ sealed class SecretaryShipIntent {
     object ClearSecretary : SecretaryShipIntent()
     object PlayRandomVoice : SecretaryShipIntent()
     data class SetAutoPlay(val enabled: Boolean, val intervalMinutes: Int) : SecretaryShipIntent()
+    data class SetDialogueEnabled(val enabled: Boolean) : SecretaryShipIntent()
     object StartFlipAnimation : SecretaryShipIntent()
     object EndFlipAnimation : SecretaryShipIntent()
 }
@@ -56,7 +61,9 @@ class SecretaryShipViewModel @Inject constructor(
             isFlipping = isFlipping,
             flipRevealedShip = flipRevealedShip,
             autoPlayEnabled = managerState.autoPlayEnabled,
-            autoPlayIntervalMinutes = managerState.autoPlayIntervalMinutes
+            autoPlayIntervalMinutes = managerState.autoPlayIntervalMinutes,
+            currentDialogue = managerState.currentDialogue,
+            dialogueEnabled = managerState.dialogueEnabled
         )
     }.stateIn(
         scope = viewModelScope,
@@ -75,6 +82,7 @@ class SecretaryShipViewModel @Inject constructor(
             SecretaryShipIntent.ClearSecretary -> secretaryManager.clearSecretary()
             SecretaryShipIntent.PlayRandomVoice -> secretaryManager.playRandomVoice()
             is SecretaryShipIntent.SetAutoPlay -> secretaryManager.setAutoPlay(intent.enabled, intent.intervalMinutes)
+            is SecretaryShipIntent.SetDialogueEnabled -> secretaryManager.setDialogueEnabled(intent.enabled)
             SecretaryShipIntent.StartFlipAnimation -> _isFlipping.value = true
             SecretaryShipIntent.EndFlipAnimation -> _isFlipping.value = false
         }

@@ -146,3 +146,6 @@ scripts/oxipng-*-*/
 
 # Trae IDE workbuddy extension local memory (per-user agent state, not project source)
 .workbuddy/
+
+# Spine SD 动画资源（体积过大，不纳入版本控制，按需本地放置）
+sd/

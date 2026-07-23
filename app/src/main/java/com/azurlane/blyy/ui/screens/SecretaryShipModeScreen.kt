@@ -71,7 +71,8 @@ fun SecretaryShipModeScreen(
     onSetAutoPlay: (Boolean, Int) -> Unit,
     onClearSecretary: () -> Unit = {},
     onToggleOverlay: (Boolean) -> Unit = {},
-    isOverlayEnabled: Boolean = false
+    isOverlayEnabled: Boolean = false,
+    onToggleDialogue: (Boolean) -> Unit = {}
 ) {
     val isDark = LocalIsDark.current
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
@@ -226,6 +227,40 @@ fun SecretaryShipModeScreen(
                                 steps = 58
                             )
                         }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(AppSpacing.Md))
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(AppSpacing.Lg),
+                        verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "台词弹窗",
+                                style = AppTypography.TitleSmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Switch(
+                                checked = secretaryState.dialogueEnabled,
+                                onCheckedChange = onToggleDialogue
+                            )
+                        }
+                        Text(
+                            "播放语音时在秘书舰上方显示台词字幕",
+                            style = AppTypography.BodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
