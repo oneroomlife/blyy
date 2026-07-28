@@ -521,6 +521,8 @@ class JiuxinApiRepository @Inject constructor(
  */
 object JiuxinModelListParser {
 
+    private const val TAG = "JiuxinModelListParser"
+
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -543,7 +545,7 @@ object JiuxinModelListParser {
         val root: JsonElement = try {
             json.parseToJsonElement(responseBody)
         } catch (e: Exception) {
-            Log.w("JiuxinModelListParser", "Root JSON parse failed", e)
+            Log.w(TAG, "Root JSON parse failed", e)
             return emptyList()
         }
 
@@ -682,6 +684,8 @@ object JiuxinModelListParser {
  */
 object JiuxinResponseParser {
 
+    private const val TAG = "JiuxinResponseParser"
+
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -699,7 +703,7 @@ object JiuxinResponseParser {
         val root: JsonObject = try {
             json.parseToJsonElement(responseBody).jsonObject
         } catch (e: Exception) {
-            Log.w("JiuxinResponseParser", "Root JSON parse failed", e)
+            Log.w(TAG, "Root JSON parse failed", e)
             return JiuxinApiResult.Failure(
                 JiuxinApiError.ParseFailed(responseBody, e)
             )
@@ -741,10 +745,10 @@ object JiuxinResponseParser {
         val hasChoicesButEmpty = choices != null && choices.isNotEmpty()
         val error = if (hasChoicesButEmpty) {
             // 结构正确但内容为空
-            Log.w("JiuxinResponseParser", "choices present but content empty. body=${responseBody.take(200)}")
+            Log.w(TAG, "choices present but content empty. body=${responseBody.take(200)}")
             JiuxinApiError.EmptyContent()
         } else {
-            Log.w("JiuxinResponseParser", "No recognized format. body=${responseBody.take(200)}")
+            Log.w(TAG, "No recognized format. body=${responseBody.take(200)}")
             JiuxinApiError.ParseFailed(responseBody)
         }
         return JiuxinApiResult.Failure(error)

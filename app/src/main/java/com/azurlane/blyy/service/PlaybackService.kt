@@ -5,7 +5,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Process
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
@@ -26,6 +28,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.azurlane.blyy.MainActivity
 import com.azurlane.blyy.R
+import com.azurlane.blyy.util.RefererResolver
 import java.io.File
 
 @UnstableApi
@@ -103,11 +106,7 @@ class PlaybackService : MediaSessionService() {
             // 舰娘音频 (biligame.com) 和学生音频 (gamekee.com) 需要不同的 Referer
             val resolvingFactory = ResolvingDataSource.Factory(httpDataSourceFactory) { dataSpec ->
                 val host = dataSpec.uri.host ?: ""
-                val referer = when {
-                    host.contains("gamekee") -> "https://www.gamekee.com/"
-                    host.contains("biligame") || host.contains("hdslb") -> "https://wiki.biligame.com/"
-                    else -> "https://www.google.com/"
-                }
+                val referer = RefererResolver.getRefererByHost(host)
                 dataSpec.withAdditionalHeaders(mapOf("Referer" to referer))
             }
 
@@ -200,7 +199,57 @@ class PlaybackService : MediaSessionService() {
         return super.onStartCommand(intent, flags, startId)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        // 权限保护：仅允许自身应用和系统级调用方（SystemUI 通知栏、蓝牙栈、Wear OS 等）连接 MediaSession
+        // 拒绝来自第三方恶意应用的控制请求，防止被静音/切歌/篡改播放列表
+        return if (isTrustedController(controllerInfo)) mediaSession else null
+    }
+
+    /**
+     * 校验调用方是否可信
+     *
+     * PlaybackService 必须声明 `android:exported="true"` 以支持系统媒体框架（通知栏媒体控制、
+     * 蓝牙耳机按键、Wear OS / Android Auto 等），但这意味着任意第三方应用都能尝试连接。
+     * 这里通过 UID 校验过滤非系统调用方：
+     * - 自身包名：应用内 MediaController（PlaybackServiceConnection）
+     * - 系统进程 UID（< [Process.FIRST_APPLICATION_UID]）：SystemUI、Bluetooth、system_server 等
+     *
+     * 注：UID 由 Binder 内核态填充，第三方应用无法伪造，因此该判定可信赖。
+     */
+    private fun isTrustedController(controllerInfo: MediaSession.ControllerInfo): Boolean {
+        val callerPackage = controllerInfo.packageName
+        // 1. 自身应用
+        if (callerPackage == packageName) return true
+        // 2. 系统进程 UID（SystemUI 通知栏媒体控制、蓝牙栈、Android Auto 等）
+        // 系统应用 UID 范围 < FIRST_APPLICATION_UID（10000），由 Binder 可信填充，无法伪造
+        val callerUid = controllerInfo.uid
+        if (callerUid > 0 && callerUid < Process.FIRST_APPLICATION_UID) {
+            return true
+        }
+        // 进一步校验：若第三方应用与系统平台签名相同，亦视为可信（罕见，兜底逻辑）
+        if (callerPackage != null && hasPlatformSignature(callerPackage)) {
+            return true
+        }
+        Log.w(TAG, "Rejecting MediaSession connection from untrusted package: $callerPackage (uid=$callerUid)")
+        return false
+    }
+
+    /** 校验指定包名是否使用 Android 平台签名（即系统应用） */
+    private fun hasPlatformSignature(packageName: String): Boolean {
+        return try {
+            val pm = packageManager
+            val callerSig = pm.getPackageInfo(packageName, PackageManager.GET_SIGNATURES).signatures?.firstOrNull()
+                ?: return false
+            val platformSig = pm.getPackageInfo("android", PackageManager.GET_SIGNATURES).signatures?.firstOrNull()
+                ?: return false
+            callerSig == platformSig
+        } catch (e: PackageManager.NameNotFoundException) {
+            false
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to verify platform signature for $packageName", e)
+            false
+        }
+    }
 
     override fun onDestroy() {
         mediaSession?.run { release() }

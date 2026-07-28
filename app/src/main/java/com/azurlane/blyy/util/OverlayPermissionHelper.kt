@@ -1,16 +1,19 @@
-package com.azurlane.blyy.utils
+package com.azurlane.blyy.util
 
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 
 /**
  * 悬浮窗权限管理工具类
  * 提供悬浮窗权限检查、请求功能
  */
 object OverlayPermissionHelper {
+
+    private const val TAG = "OverlayPermissionHelper"
 
     /**
      * 检查是否具有悬浮窗权限
@@ -39,7 +42,7 @@ object OverlayPermissionHelper {
             intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
             context.startActivity(intent)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "requestOverlayPermission: 无法打开悬浮窗权限设置页", e)
         }
     }
 
@@ -52,7 +55,7 @@ object OverlayPermissionHelper {
         if (hasOverlayPermission(context)) {
             return true
         }
-        
+
         requestOverlayPermission(context)
         return false
     }

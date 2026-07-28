@@ -69,6 +69,13 @@ import kotlinx.coroutines.delay
 import org.intellij.lang.annotations.Language
 import kotlin.math.sin
 
+// wiki 名称映射常量 — 处理特殊舰娘名到 wiki URL 段的映射
+// 提到文件顶级避免每次 openWiki 调用都重建 Map
+private val WIKI_NAME_MAPPING = mapOf(
+    "DEAD" to "DEAD_MASTER",
+    "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
+)
+
 @Language("AGSL")
 const val FLUID_SHADER = """
     uniform float2 iResolution;
@@ -116,28 +123,27 @@ fun HomeScreen(
     val context = LocalContext.current
     val uiStyle = LocalUiStyle.current
     val isCommandCenter = uiStyle.isCommandCenter()
-    
-    fun openWiki(ship: Ship) {
-        val url = if (ship.archiveType == com.azurlane.blyy.viewmodel.ArchiveType.STUDENT.name) {
-            // 学生档案（蔚蓝档案）：link 已存储 gamekee 学生详情页完整 URL
-            ship.link.ifBlank { "https://www.gamekee.com/ba/" }
-        } else {
-            // 舰娘档案（碧蓝航线）：构建 biligame wiki URL
-            val processedName = ship.name
-                .replace(".改", "")
-                .replace("改", "")
-                .replace("Kai", "")
 
-            val wikiNameMapping = mapOf(
-                "DEAD" to "DEAD_MASTER",
-                "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
-            )
+    // wiki 名称映射为常量，避免每次调用 openWiki 都重建 Map
+    // openWiki 包装为 remember 化的 val，避免每次重组重新分配闭包
+    val openWiki = remember(context) {
+        { ship: Ship ->
+            val url = if (ship.archiveType == com.azurlane.blyy.viewmodel.ArchiveType.STUDENT.name) {
+                // 学生档案（蔚蓝档案）：link 已存储 gamekee 学生详情页完整 URL
+                ship.link.ifBlank { "https://www.gamekee.com/ba/" }
+            } else {
+                // 舰娘档案（碧蓝航线）：构建 biligame wiki URL
+                val processedName = ship.name
+                    .replace(".改", "")
+                    .replace("改", "")
+                    .replace("Kai", "")
 
-            val wikiName = wikiNameMapping[processedName] ?: processedName
-            "https://wiki.biligame.com/blhx/${java.net.URLEncoder.encode(wikiName, "UTF-8")}"
+                val wikiName = WIKI_NAME_MAPPING[processedName] ?: processedName
+                "https://wiki.biligame.com/blhx/${java.net.URLEncoder.encode(wikiName, "UTF-8")}"
+            }
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            context.startActivity(intent)
         }
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-        context.startActivity(intent)
     }
     
     Box(modifier = Modifier.fillMaxSize()) {
@@ -238,29 +244,27 @@ fun HomeScreen(
                             modifier = Modifier.fillMaxSize(),
                             state = gridState
                         ) {
-                            items(items = state.favoriteShips, key = { it.name }) { ship ->
+                            items(items = state.favoriteShips, key = { it.name }, contentType = { "ship_card" }) { ship ->
+                                // 稳定化所有回调 lambda，避免 ShipCard 因 lambda 实例变化被强制重组
+                                // 共享的"切换誓约 + Toast 提示"逻辑由 rememberUpdatedState 包装，保证 onIntent/context 始终最新
+                                val toggleFavoriteAndToast = remember(ship.name, ship.isFavorite) {
+                                    {
+                                        onIntent(HomeIntent.ToggleFavorite(ship))
+                                        Toast.makeText(
+                                            context,
+                                            if (ship.isFavorite) "已解除与${ship.name}的誓约" else "已与${ship.name}誓约",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
                                 ShipCard(
                                     ship = ship,
                                     decorativeAnimation = allowDecorAnimation,
-                                    onClick = { onShipClick(ship) },
-                                    onLongClick = {
-                                        onIntent(HomeIntent.ToggleFavorite(ship))
-                                        Toast.makeText(
-                                            context,
-                                            if (ship.isFavorite) "已解除与${ship.name}的誓约" else "已与${ship.name}誓约",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    },
-                                    onWikiClick = { openWiki(ship) },
-                                    onOathClick = {
-                                        onIntent(HomeIntent.ToggleFavorite(ship))
-                                        Toast.makeText(
-                                            context,
-                                            if (ship.isFavorite) "已解除与${ship.name}的誓约" else "已与${ship.name}誓约",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    },
-                                    onGalleryClick = { onShowGallery(ship) },
+                                    onClick = remember(ship.name) { { onShipClick(ship) } },
+                                    onLongClick = toggleFavoriteAndToast,
+                                    onWikiClick = remember(ship.name) { { openWiki(ship) } },
+                                    onOathClick = toggleFavoriteAndToast,
+                                    onGalleryClick = remember(ship.name) { { onShowGallery(ship) } },
                                     modifier = with(sharedTransitionScope) {
                                         Modifier.sharedElement(
                                             sharedContentState = rememberSharedContentState(key = "avatar-${ship.name}"),
@@ -499,6 +503,21 @@ private fun OathFloatingParticles() {
         )
     }
 
+    // 预创建粒子径向渐变 Brush — 颜色固定，透明度通过 drawCircle(alpha=) 控制
+    // 避免每帧为 12 粒子分配 12 个新 Brush（约 1440 次/秒）
+    val particleBrushes = remember(particles.size) {
+        particles.map { p ->
+            Brush.radialGradient(
+                colors = listOf(
+                    AppColors.Favorite.PinkLight,
+                    AppColors.Favorite.Pink.copy(alpha = 0.3f),
+                    Color.Transparent
+                ),
+                radius = p.size * 6f
+            )
+        }
+    }
+
     // 全局时间驱动
     val time by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -511,7 +530,7 @@ private fun OathFloatingParticles() {
         val w = size.width
         val h = size.height
 
-        particles.forEach { p ->
+        particles.forEachIndexed { i, p ->
             // Y轴：从上方飘落到下方，循环
             val rawY = (p.yStart + time * p.speed * 60f) % 1.3f
             val y = rawY * h
@@ -527,26 +546,20 @@ private fun OathFloatingParticles() {
             }
             val alpha = edgeFade * 0.35f
 
-            // 绘制柔和光点（径向渐变圆）
+            // 绘制柔和光点（径向渐变圆），center 通过 drawCircle 传入，alpha 单独控制透明度
             drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        AppColors.Favorite.PinkLight.copy(alpha = alpha),
-                        AppColors.Favorite.Pink.copy(alpha = alpha * 0.3f),
-                        Color.Transparent
-                    ),
-                    center = Offset(x, y),
-                    radius = p.size * 6f
-                ),
+                brush = particleBrushes[i],
                 radius = p.size * 6f,
-                center = Offset(x, y)
+                center = Offset(x, y),
+                alpha = alpha
             )
 
             // 中心亮点
             drawCircle(
-                color = AppColors.Favorite.PinkLight.copy(alpha = alpha * 0.8f),
+                color = AppColors.Favorite.PinkLight,
                 radius = p.size * 1.5f,
-                center = Offset(x, y)
+                center = Offset(x, y),
+                alpha = alpha * 0.8f
             )
         }
     }

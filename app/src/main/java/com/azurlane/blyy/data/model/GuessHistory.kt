@@ -8,11 +8,17 @@ import androidx.room.PrimaryKey
  * 猜舰娘游戏历史记录实体
  * 每条记录对应一局完整的游戏（看图识舰娘或听音识舰娘）
  *
- * 复合唯一索引 [sessionId, mode] 确保同一局游戏不会被重复录入
+ * - 复合唯一索引 [sessionId, mode] 确保同一局游戏不会被重复录入
+ * - timestamp 单列索引加速 ORDER BY timestamp DESC 查询
+ * - mode 单列索引加速 WHERE mode = ? 查询
  */
 @Entity(
     tableName = "guess_history",
-    indices = [Index(value = ["sessionId", "mode"], unique = true)]
+    indices = [
+        Index(value = ["sessionId", "mode"], unique = true),
+        Index(value = ["timestamp"]),
+        Index(value = ["mode"])
+    ]
 )
 data class GuessHistory(
     @PrimaryKey(autoGenerate = true)

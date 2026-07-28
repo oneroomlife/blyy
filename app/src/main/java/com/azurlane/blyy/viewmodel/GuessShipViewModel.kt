@@ -122,6 +122,11 @@ class GuessShipViewModel @Inject constructor(
     private val historyDao: GuessHistoryDao
 ) : ViewModel() {
 
+    private companion object {
+        // 裁剪区域宽高随机变化量上限（占图片宽高的比例），用于 generateRandomCrop 各分支
+        const val CROP_VARIATION_MAX = 0.15f
+    }
+
     private val _uiState = MutableStateFlow(GuessGameUiState())
     val uiState: StateFlow<GuessGameUiState> = _uiState.asStateFlow()
 
@@ -344,7 +349,7 @@ class GuessShipViewModel @Inject constructor(
         val maxCropSize = 0.60f
         val baseCropSize = Random.nextFloat() * (maxCropSize - minCropSize) + minCropSize
         
-        val aspectVariation = Random.nextFloat() * 0.15f
+        val aspectVariation = Random.nextFloat() * CROP_VARIATION_MAX
         val cropWidth = baseCropSize + if (Random.nextBoolean()) aspectVariation else -aspectVariation
         val cropHeight = baseCropSize + if (Random.nextBoolean()) aspectVariation else -aspectVariation
         
@@ -366,7 +371,7 @@ class GuessShipViewModel @Inject constructor(
                 val maxStartX = 1f - finalCropWidth
                 Pair(
                     Random.nextFloat() * maxStartX,
-                    Random.nextFloat() * 0.15f
+                    Random.nextFloat() * CROP_VARIATION_MAX
                 )
             }
             CropType.LOWER -> {
@@ -374,13 +379,13 @@ class GuessShipViewModel @Inject constructor(
                 val maxStartY = 1f - finalCropHeight
                 Pair(
                     Random.nextFloat() * maxStartX,
-                    maxStartY - Random.nextFloat() * 0.15f
+                    maxStartY - Random.nextFloat() * CROP_VARIATION_MAX
                 )
             }
             CropType.LEFT -> {
                 val maxStartY = 1f - finalCropHeight
                 Pair(
-                    Random.nextFloat() * 0.15f,
+                    Random.nextFloat() * CROP_VARIATION_MAX,
                     Random.nextFloat() * maxStartY
                 )
             }
@@ -388,36 +393,36 @@ class GuessShipViewModel @Inject constructor(
                 val maxStartX = 1f - finalCropWidth
                 val maxStartY = 1f - finalCropHeight
                 Pair(
-                    maxStartX - Random.nextFloat() * 0.15f,
+                    maxStartX - Random.nextFloat() * CROP_VARIATION_MAX,
                     Random.nextFloat() * maxStartY
                 )
             }
             CropType.UPPER_LEFT -> {
                 Pair(
-                    Random.nextFloat() * 0.15f,
-                    Random.nextFloat() * 0.15f
+                    Random.nextFloat() * CROP_VARIATION_MAX,
+                    Random.nextFloat() * CROP_VARIATION_MAX
                 )
             }
             CropType.UPPER_RIGHT -> {
                 val maxStartX = 1f - finalCropWidth
                 Pair(
-                    maxStartX - Random.nextFloat() * 0.15f,
-                    Random.nextFloat() * 0.15f
+                    maxStartX - Random.nextFloat() * CROP_VARIATION_MAX,
+                    Random.nextFloat() * CROP_VARIATION_MAX
                 )
             }
             CropType.LOWER_LEFT -> {
                 val maxStartY = 1f - finalCropHeight
                 Pair(
-                    Random.nextFloat() * 0.15f,
-                    maxStartY - Random.nextFloat() * 0.15f
+                    Random.nextFloat() * CROP_VARIATION_MAX,
+                    maxStartY - Random.nextFloat() * CROP_VARIATION_MAX
                 )
             }
             CropType.LOWER_RIGHT -> {
                 val maxStartX = 1f - finalCropWidth
                 val maxStartY = 1f - finalCropHeight
                 Pair(
-                    maxStartX - Random.nextFloat() * 0.15f,
-                    maxStartY - Random.nextFloat() * 0.15f
+                    maxStartX - Random.nextFloat() * CROP_VARIATION_MAX,
+                    maxStartY - Random.nextFloat() * CROP_VARIATION_MAX
                 )
             }
             CropType.RANDOM_OFFSET -> {

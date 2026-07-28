@@ -108,7 +108,7 @@ fun LeaderboardScreen(
                         ) {
                             // 强制刷新时在列表顶部显示 loading 指示器
                             if (state.isLoading) {
-                                item {
+                                item(key = "loading_indicator", contentType = "loading") {
                                     Box(
                                         modifier = Modifier.fillMaxWidth(),
                                         contentAlignment = Alignment.Center
@@ -122,7 +122,8 @@ fun LeaderboardScreen(
                             }
                             itemsIndexed(
                                 items = entries,
-                                key = { _, entry -> "${entry.uid}-${entry.score}-${entry.timestamp}" }
+                                key = { _, entry -> "${entry.uid}-${entry.score}-${entry.timestamp}" },
+                                contentType = { _, _ -> "rank_card" }
                             ) { index, entry ->
                                 LeaderboardRankCard(
                                     rank = index + 1,
@@ -130,7 +131,9 @@ fun LeaderboardScreen(
                                     isCurrentUser = entry.uid == userUid
                                 )
                             }
-                            item { Spacer(modifier = Modifier.height(AppSpacing.Xxl)) }
+                            item(key = "bottom_spacer", contentType = "spacer") {
+                                Spacer(modifier = Modifier.height(AppSpacing.Xxl))
+                            }
                         }
                     }
                     state.isLoading -> {
@@ -236,10 +239,11 @@ private fun LeaderboardRankCard(
     modifier: Modifier = Modifier
 ) {
     // 前三名渐变色（金/银/铜），其余使用主题中性色
+    // rankColors 缓存：前三名颜色固定可 remember(rank)；其余依赖 MaterialTheme 需每次读取
     val rankColors = when (rank) {
-        1 -> listOf(Color(0xFFFFD700), Color(0xFFFFA500))
-        2 -> listOf(Color(0xFFC0C0C0), Color(0xFFA0A0A0))
-        3 -> listOf(Color(0xFFCD7F32), Color(0xFFB87333))
+        1 -> remember(rank) { listOf(Color(0xFFFFD700), Color(0xFFFFA500)) }
+        2 -> remember(rank) { listOf(Color(0xFFC0C0C0), Color(0xFFA0A0A0)) }
+        3 -> remember(rank) { listOf(Color(0xFFCD7F32), Color(0xFFB87333)) }
         else -> listOf(
             MaterialTheme.colorScheme.surfaceVariant,
             MaterialTheme.colorScheme.surfaceVariant

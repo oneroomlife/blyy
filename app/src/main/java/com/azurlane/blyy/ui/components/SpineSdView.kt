@@ -4,11 +4,15 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.PixelFormat
 import android.opengl.GLSurfaceView
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -50,55 +54,77 @@ private const val TAG = "SpineSdView"
  * 骨骼动画。libgdx 的 Gdx.gl/Gdx.files 静态字段在 GL context 创建后被同步初始化，
  * 因为 AndroidGL20 内部直接调用 [android.opengl.GLES20]，需要 GLSurfaceView 已绑定 GLContext。
  *
+ * 资源从外部存储加载（用户导入到 Download/BLYY/blhx_sd/），通过 [Gdx.files.absolute]
+ * 读取绝对路径的 .skel/.atlas/.png 三件套。
+ *
  * 默认循环播放 idle 动画（stand/normal 等），点击视图时随机播放一个 action 动画
  * （attack/dance/touch 等），播放完毕后自动回到 idle 循环，过渡平滑。
+ * 长按视图 500ms 后触发 "tuozhuai"（拖拽）动画循环播放，可在拖动状态下移动小人位置；
+ * 释放后自动回到 idle 循环。
  * 点击同时通过 [onTap] 回调通知外部（用于播放语音等）。
  *
- * 显示区域自适应：加载后采样所有动画的关键帧，计算全局最大外接矩形，
- * 确保任何动作都不会超出视口边界被裁剪。
- *
- * @param assetName assets/blhx_sd/ 下三件套的主名（无扩展名），如 "boge"
+ * @param dirPath 资源目录绝对路径（如 /sdcard/Download/BLYY/blhx_sd/boge）
+ * @param assetName 三件套主名（如 boge 或 boge_g），.skel 文件名为 $assetName.skel
  * @param modifier Compose 修饰符
- * @param scaleOverride 手动缩放覆盖；null 时按全局最大边界自适应到视口 95%
+ * @param scaleMultiplier 缩放倍率（1.0 = 默认自适应到视口 95%，0.5 = 半尺寸，1.5 = 放大 50%）；
+ *   通过 AndroidView update 实时生效，无需重建 GLSurfaceView
  * @param onTap 点击小人回调（在 UI 线程触发，用于播放语音等）
  */
 @Composable
 fun SpineSdView(
+    dirPath: String,
     assetName: String,
     modifier: Modifier = Modifier,
-    scaleOverride: Float? = null,
+    scaleMultiplier: Float = 1f,
+    /** 触摸区域占 view 尺寸的比例（0 < ratio ≤ 1.0）。
+     *  当 view 尺寸大于实际需要的触摸区域时（如放大渲染导致 view 扩大），
+     *  通过此参数限制有效触摸区域为 view 中心的比例部分，避免溢出区域误触。
+     *  例：ratio = 0.7 时，view 中心 70% 区域响应触摸，四周 15% 区域忽略触摸。 */
+    touchAreaRatio: Float = 1.0f,
     onTap: (() -> Unit)? = null,
     onDragStart: (() -> Unit)? = null,
     onDrag: ((dx: Float, dy: Float) -> Unit)? = null,
     onDragEnd: (() -> Unit)? = null
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
-    val viewRef = remember(assetName) { mutableStateOf<SpineSdGlSurfaceView?>(null) }
 
-    AndroidView(
-        factory = { ctx ->
-            SpineSdGlSurfaceView(
-                ctx = ctx,
-                assetName = assetName,
-                scaleOverride = scaleOverride,
-                onTap = onTap,
-                onDragStart = onDragStart,
-                onDrag = onDrag,
-                onDragEnd = onDragEnd
-            ).also { viewRef.value = it }
-        },
-        modifier = modifier
-    )
+    // 用 key 包裹：当 dirPath/assetName 变化（如切换皮肤）时强制重建 GLSurfaceView，
+    // 触发 factory 重新执行加载新的 Spine 资源；仅 scaleMultiplier 变化时不重建，走 update 实时生效。
+    key(dirPath, assetName) {
+        val viewRef = remember { mutableStateOf<SpineSdGlSurfaceView?>(null) }
 
-    DisposableEffect(lifecycleOwner, assetName) {
-        val observer = object : DefaultLifecycleObserver {
-            override fun onResume(owner: LifecycleOwner) { viewRef.value?.onResume() }
-            override fun onPause(owner: LifecycleOwner) { viewRef.value?.onPause() }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            viewRef.value?.onPause()
+        AndroidView(
+            factory = { ctx ->
+                SpineSdGlSurfaceView(
+                    ctx = ctx,
+                    dirPath = dirPath,
+                    assetName = assetName,
+                    scaleMultiplier = scaleMultiplier,
+                    touchAreaRatio = touchAreaRatio,
+                    onTap = onTap,
+                    onDragStart = onDragStart,
+                    onDrag = onDrag,
+                    onDragEnd = onDragEnd
+                ).also { viewRef.value = it }
+            },
+            update = { view ->
+                // 实时更新缩放倍率，无需重建 GLSurfaceView（避免重新加载 Spine 资源）
+                view.scaleMultiplier = scaleMultiplier
+                view.touchAreaRatio = touchAreaRatio
+            },
+            modifier = modifier
+        )
+
+        DisposableEffect(lifecycleOwner) {
+            val observer = object : DefaultLifecycleObserver {
+                override fun onResume(owner: LifecycleOwner) { viewRef.value?.onResume() }
+                override fun onPause(owner: LifecycleOwner) { viewRef.value?.onPause() }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+                viewRef.value?.onPause()
+            }
         }
     }
 }
@@ -114,15 +140,68 @@ fun SpineSdView(
  */
 private class SpineSdGlSurfaceView(
     ctx: Context,
+    private val dirPath: String,
     private val assetName: String,
-    private val scaleOverride: Float?,
+    scaleMultiplier: Float,
+    touchAreaRatio: Float,
     private val onTap: (() -> Unit)?,
     private val onDragStart: (() -> Unit)?,
     private val onDrag: ((Float, Float) -> Unit)?,
     private val onDragEnd: (() -> Unit)?
 ) : GLSurfaceView(ctx) {
 
-    private val spineRenderer = SpineRenderer(context.applicationContext, assetName, scaleOverride)
+    /** 缩放倍率，可实时更新（由 AndroidView update 回调设置），每帧由 SpineRenderer 读取 */
+    var scaleMultiplier: Float = scaleMultiplier
+
+    /**
+     * 触摸区域占 view 尺寸的比例（0 < ratio ≤ 1.0）。
+     *
+     * 当 view 尺寸大于实际需要的触摸区域时（如放大渲染导致 view 扩大），
+     * 通过此参数限制有效触摸区域为 view 中心的比例部分，避免溢出区域误触。
+     * - ratio = 1.0：整个 view 响应触摸（默认）
+     * - ratio = 0.7：view 中心 70% 区域响应触摸，四周 15% 忽略触摸
+     *
+     * 触摸区域检查在 ACTION_DOWN 时执行：
+     * 若触摸点在中心 ratio 区域外，直接返回 false 不消费事件，让父容器处理。
+     */
+    var touchAreaRatio: Float = touchAreaRatio
+
+    /**
+     * GLSurfaceView 最新尺寸缓存（px），由 [onSizeChanged] 在 UI 线程更新，
+     * 供 GL 线程的 SpineRenderer 通过 [viewSizeProvider] 读取。
+     *
+     * 用 @Volatile 保证 UI 线程写入对 GL 线程立即可见，避免读到部分更新的值。
+     * 首次 layout 前为 0，SpineRenderer 会回退到 onSurfaceChanged 的缓存值。
+     */
+    @Volatile private var liveWidth: Int = 0
+    @Volatile private var liveHeight: Int = 0
+
+    // 长按检测 Handler：在 init 块中调度长按回调，onDetachedFromWindow 中清理
+    private val longPressHandler = Handler(Looper.getMainLooper())
+    private var longPressRunnable: Runnable? = null
+
+    // SpineRenderer 通过 lambda 每帧读取最新的 scaleMultiplier 和 view 尺寸，
+    // 无需重建 GLSurfaceView 即可实时缩放且骨骼始终居中（绕过 onSurfaceChanged 异步延迟）
+    private val spineRenderer = SpineRenderer(
+        context.applicationContext,
+        dirPath,
+        assetName,
+        scaleProvider = { scaleMultiplier },
+        viewSizeProvider = { liveWidth to liveHeight }
+    )
+
+    /**
+     * View 尺寸变化时缓存最新尺寸（UI 线程），供 GL 线程 SpineRenderer 实时读取。
+     *
+     * 覆盖此方法而非直接读 width/height 是为了：
+     * 1. 用 @Volatile 字段保证跨线程可见性（View.width/height 本身非 volatile）
+     * 2. 在尺寸变化瞬间立即更新，不依赖 GL 线程的 onSurfaceChanged 异步回调
+     */
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        liveWidth = w
+        liveHeight = h
+    }
 
     init {
         setEGLContextClientVersion(2)
@@ -133,48 +212,143 @@ private class SpineSdGlSurfaceView(
         setRenderer(spineRenderer)
         renderMode = RENDERMODE_CONTINUOUSLY
 
-        // 触摸处理：区分点击与拖动。
+        // 触摸处理：区分点击、快速拖动与长按拖动。
         // GLSurfaceView 设置 OnTouchListener 后会消费整个触摸序列，
         // 父级 Compose 的 pointerInput(detectDragGestures) 收不到事件，
         // 因此拖动必须在 GLSurfaceView 内部识别并回调外部，否则 SD 小人无法拖动。
+        //
+        // 【关键 1】必须使用 event.rawX / rawY（屏幕绝对坐标）计算位移，不能用 event.x / y。
+        // 原因：event.x/y 是相对于 GLSurfaceView 自身的坐标。拖动时 onDrag 回调会更新
+        // localOffsetX/Y，导致 GLSurfaceView 跟随手指移动。下一帧 ACTION_MOVE 时，
+        // event.x/y 是相对于【已移动后的 GLSurfaceView】的坐标，而 lastX/lastY 是上一帧
+        // 相对【旧位置】的坐标，两者参考系不同，dx = event.x - lastX 会接近 0，
+        // 导致小人"卡住"——手指移动但小人不动或移动很慢。
+        // rawX/rawY 始终是屏幕绝对坐标，参考系不变，dx/dy 能正确反映手指实际移动量。
+        //
+        // 【关键 2】ACTION_DOWN 时必须调用 parent.requestDisallowInterceptTouchEvent(true)，
+        // 否则父容器（如可滚动的 NavHost 页面、verticalScroll 列表）会在手指移动时
+        // 调用 onInterceptTouchEvent 拦截整个触摸序列，导致 GLSurfaceView 收到
+        // ACTION_CANCEL 而非 ACTION_MOVE，拖动功能完全失效。
+        // ACTION_UP/CANCEL 时恢复父容器拦截能力，避免影响其他交互。
+        //
+        // 【tuozhuai 动画统一触发】无论快速拖动（touchSlop 内启动）还是长按拖动（500ms 超时），
+        // 进入拖动状态时（onDragStart 触发、显示"拖动调整位置"提示）都同步调用
+        // triggerDragAnimation()，确保拖动反馈动画与 UI 提示同步出现，
+        // 避免"直接拖动功能未触发 tuozhuai"的问题。
+        // 拖动结束（ACTION_UP/CANCEL）统一调用 returnToIdle() 回到 idle 循环。
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-        var downX = 0f
-        var downY = 0f
-        var lastX = 0f
-        var lastY = 0f
+        val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
+        var downRawX = 0f
+        var downRawY = 0f
+        var lastRawX = 0f
+        var lastRawY = 0f
         var dragging = false
-        setOnTouchListener { _, event ->
+        var isLongPressTriggered = false
+
+        // 统一的拖动入口：通知外部 + 触发 tuozhuai 动画
+        // 无论快速拖动还是长按拖动，都通过此函数进入拖动状态，确保 UI 提示与动画同步。
+        fun enterDragState(longPress: Boolean) {
+            if (dragging) return
+            dragging = true
+            isLongPressTriggered = longPress
+            // 触觉反馈
+            performHapticFeedback(
+                if (longPress) HapticFeedbackConstants.LONG_PRESS
+                else HapticFeedbackConstants.VIRTUAL_KEY
+            )
+            // 通知外部进入拖动状态（UI 显示"拖动调整位置"标签等）
+            onDragStart?.invoke()
+            // 在 GL 线程触发 tuozhuai 动画（循环播放）
+            // 与"拖动调整位置"提示同步出现，避免直接拖动时无动画反馈
+            queueEvent { spineRenderer.triggerDragAnimation() }
+        }
+
+        // 统一的拖动退出：回到 idle 动画 + 通知外部
+        fun exitDragState() {
+            if (!dragging) return
+            // 拖动结束：在 GL 线程回到 idle 动画
+            queueEvent { spineRenderer.returnToIdle() }
+            onDragEnd?.invoke()
+        }
+
+        setOnTouchListener { v, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    downX = event.x; downY = event.y
-                    lastX = event.x; lastY = event.y
+                    // 触摸区域限制：仅 view 中心 touchAreaRatio 比例的区域响应触摸。
+                    // 当 sdScale > 1.0 时，GLSurfaceView 尺寸 = 基础尺寸 × containerScale（放大），
+                    // 但有效触摸区域应保持基础尺寸，避免溢出区域误触。
+                    // 通过 touchAreaRatio 限制：若触摸点在中心 ratio 区域外，不消费事件。
+                    val ratio = touchAreaRatio.coerceIn(0.1f, 1.0f)
+                    if (ratio < 1.0f && width > 0 && height > 0) {
+                        val touchX = event.x  // 相对 view 的坐标
+                        val touchY = event.y
+                        val marginX = width * (1f - ratio) / 2f
+                        val marginY = height * (1f - ratio) / 2f
+                        val minTouchX = marginX
+                        val maxTouchX = width - marginX
+                        val minTouchY = marginY
+                        val maxTouchY = height - marginY
+                        if (touchX < minTouchX || touchX > maxTouchX ||
+                            touchY < minTouchY || touchY > maxTouchY
+                        ) {
+                            // 触摸点在有效区域外，不消费事件，让父容器处理
+                            return@setOnTouchListener false
+                        }
+                    }
+                    // 阻止父容器拦截后续 MOVE/UP 事件，确保拖动序列完整送达 GLSurfaceView
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                    downRawX = event.rawX; downRawY = event.rawY
+                    lastRawX = event.rawX; lastRawY = event.rawY
                     dragging = false
+                    isLongPressTriggered = false
+                    // 调度长按检测：500ms 后未移动则触发长按拖动 + tuozhuai 动画
+                    longPressRunnable = Runnable {
+                        if (!dragging) {
+                            enterDragState(longPress = true)
+                        }
+                    }
+                    longPressHandler.postDelayed(longPressRunnable!!, longPressTimeout)
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!dragging && (abs(event.x - downX) > touchSlop ||
-                            abs(event.y - downY) > touchSlop)) {
-                        dragging = true
-                        onDragStart?.invoke()
+                    if (!dragging && (abs(event.rawX - downRawX) > touchSlop ||
+                            abs(event.rawY - downRawY) > touchSlop)) {
+                        // 在长按超时前检测到移动：取消长按，进入快速拖动模式
+                        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                        longPressRunnable = null
+                        // 同步触发 tuozhuai 动画（与"拖动调整位置"提示同步）
+                        enterDragState(longPress = false)
                     }
                     if (dragging) {
-                        onDrag?.invoke(event.x - lastX, event.y - lastY)
+                        onDrag?.invoke(event.rawX - lastRawX, event.rawY - lastRawY)
                     }
-                    lastX = event.x; lastY = event.y
+                    lastRawX = event.rawX; lastRawY = event.rawY
                 }
                 MotionEvent.ACTION_UP -> {
+                    // 清除长按计时器
+                    longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                    longPressRunnable = null
                     if (!dragging) {
                         // 点击：触发随机 action 动画 + 回调外部 onTap（播放语音等）
                         queueEvent { spineRenderer.triggerRandomAction() }
                         onTap?.invoke()
                         performClick()
                     } else {
-                        onDragEnd?.invoke()
+                        // 拖动结束：统一回到 idle 动画（无论快速拖动还是长按拖动）
+                        exitDragState()
                     }
+                    // 恢复父容器拦截能力，避免影响后续其他交互（如页面滚动）
+                    v.parent?.requestDisallowInterceptTouchEvent(false)
                     dragging = false
+                    isLongPressTriggered = false
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    if (dragging) onDragEnd?.invoke()
+                    longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+                    longPressRunnable = null
+                    // 拖动被中断：统一回到 idle 动画
+                    exitDragState()
+                    v.parent?.requestDisallowInterceptTouchEvent(false)
                     dragging = false
+                    isLongPressTriggered = false
                 }
             }
             true
@@ -184,6 +358,13 @@ private class SpineSdGlSurfaceView(
     override fun performClick(): Boolean {
         super.performClick()
         return true
+    }
+
+    override fun onDetachedFromWindow() {
+        // 视图销毁时清理 Handler 回调，避免内存泄漏
+        longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
+        longPressRunnable = null
+        super.onDetachedFromWindow()
     }
 }
 
@@ -199,12 +380,45 @@ private class SpineSdGlSurfaceView(
  */
 private class SpineRenderer(
     private val appContext: Context,
+    private val dirPath: String,
     private val assetName: String,
-    private val scaleOverride: Float?
+    /** 缩放倍率提供者：每帧调用读取最新值，支持运行时动态调整（如用户在设置面板拖动滑块） */
+    private val scaleProvider: () -> Float,
+    /**
+     * View 实时尺寸提供者：每帧调用读取 GLSurfaceView 的最新 width/height（px）。
+     *
+     * 【时序竞态修复】requiredSize 变化后 GLSurfaceView 在 UI 线程立即 measure/layout，
+     * 但 GL 线程的 onSurfaceChanged 是异步触发的，期间 onDrawFrame 若仍用旧的
+     * viewWidth/viewHeight 缓存值计算骨骼位置，会导致：
+     *   - 新 userScale 已生效（update 回调立即设置）
+     *   - 旧 viewWidth 未更新（onSurfaceChanged 未触发）
+     *   - scale = min(旧viewW/boundsW, 旧viewH/boundsH) * 0.95 * 新userScale
+     *   - 骨骼中心 = 旧viewW/2（相对旧 GLSurfaceView 中心）
+     *   - 但 GLSurfaceView 实际尺寸已变大，骨骼偏左上角
+     *
+     * 通过 viewSizeProvider 在 onDrawFrame 中实时读取 UI 线程最新的 view 尺寸，
+     * 绕过 onSurfaceChanged 的异步延迟，确保骨骼始终居中渲染。
+     * 返回 (0, 0) 时回退到 onSurfaceChanged 的缓存值（首次渲染前 layout 未完成）。
+     */
+    private val viewSizeProvider: () -> Pair<Int, Int>
 ) : GLSurfaceView.Renderer {
 
-    /** 碧蓝航线 SD 小人的待机动画名（循环播放） */
-    private val idleAnimationNames = setOf("stand", "stand2", "normal", "sit", "sleep")
+    /**
+     * 预定义的 idle 动画名集合（覆盖碧蓝航线 SD 小人常见命名）。
+     *
+     * 碧蓝航线 SD 资源的 idle 动画名可能因舰娘/资源版本不同而异，
+     * 尽量覆盖所有可能的命名变体。若资源中不包含任何预定义 idle 名，
+     * 则回退到第一个动画作为 idle（见采样逻辑）。
+     */
+    private val idleAnimationNames = setOf(
+        "stand", "stand2", "normal", "sit", "sleep", "idle", "idle2",
+        "daiji", "daiji2",  // 日语"待機"罗马音
+        "wait", "wait2",
+        "breath", "breathing"
+    )
+
+    /** 碧蓝航线 SD 小人的拖拽动画名（长按拖动时循环播放） */
+    private val dragAnimationNames = setOf("tuozhuai", "drag", "move", "pick", "hold")
 
     private var batch: PolygonSpriteBatch? = null
     private var skeleton: Skeleton? = null
@@ -214,10 +428,12 @@ private class SpineRenderer(
 
     /** 所有动画名列表（加载后填充） */
     private var allAnimationNames: List<String> = emptyList()
-    /** action 动画名列表（排除 idle） */
+    /** action 动画名列表（排除 idle 和 drag） */
     private var actionAnimationNames: List<String> = emptyList()
     /** 可用的 idle 动画名列表（与实际资源交集） */
     private var availableIdleNames: List<String> = emptyList()
+    /** 可用的 drag 动画名列表（与实际资源交集） */
+    private var availableDragNames: List<String> = emptyList()
 
     /** setup pose 的实际边界（scale=1 时），用于自适应缩放 */
     private var baseBoundsW = 0f
@@ -232,6 +448,9 @@ private class SpineRenderer(
 
     /** 当前是否正在播放 action 动画（防止点击重叠触发） */
     @Volatile private var isPlayingAction = false
+
+    /** 当前是否正在播放 drag 动画（防止与 action 冲突） */
+    @Volatile private var isDragging = false
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         // 1. 初始化 libgdx 静态桥接（GLES20 在 GLSurfaceView 创建 GLContext 后才可用）
@@ -267,10 +486,15 @@ private class SpineRenderer(
             Log.i(TAG, "Injected StubApplication into Gdx.app")
         }
 
-        // 5. 加载 Spine 三件套
+        // 5. 加载 Spine 三件套（从外部存储绝对路径加载）
         try {
-            val atlasFile: FileHandle = Gdx.files.internal("blhx_sd/$assetName.atlas")
-            val skelFile: FileHandle = Gdx.files.internal("blhx_sd/$assetName.skel")
+            val skelFile: FileHandle = Gdx.files.absolute("$dirPath/$assetName.skel")
+            // atlas 优先用 assetName.atlas（如 boge_g.atlas），
+            // 不存在则回退到目录名同名 atlas（如 boge.atlas，改造/换皮皮肤复用默认皮肤 atlas）
+            val dirName = dirPath.substringAfterLast('/')
+            val primaryAtlas = Gdx.files.absolute("$dirPath/$assetName.atlas")
+            val atlasFile: FileHandle = if (primaryAtlas.exists()) primaryAtlas
+                else Gdx.files.absolute("$dirPath/$dirName.atlas")
 
             val atlas = TextureAtlas(atlasFile)
             val loader = AtlasAttachmentLoader(atlas)
@@ -287,24 +511,31 @@ private class SpineRenderer(
             //    因为 attack/dance 等动作动画肢体伸展范围远大于待机，
             //    用全局最大边界会导致 idle 时小人缩得太小。
             //    action 动画可能临时略微超出视口，这是自然表现，可接受。
+            //
+            //    【边界优化】使用每个动画的"代表性边界"（采样关键帧的中位数边界），
+            //    而非所有关键帧的最大并集边界。避免个别极端关键帧（如待机中偶发的肢体伸展）
+            //    导致边界过大、缩放过小的问题。
             val offset = Vector2()
             val size = Vector2()
             val temp = FloatArray()
             val sampler = Skeleton(skeletonData)  // 独立 sampler 实例避免污染主 skeleton
-            var minX = Float.MAX_VALUE
-            var minY = Float.MAX_VALUE
-            var maxX = Float.MIN_VALUE
-            var maxY = Float.MIN_VALUE
 
             // 先确定实际可用的 idle 动画名
             val idleAnimNames = idleAnimationNames.filter { name ->
                 skeletonData.animations.any { it.name == name }
             }.ifEmpty { skeletonData.animations.take(1).map { it.name } }
 
+            // 收集每个 idle 动画的代表性边界（采样关键帧后取中位数）
+            data class AnimBounds(val minX: Float, val minY: Float, val maxX: Float, val maxY: Float)
+            val animBoundsList = mutableListOf<AnimBounds>()
+
             for (anim in skeletonData.animations) {
                 if (anim.name !in idleAnimNames) continue  // 仅采样 idle 动画
                 val duration = anim.duration
                 val sampleCount = if (duration > 0) 10 else 1
+                // 收集该动画所有采样帧的边界
+                // 注意：使用 kotlin.FloatArray 而非 com.badlogic.gdx.utils.FloatArray
+                val frameBounds: MutableList<kotlin.FloatArray> = mutableListOf()  // [minX, minY, maxX, maxY]
                 for (i in 0 until sampleCount) {
                     val t = if (duration > 0) duration * i / sampleCount else 0f
                     sampler.setToSetupPose()
@@ -313,12 +544,31 @@ private class SpineRenderer(
                     sampler.updateWorldTransform()
                     sampler.getBounds(offset, size, temp)
                     if (size.x > 0 && size.y > 0) {
-                        if (offset.x < minX) minX = offset.x
-                        if (offset.y < minY) minY = offset.y
-                        if (offset.x + size.x > maxX) maxX = offset.x + size.x
-                        if (offset.y + size.y > maxY) maxY = offset.y + size.y
+                        frameBounds.add(kotlin.floatArrayOf(
+                            offset.x, offset.y,
+                            offset.x + size.x, offset.y + size.y
+                        ))
                     }
                 }
+                if (frameBounds.isNotEmpty()) {
+                    // 取该动画所有帧的中位数边界（按面积排序取中位数帧）
+                    // 中位数比最大值更鲁棒，避免极端关键帧导致边界过大
+                    val sortedByArea = frameBounds.sortedBy { (it[2] - it[0]) * (it[3] - it[1]) }
+                    val medianFrame = sortedByArea[sortedByArea.size / 2]
+                    animBoundsList.add(AnimBounds(medianFrame[0], medianFrame[1], medianFrame[2], medianFrame[3]))
+                }
+            }
+
+            // 取所有 idle 动画代表性边界的并集作为最终边界
+            var minX = Float.MAX_VALUE
+            var minY = Float.MAX_VALUE
+            var maxX = Float.MIN_VALUE
+            var maxY = Float.MIN_VALUE
+            for (b in animBoundsList) {
+                if (b.minX < minX) minX = b.minX
+                if (b.minY < minY) minY = b.minY
+                if (b.maxX > maxX) maxX = b.maxX
+                if (b.maxY > maxY) maxY = b.maxY
             }
 
             // 退化保护：若采样失败（空骨骼），用 setup pose 兜底
@@ -342,9 +592,14 @@ private class SpineRenderer(
             allAnimationNames = skeletonData.animations.map { it.name }
             availableIdleNames = idleAnimationNames.filter { allAnimationNames.contains(it) }
                 .ifEmpty { allAnimationNames.take(1) }
-            actionAnimationNames = allAnimationNames.filter { !idleAnimationNames.contains(it) }
+            availableDragNames = dragAnimationNames.filter { allAnimationNames.contains(it) }
+            // action 动画排除 idle 和 drag，避免点击时误触发拖拽动画
+            actionAnimationNames = allAnimationNames.filter {
+                it !in idleAnimationNames && it !in dragAnimationNames
+            }
             Log.i(TAG, "Loaded Spine asset=$assetName, all=${allAnimationNames.size} " +
-                "animations, idle=$availableIdleNames, action=$actionAnimationNames")
+                "animations, idle=$availableIdleNames, drag=$availableDragNames, " +
+                "action=$actionAnimationNames")
 
             // 8. 创建 AnimationState，设置默认混合过渡（0.2s 平滑切换）
             val stateData = AnimationStateData(skeletonData).apply {
@@ -379,7 +634,24 @@ private class SpineRenderer(
         val state = animState ?: return
         val rend = renderer ?: return
         val b = batch ?: return
-        if (viewWidth == 0 || viewHeight == 0) return
+
+        // 【时序竞态修复】实时读取 GLSurfaceView 的 width/height（UI 线程最新值），
+        // 绕过 onSurfaceChanged 的异步延迟。requiredSize 变化后 GLSurfaceView layout
+        // 立即更新 width/height，但 onSurfaceChanged 在 GL 线程异步触发，期间若用旧的
+        // viewWidth/viewHeight 计算骨骼位置会导致放大时小人偏左上角。
+        // 回退：首次渲染前 layout 未完成，viewSizeProvider 返回 (0,0)，用 onSurfaceChanged 缓存值。
+        val (liveW, liveH) = viewSizeProvider()
+        val vw = if (liveW > 0) liveW else viewWidth
+        val vh = if (liveH > 0) liveH else viewHeight
+        if (vw == 0 || vh == 0) return
+
+        // view 尺寸变化时同步更新 viewport 和缓存（应对 onSurfaceChanged 未及时触发的场景）
+        if (vw != viewWidth || vh != viewHeight) {
+            viewWidth = vw
+            viewHeight = vh
+            stubGraphics?.setSize(vw, vh)
+            Gdx.gl.glViewport(0, 0, vw, vh)
+        }
 
         val now = System.nanoTime()
         val delta = if (lastTimeNs > 0) ((now - lastTimeNs) / 1_000_000_000f).coerceAtMost(0.1f) else 0.016f
@@ -392,20 +664,25 @@ private class SpineRenderer(
         state.apply(skel)
         skel.updateWorldTransform()
 
-        // 自适应缩放：基于全局最大边界（覆盖所有动画），缩放到视口 95%
-        val scale = scaleOverride ?: (min(viewWidth / baseBoundsW, viewHeight / baseBoundsH) * 0.95f)
+        // 自适应缩放：基于 idle 动画边界缩放到视口 95%，再乘以用户设置的倍率（实时生效）
+        val userScale = scaleProvider().coerceIn(0.3f, 2.0f)
+        val scale = (min(vw / baseBoundsW, vh / baseBoundsH) * 0.95f) * userScale
 
         // 投影矩阵：左下(0,0) - 右上，Y 轴朝上
-        b.projectionMatrix.setToOrtho2D(0f, 0f, viewWidth.toFloat(), viewHeight.toFloat())
+        b.projectionMatrix.setToOrtho2D(0f, 0f, vw.toFloat(), vh.toFloat())
 
-        // 骨骼定位：基于全局最大边界偏移居中
+        // 骨骼定位：边界框中心对齐到 view 中心
         // skel 的 (x, y) 是根骨骼世界坐标，getBounds 返回的 offset 是边界左下角相对于根骨骼的偏移
         // 要让边界水平居中：skel.x = viewW/2 - (offsetX + boundsW/2) * scale
         // 要让边界垂直居中：skel.y = viewH/2 - (offsetY + boundsH/2) * scale
+        //
+        // 配合外层 SecretaryChibiOverlay 的 offset 居中放置（renderOffset = (baseSize - renderSize)/2），
+        // GLSurfaceView 中心 = 外层 Box 中心 = 小人中心，缩放时位置不移动。
+        // 实时读取 vw/vh 确保缩放瞬间骨骼位置立即正确，不会因 onSurfaceChanged 延迟而偏移。
         skel.scaleX = scale
         skel.scaleY = scale
-        skel.x = viewWidth / 2f - (baseBoundsOffsetX + baseBoundsW / 2f) * scale
-        skel.y = viewHeight / 2f - (baseBoundsOffsetY + baseBoundsH / 2f) * scale
+        skel.x = vw / 2f - (baseBoundsOffsetX + baseBoundsW / 2f) * scale
+        skel.y = vh / 2f - (baseBoundsOffsetY + baseBoundsH / 2f) * scale
 
         // 清屏 + 绘制
         Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
@@ -419,11 +696,11 @@ private class SpineRenderer(
     /**
      * 随机触发一个 action 动画（GL 线程调用）。
      *
-     * 如果当前正在播放 action 则忽略（防止重叠）。
+     * 如果当前正在播放 action 或 drag 则忽略（防止重叠）。
      * action 播放完毕后自动回到随机 idle 循环（通过 addAnimation 排队）。
      */
     fun triggerRandomAction() {
-        if (isPlayingAction) return
+        if (isPlayingAction || isDragging) return
         val state = animState ?: return
         if (actionAnimationNames.isEmpty()) return
 
@@ -450,6 +727,50 @@ private class SpineRenderer(
                 state.removeListener(this)
             }
         })
+    }
+
+    /**
+     * 触发拖拽动画（GL 线程调用）。
+     *
+     * 长按 SD 小人时调用，循环播放 "tuozhuai" / "drag" 等拖拽动画。
+     * 如果 Spine 资源中不包含拖拽动画，则保持当前 idle 不变（视觉上小人仍可拖动，只是没有特殊动画），
+     * 且不设置 isDragging 标志，避免 returnToIdle 误重置 idle 动画导致视觉闪烁。
+     */
+    fun triggerDragAnimation() {
+        if (isDragging) return
+        val state = animState ?: return
+        if (availableDragNames.isEmpty()) {
+            Log.i(TAG, "No drag animation available (tuozhuai/drag/move), keeping current animation")
+            // 不设置 isDragging，避免 returnToIdle 误重置 idle 动画
+            return
+        }
+
+        val dragName = availableDragNames.first()
+        state.setAnimation(0, dragName, true)  // 循环播放拖拽动画
+        isDragging = true
+        isPlayingAction = false
+        Log.i(TAG, "Trigger drag animation: $dragName (looping)")
+    }
+
+    /**
+     * 回到 idle 动画（GL 线程调用）。
+     *
+     * 拖拽结束后调用，随机选一个 idle 动画循环播放。
+     * 仅在 isDragging=true 时执行，避免非拖动场景误调用导致 idle 动画重启。
+     */
+    fun returnToIdle() {
+        if (!isDragging) return  // 非拖动状态不处理，避免误重置 idle
+        val state = animState ?: return
+        if (availableIdleNames.isEmpty()) {
+            isDragging = false
+            return
+        }
+
+        val idleName = availableIdleNames.random()
+        state.setAnimation(0, idleName, true)  // 循环播放 idle
+        isDragging = false
+        isPlayingAction = false
+        Log.i(TAG, "Return to idle: $idleName")
     }
 }
 

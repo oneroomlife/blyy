@@ -21,6 +21,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -233,16 +234,24 @@ fun BlyySearchField(
 /**
  * 优化光标体验的 OutlinedTextField 封装
  *
- * 核心原理：维护本地 [TextFieldValue] 状态，用户输入时立即更新本地状态（光标不等待 DataStore 往返），
+ * 核心原理：维护本地 [TextFieldValue] 状态，用户输入时立即更新本地状态（光标不等待 StateFlow 往返），
  * 仅在外部值与本地值不一致时（如程序化清空、切换会话）才同步外部值。
  *
- * 解决问题：直接绑定 StateFlow String 值时，用户每次输入都要经 DataStore 异步往返，
+ * 解决问题：直接绑定 StateFlow String 值时，用户每次输入都要经 ViewModel 状态往返，
  * 导致光标位置丢失/跳变。
  *
- * 光标跳末尾修复：原实现 `if (localValue.text != value)` 在用户输入后、StateFlow 异步回流前
- * 会为 true（localValue 是新值，value 是旧值），导致光标被重置到 TextRange(value.length) 末尾。
- * 现引入 [lastExternalValue] 记录上一次外部值，只有外部值真正变化时（说明是程序化修改/切换会话）
- * 才同步 localValue，避免用户输入过程中被 recompose 干扰。
+ * 光标跳末尾修复（LaunchedEffect 异步同步方案）：
+ * 原同步检查 `if (value != lastExternalValue)` 在 composable body 中执行，存在竞态：
+ * 用户输入时 onValueChange 立即更新 lastExternalValue 为新文本，但 currentSession 派生自
+ * combine(_sessions, _currentSessionId).stateIn(Eagerly)，combine 在协程中运行，
+ * _sessions.value 更新后 currentSession.value 尚未同步更新。
+ * 此时若因 localValue 变化触发重组，value 参数仍是旧值，
+ * 同步检查会误判为"外部值变化"并用旧值覆盖 localValue，光标被重置到末尾。
+ *
+ * 现使用 [LaunchedEffect] (value) 异步处理外部值同步：
+ * 1. 在重组完成后才执行，避开中间重组的竞态窗口
+ * 2. value 快速变化（旧→新）时前一个 LaunchedEffect 被取消，只执行最后一个
+ * 3. 用户输入后 value 经 ViewModel 往返回到新值，此时 lastExternalValue 已是新值，不触发同步
  */
 @Composable
 fun StableOutlinedTextField(
@@ -272,17 +281,15 @@ fun StableOutlinedTextField(
     // 记录上一次的外部值：用于判断外部值是否真正变化（而非用户输入导致的 recompose）
     var lastExternalValue by remember { mutableStateOf(value) }
 
-    // 仅在外部值真正变化时（如程序化清空、切换会话等场景）才同步本地状态
-    // 关键：不使用 `if (localValue.text != value)`，因为用户输入后 StateFlow 异步回流前
-    // value 还是旧值，localValue.text 是新值，会导致光标被重置到末尾
-    if (value != lastExternalValue) {
-        lastExternalValue = value
-        // 外部值变化时，仅在本地文本与外部值不一致时才更新（避免覆盖用户正在输入的相同文本）
-        if (localValue.text != value) {
+    // 异步同步外部值变化：仅在 value 真正变化且与本地不一致时才同步
+    // 使用 LaunchedEffect(value) 而非同步检查，避免中间重组竞态导致光标跳末尾
+    LaunchedEffect(value) {
+        if (value != lastExternalValue && localValue.text != value) {
             localValue = TextFieldValue(
                 text = value,
                 selection = androidx.compose.ui.text.TextRange(value.length)
             )
+            lastExternalValue = value
         }
     }
 

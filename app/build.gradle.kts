@@ -175,6 +175,11 @@ dependencies {
     /** ---------------- UI 扩展 ---------------- */
     implementation(libs.compose.shimmer)
 
+    /** ---------------- 拼音转换（SD 资源中文名→拼音目录名匹配） ----------------
+     *  pinyin4j 用于将舰娘中文名（如"博格"）转换为无声调拼音（如"boge"），
+     *  与用户导入的 SD 资源目录名匹配。轻量纯 Java 实现，无 native 依赖。 */
+    implementation("com.belerweb:pinyin4j:2.5.1")
+
     /** ---------------- 测试 ---------------- */
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)

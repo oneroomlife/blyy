@@ -25,6 +25,7 @@ class Live2DViewModelTest {
     private val testDispatcher = StandardTestDispatcher()
 
     private lateinit var settings: PlayerSettingsDataStore
+    private lateinit var appContext: Context
     private lateinit var viewModel: Live2DViewModel
 
     @Before
@@ -32,7 +33,8 @@ class Live2DViewModelTest {
         Dispatchers.setMain(testDispatcher)
         settings = mock()
         whenever(settings.live2dSslTrusted).thenReturn(flowOf(false))
-        viewModel = Live2DViewModel(settings)
+        appContext = mock()
+        viewModel = Live2DViewModel(settings, appContext)
     }
 
     @After
@@ -89,10 +91,9 @@ class Live2DViewModelTest {
         }
         viewModel.addConsoleError("[Live2D] WebGL context lost!")
 
-        val context = mock<Context>()
-        whenever(context.getSystemService(Context.CONNECTIVITY_SERVICE)).thenReturn(null)
+        whenever(appContext.getSystemService(Context.CONNECTIVITY_SERVICE)).thenReturn(null)
 
-        val report = viewModel.generateErrorReport(context)
+        val report = viewModel.generateErrorReport()
 
         assertTrue("报告应包含标题", report.contains("Live2D 错误诊断报告"))
         assertTrue("报告应包含设备信息段", report.contains("设备信息"))

@@ -161,6 +161,10 @@ private const val LOAD_TIMEOUT_MS = 45_000L
 private const val STUCK_CHECK_INTERVAL_MS = 5_000L
 private const val STUCK_THRESHOLD_MS = 15_000L
 
+// AnimatedContent phase 切换动画规格 — 提到顶级避免每次重组都新建 2 个 tween 实例
+private val PhaseInSpec = tween<Float>(400, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+private val PhaseOutSpec = tween<Float>(350)
+
 /** ZSTD 一次性解压最大字节数（256MB），防止 declaredSize 异常导致 OOM */
 private const val MAX_DECOMPRESSED_SIZE = 256L * 1024 * 1024
 
@@ -473,8 +477,8 @@ fun Live2DScreen(
         AnimatedContent(
             targetState = loadPhase,
             transitionSpec = {
-                (fadeIn(animationSpec = tween(400, easing = androidx.compose.animation.core.LinearOutSlowInEasing))
-                        togetherWith fadeOut(animationSpec = tween(350)))
+                (fadeIn(animationSpec = PhaseInSpec)
+                        togetherWith fadeOut(animationSpec = PhaseOutSpec))
                     .using(SizeTransform(clip = false))
             },
             label = "Live2DPhaseTransition"
@@ -496,7 +500,7 @@ fun Live2DScreen(
                             }
                         },
                         onCopyError = {
-                            val report = viewModel.generateErrorReport(context)
+                            val report = viewModel.generateErrorReport()
                             copyToClipboard(context, "Live2D错误报告", report)
                             Toast.makeText(context, "错误信息已复制", Toast.LENGTH_SHORT).show()
                         },
@@ -522,7 +526,7 @@ fun Live2DScreen(
                         },
                         onReject = onBack,
                         onCopyError = {
-                            val report = viewModel.generateErrorReport(context)
+                            val report = viewModel.generateErrorReport()
                             copyToClipboard(context, "Live2D_SSL错误报告", report)
                             Toast.makeText(context, "错误信息已复制", Toast.LENGTH_SHORT).show()
                         }
@@ -897,6 +901,16 @@ private fun WebView.configureForLive2D(
             //
             // 子资源请求仍由下方 HttpURLConnection 拦截，处理 ZSTD 解压 / CDN 熔断等逻辑。
             if (request.isForMainFrame) {
+                return null
+            }
+
+            // 【减负优化】：仅拦截 l2d.su 系列域名的子资源请求。
+            // 其他域名（Google Fonts、第三方 CDN、字体服务等）的子资源无需 ZSTD 解压 / WAF 防盗链 /
+            // Referer 伪造，交由 Chromium 原生网络栈处理可：
+            //   ① 避免不必要的 HttpURLConnection 阻塞（connectTimeout=8s）
+            //   ② 利用 Chromium 内置缓存（shouldInterceptRequest 绕过缓存）
+            //   ③ 减少 onRequestLogState 回调引发的 Compose 重组
+            if (!requestHost.endsWith("l2d.su")) {
                 return null
             }
 

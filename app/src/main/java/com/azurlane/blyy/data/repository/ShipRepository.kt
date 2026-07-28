@@ -24,10 +24,19 @@ import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import javax.inject.Inject
+import javax.inject.Singleton
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "ShipRepository"
 
+/**
+ * 舰船/学生数据仓库。
+ *
+ * 必须为 [Singleton]：内部持有 [voiceCache] 等可变状态，
+ * 若每次注入新建实例会导致缓存失效，多 ViewModel 各持一份独立缓存，
+ * 失去"1 小时内存缓存"的设计目标并造成重复网络请求。
+ */
+@Singleton
 class ShipRepository @Inject constructor(
     private val shipDao: ShipDao,
     private val networkHelper: NetworkHelper,

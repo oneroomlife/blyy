@@ -277,7 +277,7 @@ fun ConversationListScreen(
                             start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp
                         )
                     ) {
-                        items(orderedList.size, key = { orderedList[it].id }) { index ->
+                        items(orderedList.size, key = { orderedList[it].id }, contentType = { "conversation" }) { index ->
                             val session = orderedList[index]
                             val isDragging = draggingIndex == index
                             val isSelected = session.id == currentSessionId
@@ -286,12 +286,20 @@ fun ConversationListScreen(
                             val effectiveName = session.jiuxinName.ifBlank { associatedPreset?.name ?: session.name }
                             val hasPreset = session.presetId.isNotBlank()
                             val isGroup = session.isGroup
-                            val groupMemberAvatars = if (isGroup) session.groupMembers.map { it.avatarUrl } else emptyList()
-                            val groupMemberCount = if (isGroup) session.groupMembers.size else 0
-                            val lastPreview = if (isGroup) {
-                                "${groupMemberCount} 位成员 · ${formatSessionPreview(session.updatedAt)}"
-                            } else {
-                                formatSessionPreview(session.updatedAt)
+                            // 派生数据缓存：groupMemberAvatars 在 session 数据未变时不应重新分配 List
+                            val groupMemberAvatars = remember(session.id, session.groupMembers) {
+                                if (isGroup) session.groupMembers.map { it.avatarUrl } else emptyList()
+                            }
+                            val groupMemberCount = remember(session.id, session.groupMembers) {
+                                if (isGroup) session.groupMembers.size else 0
+                            }
+                            // lastPreview 缓存：避免 System.currentTimeMillis() 每次返回不同值破坏 item 跳过
+                            val lastPreview = remember(session.id, session.updatedAt, isGroup, groupMemberCount) {
+                                if (isGroup) {
+                                    "$groupMemberCount 位成员 · ${formatSessionPreview(session.updatedAt)}"
+                                } else {
+                                    formatSessionPreview(session.updatedAt)
+                                }
                             }
 
                             Box(
@@ -367,7 +375,9 @@ fun ConversationListScreen(
                                             )
                                         }
                                     },
-                                    onDeleteClick = { showDeleteSessionConfirm = session }
+                                    onDeleteClick = remember(session.id) {
+                                        { showDeleteSessionConfirm = session }
+                                    }
                                 )
                             }
                         }

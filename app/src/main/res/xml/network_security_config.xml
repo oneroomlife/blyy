@@ -1,13 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true" />
+    <!-- 默认禁止明文 HTTP 流量，防止公共 WiFi 下 MITM 攻击 -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
 
-    <!-- Live2D 域名专用配置：信任系统预装证书 + 用户证书，解决部分设备 SSL 证书链不完整问题 -->
+    <!-- 仅对本地回环地址放行 cleartext，兼容用户自建本地 LLM 服务（如 http://localhost:8080） -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+
+    <!-- Live2D 域名专用配置：信任系统预装证书，移除 user CA 信任防止恶意应用 MITM -->
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">l2d.su</domain>
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </domain-config>
 </network-security-config>

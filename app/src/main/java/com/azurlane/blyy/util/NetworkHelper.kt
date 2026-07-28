@@ -61,24 +61,25 @@ class NetworkHelper @Inject constructor(
         url: String,
         maxRetries: Int = 3,
         useCache: Boolean = true
-    ): Result<Document> {
+    ): Result<Document> = withContext(Dispatchers.IO) {
         if (useCache) {
             val cached = CacheManager.get<Document>(CacheNamespaces.HTML_DOCUMENT, url)
             if (cached != null) {
                 Log.d(TAG, "Cache hit for: $url")
-                return Result.success(cached)
+                return@withContext Result.success(cached)
             }
         }
-        
+
         var lastException: Exception? = null
-        
+
         repeat(maxRetries) { attempt ->
             try {
                 enforceRateLimit()
-                
+
                 val userAgent = getRandomUserAgent()
                 Log.d(TAG, "Fetching (attempt ${attempt + 1}/$maxRetries): $url")
-                
+
+                // Jsoup.connect().get() 为阻塞式 HTTP 调用，必须运行在 IO 线程
                 val doc = Jsoup.connect(url)
                     .userAgent(userAgent)
                     .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
@@ -92,19 +93,19 @@ class NetworkHelper @Inject constructor(
                     .followRedirects(true)
                     .maxBodySize(0)
                     .get()
-                
+
                 if (useCache) {
                     CacheManager.put(CacheNamespaces.HTML_DOCUMENT, url, doc)
                 }
-                
+
                 _isRateLimited.value = false
                 Log.d(TAG, "Successfully fetched: $url")
-                return Result.success(doc)
-                
+                return@withContext Result.success(doc)
+
             } catch (e: Exception) {
                 lastException = e
                 Log.w(TAG, "Attempt ${attempt + 1} failed for $url: ${e.message}")
-                
+
                 when {
                     e.message?.contains("403") == true || e.message?.contains("567") == true -> {
                         _isRateLimited.value = true
@@ -124,30 +125,30 @@ class NetworkHelper @Inject constructor(
                 }
             }
         }
-        
+
         Log.e(TAG, "All retries exhausted for: $url")
-        return Result.failure(lastException ?: Exception("Unknown error"))
+        Result.failure(lastException ?: Exception("Unknown error"))
     }
-    
+
     suspend fun fetchImage(
         url: String,
         maxRetries: Int = 3,
         useCache: Boolean = true
-    ): Result<ByteArray> {
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
         if (useCache) {
             val cached = CacheManager.get<ByteArray>(CacheNamespaces.IMAGE_DATA, url)
             if (cached != null) {
                 Log.d(TAG, "Image cache hit for: $url")
-                return Result.success(cached)
+                return@withContext Result.success(cached)
             }
         }
-        
+
         var lastException: Exception? = null
-        
+
         repeat(maxRetries) { attempt ->
             try {
                 enforceRateLimit()
-                
+
                 val request = Request.Builder()
                     .url(url)
                     .header("User-Agent", getRandomUserAgent())
@@ -155,30 +156,31 @@ class NetworkHelper @Inject constructor(
                     .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                     .header("Referer", "https://wiki.biligame.com/")
                     .build()
-                
+
+                // okHttpClient.newCall().execute() 为阻塞式 HTTP 调用，必须运行在 IO 线程
                 okHttpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) {
                         throw Exception("HTTP ${response.code}")
                     }
-                    
+
                     val bytes = response.body?.bytes() ?: throw Exception("Empty response")
-                    
+
                     if (useCache) {
                         CacheManager.put(CacheNamespaces.IMAGE_DATA, url, bytes)
                     }
-                    
+
                     Log.d(TAG, "Successfully fetched image: $url")
-                    return Result.success(bytes)
+                    return@withContext Result.success(bytes)
                 }
-                
+
             } catch (e: Exception) {
                 lastException = e
                 Log.w(TAG, "Image fetch attempt ${attempt + 1} failed for $url: ${e.message}")
                 delay((attempt + 1) * 1500L)
             }
         }
-        
-        return Result.failure(lastException ?: Exception("Unknown error"))
+
+        Result.failure(lastException ?: Exception("Unknown error"))
     }
     
     fun clearCache() {

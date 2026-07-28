@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -59,7 +60,8 @@ data class Live2DRequestLogEntry(
 
 @HiltViewModel
 class Live2DViewModel @Inject constructor(
-    private val settings: PlayerSettingsDataStore
+    private val settings: PlayerSettingsDataStore,
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     val sslTrusted: StateFlow<Boolean> = settings.live2dSslTrusted
@@ -114,7 +116,7 @@ class Live2DViewModel @Inject constructor(
     }
 
     /** 生成完整的错误诊断报告，便于复制给技术人员分析 */
-    fun generateErrorReport(context: Context): String {
+    fun generateErrorReport(): String {
         val state = _loadState.value
         val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.getDefault())
         val now = Date()
@@ -135,7 +137,7 @@ class Live2DViewModel @Inject constructor(
 
         // 网络信息
         sb.appendLine("--- 网络信息 ---")
-        sb.appendLine("网络类型: ${getNetworkType(context)}")
+        sb.appendLine("网络类型: ${getNetworkType()}")
         sb.appendLine()
 
         // 加载状态
@@ -202,8 +204,8 @@ class Live2DViewModel @Inject constructor(
         return sb.toString()
     }
 
-    private fun getNetworkType(context: Context): String {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+    private fun getNetworkType(): String {
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             ?: return "未知"
         val network = cm.activeNetwork ?: return "无网络连接"
         val caps = cm.getNetworkCapabilities(network) ?: return "未知"

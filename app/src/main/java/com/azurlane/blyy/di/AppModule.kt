@@ -3,6 +3,7 @@ package com.azurlane.blyy.di
 import android.content.Context
 import androidx.room.Room
 import com.azurlane.blyy.data.local.AppDatabase
+import com.azurlane.blyy.data.local.DatabaseMigrations
 import com.azurlane.blyy.data.local.GuessHistoryDao
 import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.util.AppIconManager
@@ -30,7 +31,11 @@ object AppModule {
             AppDatabase::class.java,
             "blhx_db"
         )
-            .fallbackToDestructiveMigration(true)
+            // 显式注册已知升级路径，避免破坏性迁移清库
+            .addMigrations(DatabaseMigrations.MIGRATION_7_8)
+            // 安全网：仅当未来版本遗漏 Migration 时兜底（避免升级崩溃），
+            // 正常升级路径因已注册 Migration 不会触发此处。
+            .fallbackToDestructiveMigration()
             .build()
     }
 

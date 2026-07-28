@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,9 +35,10 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 @Singleton
 class PlayerSettingsDataStore @Inject constructor(
-    private val context: Context
+    @ApplicationContext private val context: Context
 ) {
     companion object {
+        private const val TAG = "PlayerSettingsDataStore"
         private val PLAY_MODE_KEY = stringPreferencesKey("play_mode")
         private val FAVORITES_KEY = stringPreferencesKey("favorites")
         private val PLAY_LATER_KEY = stringPreferencesKey("play_later_v2")
@@ -49,6 +51,8 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_AUTO_PLAY_ENABLED_KEY = booleanPreferencesKey("secretary_auto_play_enabled")
         private val SECRETARY_AUTO_PLAY_INTERVAL_KEY = intPreferencesKey("secretary_auto_play_interval")
         private val SECRETARY_DIALOGUE_ENABLED_KEY = booleanPreferencesKey("secretary_dialogue_enabled")
+        private val SECRETARY_SD_SKIN_KEY = stringPreferencesKey("secretary_sd_skin")
+        private val SECRETARY_SD_SCALE_KEY = floatPreferencesKey("secretary_sd_scale")
         
         // 语音语言
         private val VOICE_LANGUAGE_KEY = stringPreferencesKey("voice_language")
@@ -169,6 +173,12 @@ class PlayerSettingsDataStore @Inject constructor(
     val secretaryAutoPlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
     val secretaryAutoPlayIntervalMinutes: Flow<Int> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
     val secretaryDialogueEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_DIALOGUE_ENABLED_KEY] ?: true }
+
+    /** 秘书舰 SD 小人皮肤名（"" / "default" 用默认皮肤，"gai" / "skin2" 等为其他皮肤） */
+    val secretarySdSkin: Flow<String> = context.dataStore.data.map { it[SECRETARY_SD_SKIN_KEY] ?: "" }
+
+    /** 秘书舰 SD 小人显示缩放倍率（1.0 = 默认自适应大小，0.5 = 半尺寸，1.5 = 放大 50%） */
+    val secretarySdScale: Flow<Float> = context.dataStore.data.map { it[SECRETARY_SD_SCALE_KEY] ?: 1.0f }
     
     // 悬浮窗状态
     val secretaryOverlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
@@ -225,6 +235,8 @@ class PlayerSettingsDataStore @Inject constructor(
             prefs.remove(SECRETARY_SHIP_NAME_KEY)
             prefs.remove(SECRETARY_FIGURE_URL_KEY)
             prefs.remove(SECRETARY_AVATAR_URL_KEY)
+            prefs.remove(SECRETARY_SD_SKIN_KEY)
+            prefs.remove(SECRETARY_SD_SCALE_KEY)
         }
     }
 
@@ -238,6 +250,18 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setSecretaryDialogueEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_DIALOGUE_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setSecretarySdSkin(skin: String) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_SD_SKIN_KEY] = skin
+        }
+    }
+
+    suspend fun setSecretarySdScale(scale: Float) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_SD_SCALE_KEY] = scale.coerceIn(0.3f, 2.0f)
         }
     }
     
@@ -437,7 +461,7 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 所有会话元数据列表 */
     val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = context.dataStore.data.map { prefs ->
         val json = prefs[AI_CHAT_SESSIONS_KEY] ?: "[]"
-        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode chat sessions", e); emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode chat sessions", e); emptyList() }
     }
 
     /** 当前会话 ID */
@@ -455,7 +479,7 @@ class PlayerSettingsDataStore @Inject constructor(
     fun aiSessionMessages(sessionId: String): Flow<List<com.azurlane.blyy.data.model.ChatMessage>> = context.dataStore.data.map { prefs ->
         val key = stringPreferencesKey("ai_session_msgs_$sessionId")
         val json = prefs[key] ?: "[]"
-        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode session messages for $sessionId", e); emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode session messages for $sessionId", e); emptyList() }
     }
 
     /** 保存指定会话的消息 */
@@ -473,7 +497,7 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 所有已保存的啾信预设列表 */
     val aiJiuxinPresets: Flow<List<com.azurlane.blyy.data.model.JiuxinPreset>> = context.dataStore.data.map { prefs ->
         val json = prefs[AI_JIUXIN_PRESETS_KEY] ?: "[]"
-        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode presets", e); emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode presets", e); emptyList() }
     }
 
     /** 保存预设列表（覆盖） */
@@ -484,7 +508,7 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 会话列表自定义排序（session id 列表，用户拖动后的顺序） */
     val aiSessionOrder: Flow<List<String>> = context.dataStore.data.map { prefs ->
         val json = prefs[AI_SESSION_ORDER_KEY] ?: "[]"
-        try { lenientJson.decodeFromString<List<String>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode session order", e); emptyList() }
+        try { lenientJson.decodeFromString<List<String>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode session order", e); emptyList() }
     }
 
     /** 保存会话列表自定义排序 */
@@ -505,7 +529,7 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 所有已保存的 API 配置列表 */
     val aiApiConfigs: Flow<List<com.azurlane.blyy.data.model.ApiConfig>> = context.dataStore.data.map { prefs ->
         val json = prefs[AI_API_CONFIGS_KEY] ?: "[]"
-        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode API configs", e); emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode API configs", e); emptyList() }
     }
 
     /** 保存 API 配置列表（覆盖） */
@@ -518,7 +542,7 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 所有已保存的舰娘人格配置列表 */
     val aiPersonaConfigs: Flow<List<com.azurlane.blyy.data.model.PersonaConfig>> = context.dataStore.data.map { prefs ->
         val json = prefs[AI_PERSONA_CONFIGS_KEY] ?: "[]"
-        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.PersonaConfig>>(json) } catch (e: Exception) { Log.w("DataStore", "Failed to decode persona configs", e); emptyList() }
+        try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.PersonaConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode persona configs", e); emptyList() }
     }
 
     /** 保存舰娘人格配置列表（覆盖） */

@@ -89,6 +89,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "StudentGalleryScreen"
 
+// 预编译正则常量 — 用于清理下载文件名中的非法字符，避免每次调用都重新解析 Regex
+private val DOWNLOAD_NAME_SANITIZE_REGEX = Regex("[^\\w\\u4e00-\\u9fa5-]")
+
+// AnimatedContent tab 切换动画规格 — 提到顶级避免每次重组都新建 4 个 tween 实例
+// fadeIn/fadeOut 需要 FiniteAnimationSpec<Float>，slideIntoContainer/slideOutOfContainer 需要 FiniteAnimationSpec<IntOffset>
+private val TabFadeInSpec = tween<Float>(AppAnimation.Duration.Normal)
+private val TabFadeOutSpec = tween<Float>(AppAnimation.Duration.Fast)
+private val TabSlideInSpec = tween<androidx.compose.ui.unit.IntOffset>(AppAnimation.Duration.Normal)
+private val TabSlideOutSpec = tween<androidx.compose.ui.unit.IntOffset>(AppAnimation.Duration.Fast)
+
 /**
  * 视频缩略图内存缓存 — 缓存 MediaMetadataRetriever 提取的视频首帧
  *
@@ -181,42 +191,49 @@ fun StudentGalleryScreen(
     var viewerImageUrl by remember { mutableStateOf<String?>(null) }
     var playingVideo by remember { mutableStateOf<StudentGalleryVideo?>(null) }
 
-    val isLandscape = configuration.screenWidthDp > configuration.screenHeightDp
-    val screenWidthDp = configuration.screenWidthDp.dp
+    val isLandscape = remember(configuration) {
+        configuration.screenWidthDp > configuration.screenHeightDp
+    }
+    val screenWidthDp = remember(configuration) { configuration.screenWidthDp.dp }
 
-    fun downloadImage(url: String, description: String) {
-        scope.launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    val imageUrl = URL(url)
-                    val safeName = description.ifBlank { url.hashCode().toString() }
-                        .replace(Regex("[^\\w\\u4e00-\\u9fa5-]"), "_")
-                        .take(40)
-                    val fileName = "${studentName}_${safeName}.png"
-                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
-                        android.os.Environment.DIRECTORY_DOWNLOADS
-                    )
-                    val file = File(downloadsDir, "BLYY/StudentGallery/$fileName")
-                    file.parentFile?.mkdirs()
+    // downloadImage 包装为 val，避免每次重组重新分配闭包
+    // 预编译正则常量，避免每次调用都重新解析 Regex
+    val downloadImage = remember(scope, context, studentName) {
+        { url: String, description: String ->
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val imageUrl = URL(url)
+                        val safeName = description.ifBlank { url.hashCode().toString() }
+                            .replace(DOWNLOAD_NAME_SANITIZE_REGEX, "_")
+                            .take(40)
+                        val fileName = "${studentName}_${safeName}.png"
+                        val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                            android.os.Environment.DIRECTORY_DOWNLOADS
+                        )
+                        val file = File(downloadsDir, "BLYY/StudentGallery/$fileName")
+                        file.parentFile?.mkdirs()
 
-                    imageUrl.openStream().use { input ->
-                        FileOutputStream(file).use { output ->
-                            input.copyTo(output)
+                        imageUrl.openStream().use { input ->
+                            FileOutputStream(file).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+
+                        // Main 嵌套在 IO 内部以访问 fileName 变量
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(
+                                context,
+                                "已保存到 Download/BLYY/StudentGallery/$fileName",
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
                     }
-
+                } catch (e: Exception) {
+                    Log.e(TAG, "Download failed: ${e.message}", e)
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(
-                            context,
-                            "已保存到 Download/BLYY/StudentGallery/$fileName",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        Toast.makeText(context, "下载失败: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Download failed: ${e.message}", e)
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "下载失败: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -288,15 +305,15 @@ fun StudentGalleryScreen(
                         targetState = selectedTabIndex,
                         modifier = Modifier.fillMaxSize(),
                         transitionSpec = {
-                            (fadeIn(animationSpec = tween(AppAnimation.Duration.Normal)) +
+                            (fadeIn(animationSpec = TabFadeInSpec) +
                                 slideIntoContainer(
                                     AnimatedContentTransitionScope.SlideDirection.Start,
-                                    animationSpec = tween(AppAnimation.Duration.Normal)
+                                    animationSpec = TabSlideInSpec
                                 )) togetherWith
-                                (fadeOut(animationSpec = tween(AppAnimation.Duration.Fast)) +
+                                (fadeOut(animationSpec = TabFadeOutSpec) +
                                     slideOutOfContainer(
                                         AnimatedContentTransitionScope.SlideDirection.Start,
-                                        animationSpec = tween(AppAnimation.Duration.Fast)
+                                        animationSpec = TabSlideOutSpec
                                     ))
                         },
                         label = "tabContent"
@@ -406,7 +423,11 @@ private fun GalleryTabSwitcher(
             contentPadding = PaddingValues(horizontal = AppSpacing.Screen.Horizontal),
             horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
         ) {
-            items(tabs.size) { index ->
+            items(
+                count = tabs.size,
+                key = { index -> tabs[index].name },
+                contentType = { "tab" }
+            ) { index ->
                 val tab = tabs[index]
                 val isSelected = index == selectedTabIndex
 
@@ -417,7 +438,7 @@ private fun GalleryTabSwitcher(
                     accentColor = accentColor,
                     isDark = isDark,
                     isCommandCenter = isCommandCenter,
-                    onClick = { onTabSelected(index) }
+                    onClick = remember(index) { { onTabSelected(index) } }
                 )
             }
         }
@@ -556,7 +577,8 @@ private fun ImageGridContent(
     ) {
         itemsIndexed(
             items = tab.images,
-            key = { index, image -> image.url + index }
+            key = { _, image -> image.url },
+            contentType = { _, image -> if (image.url.endsWith(".gif")) "gif" else "image" }
         ) { index, image ->
             GalleryImageItem(
                 image = image,
@@ -564,8 +586,8 @@ private fun ImageGridContent(
                 accentColor = accentColor,
                 isDark = isDark,
                 isCommandCenter = isCommandCenter,
-                onClick = { onImageClick(image) },
-                onLongClick = { onImageLongClick(image) }
+                onClick = remember(image.url) { { onImageClick(image) } },
+                onLongClick = remember(image.url) { { onImageLongClick(image) } }
             )
         }
     }
@@ -727,14 +749,15 @@ private fun VideoTabContent(
     ) {
         items(
             items = tab.videos,
-            key = { it.url }
+            key = { it.url },
+            contentType = { "video" }
         ) { video ->
             VideoItemCard(
                 video = video,
                 accentColor = accentColor,
                 isDark = isDark,
                 isCommandCenter = isCommandCenter,
-                onClick = { onVideoClick(video) }
+                onClick = remember(video.url) { { onVideoClick(video) } }
             )
         }
     }
@@ -790,12 +813,16 @@ private fun VideoItemCard(
             ) {
                 when {
                     // 1. 有显式封面 URL（poster 属性或关联 img）→ 直接用 Coil 加载
+                    // ImageRequest 必须 remember，避免每次重组都新建请求触发 Coil 重新解码
                     video.coverUrl.isNotBlank() -> {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
+                        val coverRequest = remember(video.coverUrl, context) {
+                            ImageRequest.Builder(context)
                                 .data(video.coverUrl)
                                 .crossfade(true)
-                                .build(),
+                                .build()
+                        }
+                        AsyncImage(
+                            model = coverRequest,
                             contentDescription = video.title,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop

@@ -901,14 +901,10 @@ fun BlyySettingsRow(
     val accentColor = MaterialTheme.colorScheme.primary
     val isWatch = isWatchScreen()
 
-    val containerModifier = if (isCommandCenter) {
-        modifier.fillMaxWidth()
-    } else {
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-    }
+    // 注意：不要在此处再叠加 surfaceContainerHigh 背景，否则会与 BlyyPanel 自身的
+    // surfaceVariant.copy(alpha=0.45f) 背景形成双层叠加，导致浅色主题下出现白色背景断层。
+    // 背景统一由 BlyyPanel 内部管理，保持单层渲染。
+    val containerModifier = modifier.fillMaxWidth()
 
     BlyyPanel(modifier = containerModifier) {
         Row(
@@ -1062,7 +1058,7 @@ fun BlyySectionPanel(
                 )
             }
         }
-        BlyyPanel {
+        BlyyPanel(modifier = Modifier.fillMaxWidth()) {
             Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
                 content()
             }

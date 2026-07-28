@@ -11,6 +11,7 @@ import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.util.DebugLogger
 import com.azurlane.blyy.BuildConfig
+import com.azurlane.blyy.util.RefererResolver
 import dagger.hilt.android.HiltAndroidApp
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -29,16 +30,7 @@ class MyApplication : Application(), ImageLoaderFactory {
                 val host = originalRequest.url.host
 
                 // 根据图片域名动态设置 Referer，突破不同站点的防盗链
-                val referer = when {
-                    // gamekee CDN — 需要 gamekee 的 Referer
-                    host.contains("gamekee.com") || host.contains("gamekee") ->
-                        "https://www.gamekee.com/"
-                    // B站图片 — 需要 biligame 的 Referer
-                    host.contains("biligame.com") || host.contains("hdslb.com") ->
-                        "https://wiki.biligame.com/"
-                    // 其他域名 — 使用通用 Referer
-                    else -> "https://www.google.com/"
-                }
+                val referer = RefererResolver.getRefererByHost(host)
 
                 val newRequest = originalRequest.newBuilder()
                     // 伪装浏览器

@@ -6,6 +6,7 @@ import com.azurlane.blyy.data.model.LeaderboardCategory
 import com.azurlane.blyy.data.model.LeaderboardData
 import com.azurlane.blyy.data.model.LeaderboardEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -285,88 +286,110 @@ class LeaderboardRepository @Inject constructor(
             Log.e(TAG, "Token 解密失败，上传中止", e)
             return@withContext Result.failure(Exception("Token 解密失败，请检查应用完整性"))
         }
-        try {
-            val apiUrl = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$FILE_PATH"
+        val apiUrl = "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/contents/$FILE_PATH"
+        val maxRetries = 3
+        var lastError: Exception? = null
 
-            // 1. 获取当前文件内容和 SHA
-            var sha: String? = null
-            var currentData = LeaderboardData()
+        // 409 重试循环：GitHub Contents API 使用 SHA 做乐观并发控制，
+        // 多用户同时上传时 GET→PUT 期间 SHA 会过期 → 409 Conflict。
+        // 策略：收到 409 后重新 GET 获取最新 SHA，重新合并数据并重试 PUT。
+        for (attempt in 0 until maxRetries) {
+            try {
+                // 1. 获取当前文件内容和 SHA
+                var sha: String? = null
+                var currentData = LeaderboardData()
 
-            val getRequest = Request.Builder()
-                .url(apiUrl)
-                .header("Authorization", "token $token")
-                .header("Accept", "application/vnd.github.v3+json")
-                .build()
+                val getRequest = Request.Builder()
+                    .url(apiUrl)
+                    .header("Authorization", "token $token")
+                    .header("Accept", "application/vnd.github.v3+json")
+                    .build()
 
-            client.newCall(getRequest).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: return@withContext Result.failure(Exception("空响应"))
-                    val jsonObj = JSONObject(body)
-                    sha = jsonObj.optString("sha").takeIf { it.isNotBlank() }
-                    val content = jsonObj.getString("content")
-                    val decoded = Base64.decode(content, Base64.DEFAULT).toString(Charsets.UTF_8)
-                    currentData = json.decodeFromString<LeaderboardData>(decoded)
-                    Log.d(TAG, "读取到现有数据: schema=${currentData.schema_version}, " +
-                            "image_easy=${currentData.image_easy.size}, " +
-                            "image_hard=${currentData.image_hard.size}, " +
-                            "voice_easy=${currentData.voice_easy.size}, " +
-                            "voice_hard=${currentData.voice_hard.size}")
-                } else if (response.code != 404) {
-                    Log.e(TAG, "读取排行榜失败: HTTP ${response.code}")
-                    return@withContext Result.failure(Exception("读取排行榜失败: HTTP ${response.code}"))
+                client.newCall(getRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string() ?: return@withContext Result.failure(Exception("空响应"))
+                        val jsonObj = JSONObject(body)
+                        sha = jsonObj.optString("sha").takeIf { it.isNotBlank() }
+                        val content = jsonObj.getString("content")
+                        val decoded = Base64.decode(content, Base64.DEFAULT).toString(Charsets.UTF_8)
+                        currentData = json.decodeFromString<LeaderboardData>(decoded)
+                        Log.d(TAG, "读取到现有数据: schema=${currentData.schema_version}, " +
+                                "image_easy=${currentData.image_easy.size}, " +
+                                "image_hard=${currentData.image_hard.size}, " +
+                                "voice_easy=${currentData.voice_easy.size}, " +
+                                "voice_hard=${currentData.voice_hard.size}")
+                    } else if (response.code != 404) {
+                        Log.e(TAG, "读取排行榜失败: HTTP ${response.code}")
+                        return@withContext Result.failure(Exception("读取排行榜失败: HTTP ${response.code}"))
+                    }
+                    // 404 = 文件不存在，使用空数据
                 }
-                // 404 = 文件不存在，使用空数据
-            }
 
-            // 2. 追加条目并按 UID 去重（同一 UID 仅保留最高分），保留 schema_version
-            val updatedData = when (category) {
-                LeaderboardCategory.IMAGE_EASY -> {
-                    val list = deduplicateByUid(currentData.image_easy + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
-                    currentData.copy(image_easy = list)
+                // 2. 追加条目并按 UID 去重（同一 UID 仅保留最高分），保留 schema_version
+                val updatedData = when (category) {
+                    LeaderboardCategory.IMAGE_EASY -> {
+                        val list = deduplicateByUid(currentData.image_easy + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
+                        currentData.copy(image_easy = list)
+                    }
+                    LeaderboardCategory.IMAGE_HARD -> {
+                        val list = deduplicateByUid(currentData.image_hard + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
+                        currentData.copy(image_hard = list)
+                    }
+                    LeaderboardCategory.VOICE_EASY -> {
+                        val list = deduplicateByUid(currentData.voice_easy + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
+                        currentData.copy(voice_easy = list)
+                    }
+                    LeaderboardCategory.VOICE_HARD -> {
+                        val list = deduplicateByUid(currentData.voice_hard + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
+                        currentData.copy(voice_hard = list)
+                    }
                 }
-                LeaderboardCategory.IMAGE_HARD -> {
-                    val list = deduplicateByUid(currentData.image_hard + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
-                    currentData.copy(image_hard = list)
-                }
-                LeaderboardCategory.VOICE_EASY -> {
-                    val list = deduplicateByUid(currentData.voice_easy + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
-                    currentData.copy(voice_easy = list)
-                }
-                LeaderboardCategory.VOICE_HARD -> {
-                    val list = deduplicateByUid(currentData.voice_hard + cleanEntry).take(MAX_ENTRIES_PER_BOARD)
-                    currentData.copy(voice_hard = list)
-                }
-            }
 
-            // 3. 写回 GitHub
-            val newContent = json.encodeToString(updatedData)
-            val encodedContent = Base64.encodeToString(newContent.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                // 3. 写回 GitHub
+                val newContent = json.encodeToString(updatedData)
+                val encodedContent = Base64.encodeToString(newContent.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 
-            val putBody = JSONObject().apply {
-                put("message", "Update leaderboard: ${category.displayName} - score=${cleanEntry.score} (fmt=${cleanEntry.formatVersion})")
-                put("content", encodedContent)
-                sha?.let { put("sha", it) }
-            }.toString()
+                val putBody = JSONObject().apply {
+                    put("message", "Update leaderboard: ${category.displayName} - score=${cleanEntry.score} (fmt=${cleanEntry.formatVersion})")
+                    put("content", encodedContent)
+                    sha?.let { put("sha", it) }
+                }.toString()
 
-            val putRequest = Request.Builder()
-                .url(apiUrl)
-                .header("Authorization", "token $token")
-                .header("Accept", "application/vnd.github.v3+json")
-                .put(putBody.toRequestBody("application/json".toMediaType()))
-                .build()
+                val putRequest = Request.Builder()
+                    .url(apiUrl)
+                    .header("Authorization", "token $token")
+                    .header("Accept", "application/vnd.github.v3+json")
+                    .put(putBody.toRequestBody("application/json".toMediaType()))
+                    .build()
 
-            client.newCall(putRequest).execute().use { response ->
-                if (response.isSuccessful) {
-                    Log.i(TAG, "上传成功: category=${category.key}, score=${cleanEntry.score}")
-                    return@withContext Result.success(Unit)
-                } else {
-                    Log.e(TAG, "上传失败: HTTP ${response.code}, category=${category.key}")
+                client.newCall(putRequest).execute().use { response ->
+                    if (response.isSuccessful) {
+                        Log.i(TAG, "上传成功: category=${category.key}, score=${cleanEntry.score}, attempt=${attempt + 1}")
+                        return@withContext Result.success(Unit)
+                    }
+                    if (response.code == 409 && attempt < maxRetries - 1) {
+                        // SHA 过期（并发写入冲突），等待后重新 GET 最新 SHA 并重试
+                        val backoff = (attempt + 1) * 500L
+                        Log.w(TAG, "409 Conflict (SHA stale) on attempt ${attempt + 1}/$maxRetries, " +
+                                "re-fetching after ${backoff}ms: category=${category.key}")
+                        delay(backoff)
+                        return@use // 退出 use 块，继续 for 循环下一次重试
+                    }
+                    // 非 409 错误或重试次数耗尽 → 失败
+                    Log.e(TAG, "上传失败: HTTP ${response.code}, category=${category.key}, attempt=${attempt + 1}")
                     return@withContext Result.failure(Exception("上传失败: HTTP ${response.code}"))
                 }
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt < maxRetries - 1) {
+                    val backoff = (attempt + 1) * 500L
+                    Log.w(TAG, "上传异常 on attempt ${attempt + 1}/$maxRetries, retrying after ${backoff}ms: ${e.message}")
+                    delay(backoff)
+                } else {
+                    Log.e(TAG, "上传异常（重试耗尽）: uid=${cleanEntry.uid}, category=${category.key}", e)
+                }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "上传异常: uid=${cleanEntry.uid}, category=${category.key}", e)
-            return@withContext Result.failure(Exception("上传失败: ${e.message}"))
         }
+        return@withContext Result.failure(lastError ?: Exception("重试次数耗尽"))
     }
 }

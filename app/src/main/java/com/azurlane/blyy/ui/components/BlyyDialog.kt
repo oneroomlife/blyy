@@ -168,13 +168,25 @@ fun BlyyBottomSheet(
     content: @Composable () -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+    val isDark = LocalIsDark.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    // containerColor 必须与 BlyyPanel 的 panelColor 协调，否则指挥中心风格下
+    // BlyySectionPanel 之间的间距区域会透出 ModalBottomSheet 的 surface 色，
+    // 在浅色主题下表现为刺眼的白色背景断层。
+    // - 指挥中心模式：复用 AppColors.Panel 配色，与 BlyyPanel 保持同源
+    // - 经典模式：使用 surfaceContainer（比 surface 深一阶，减少白屏感）
+    val containerColor = when {
+        isCommandCenter && isDark -> AppColors.Panel.Dark
+        isCommandCenter -> AppColors.Panel.Light.copy(alpha = 0.95f)
+        else -> MaterialTheme.colorScheme.surfaceContainer
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismissRequest,
         sheetState = sheetState,
         shape = if (isCommandCenter) BlyyShapes.BottomSheet else RoundedCornerShape(28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = containerColor,
         dragHandle = {
             // 统一拖拽手柄
             Box(

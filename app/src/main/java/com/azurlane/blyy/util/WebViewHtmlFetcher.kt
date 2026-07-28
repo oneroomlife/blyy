@@ -309,22 +309,44 @@ object WebViewHtmlFetcher {
         webView?.evaluateJavascript(
             "(function(){return document.documentElement.outerHTML;})();"
         ) { result ->
-            // evaluateJavascript 返回的字符串带引号和转义字符，需要处理
-            val html = if (result != null && result != "null") {
-                // 去除首尾引号，反转义
-                result
-                    .removeSurrounding("\"")
-                    .replace("\\u003C", "<")
-                    .replace("\\u003E", ">")
-                    .replace("\\\"", "\"")
-                    .replace("\\/", "/")
-                    .replace("\\n", "\n")
-                    .replace("\\t", "\t")
-                    .replace("\\\\", "\\")
-            } else {
-                ""
-            }
-            callback(html)
+            callback(unescapeJsString(result))
+        }
+    }
+
+    /**
+     * 反转义 WebView.evaluateJavascript 返回的字符串字面量。
+     *
+     * evaluateJavascript 返回值是 JavaScript 字符串字面量（带引号和转义），
+     * 例如 `"\"<html>\\n</html>\""`. 之前用逐个 replace 反转义存在两个缺陷：
+     *   1. 转义序列不全：仅处理 `\"` `\n` `\t` `\/` `\u003C` `\u003E`，
+     *      遗漏 `\r` `\b` `\f` `\uXXXX` `\xXX` 等合法 JS 转义，
+     *      会导致含这些序列的 HTML 内容损坏（例如 JSON-LD script 中的 `\u2028`）。
+     *   2. 顺序敏感：`\\\\` 必须最后处理，但前面的 `\X` 替换会先匹配 `\\\\` 中的 `\\`，
+     *      把原始字面 `\n`（两个字符）误转义为新行，破坏页面中嵌套的代码字符串。
+     *
+     * 修复方案：JS 字符串字面量与 JSON 字符串语法兼容，将其包装为 `[...]` JSON 数组，
+     * 用 org.json 解析器一次性反转义，行为与 V8 引擎完全一致，无遗漏、无顺序问题。
+     */
+    private fun unescapeJsString(result: String?): String {
+        if (result.isNullOrBlank() || result == "null") return ""
+        return try {
+            val arr = org.json.JSONArray("[$result]")
+            if (arr.isNull(0)) "" else arr.getString(0)
+        } catch (e: Exception) {
+            // 理论上不会触发（evaluateJavascript 总是返回合法字面量），降级到手动反转义保底
+            Log.w(TAG, "JSON unescape failed, fallback to manual: ${e.message}")
+            result
+                .removeSurrounding("\"")
+                .replace("\\u003C", "<")
+                .replace("\\u003E", ">")
+                .replace("\\\"", "\"")
+                .replace("\\/", "/")
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace("\\r", "\r")
+                .replace("\\b", "\b")
+                .replace("\\f", "\u000C")
+                .replace("\\\\", "\\")
         }
     }
 

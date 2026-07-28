@@ -38,7 +38,6 @@ enum class PlayMode {
 
 @UnstableApi
 data class PlayerUiState(
-    val player: Player? = null,
     val currentMediaItem: MediaItem? = null,
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
@@ -62,6 +61,10 @@ class PlayerViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsDataStore: PlayerSettingsDataStore
 ) : ViewModel() {
+
+    private companion object {
+        const val TAG = "PlayerViewModel"
+    }
 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
@@ -103,9 +106,14 @@ class PlayerViewModel @Inject constructor(
 
                 browser?.let { player ->
                     player.addListener(playerListener)
+                    // 注意：不再将 Player 实例放入 UiState。
+                    // Player 持有 native 资源与 media3 Session，UiState 持有会导致：
+                    // 1. Compose 重组时持有重对象引用
+                    // 2. onCleared 中 browser.release() 后 UiState 仍残留已释放 Player，UI 调用会崩溃
+                    // UI 仅通过 isPlaying / currentPosition 等派生字段观察状态，
+                    // 操作播放器统一通过 ViewModel 方法（playOrPause/seekTo/skipToNext 等）。
                     _uiState.update {
                         it.copy(
-                            player = player,
                             isPlaying = player.isPlaying,
                             playMode = getPlayModeFromPlayer(player)
                         )
@@ -113,7 +121,7 @@ class PlayerViewModel @Inject constructor(
                     updateMediaState(player)
                 }
             } catch (e: Exception) {
-                Log.e("PlayerViewModel", "Connection failed", e)
+                Log.e(TAG, "Connection failed", e)
                 _uiState.update { it.copy(errorMessage = "服务连接失败: ${e.message}") }
             }
         }

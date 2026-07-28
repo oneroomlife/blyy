@@ -91,6 +91,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -146,10 +147,16 @@ import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+// 复用的空操作 lambda — 用于稳定不变的回调（如 onStickerClick 当前未实现点击行为）
+// 单例常量保证每次传入的 lambda 引用相同，避免子组件因 lambda 实例变化而被强制重组
+private val EmptyCallback: () -> Unit = {}
 
 // ── JUUSTAGRAM 设计规范色彩系统（映射到 JuusPalette） ──
 // 来源：UI_work/juustagram-messaging-ui/docs/design-spec.md
@@ -409,6 +416,26 @@ fun JiuxinChatScreen(
             // 直到用户手动滚回底部（或发送消息）才恢复自动跟随。
             var shouldAutoScroll by remember { mutableStateOf(true) }
 
+            // 进入界面/切换会话时强制跳转到底部（无动画，避免视觉跳动）
+            // 解决从会话列表进入时（尤其是群聊）消息已加载但不会自动滚动到底部的问题。
+            //
+            // 直接从 ViewModel StateFlow 收集消息数量，而非用 snapshotFlow 读 Compose State：
+            // 点击进入群聊时 switchToSession 已同步更新 _chatState，但 Compose State
+            // (chatState) 可能尚未重组到最新值，snapshotFlow 会读到旧值（0 或上一会话的消息数），
+            // 导致 filter { it > 0 } 不通过或滚动到错误位置。
+            // 直接收集 viewModel.chatUiState 可立即获取最新值，不受重组时序影响。
+            //
+            // withFrameNanos 等待 LazyColumn 完成首次测量（两帧确保布局稳定）后再滚动。
+            LaunchedEffect(currentSessionId) {
+                val messagesCount = viewModel.chatUiState
+                    .map { it.messages.size }
+                    .filter { it > 0 }
+                    .first()
+                withFrameNanos { }
+                withFrameNanos { }
+                listState.scrollToItem(messagesCount - 1)
+            }
+
             // 监听用户手动滚动：当用户向上滚动离开底部时，关闭自动滚动；
             // 当用户滚回底部附近时，重新开启自动滚动。
             LaunchedEffect(listState) {
@@ -453,16 +480,21 @@ fun JiuxinChatScreen(
             }
 
             // 提升到 LazyColumn 外层，避免每个 item 重复读取 LocalConfiguration
-            val messageMaxWidth = (LocalConfiguration.current.screenWidthDp * 0.75f).dp
+            val configuration = LocalConfiguration.current
+            val messageMaxWidth = remember(configuration.screenWidthDp) {
+                (configuration.screenWidthDp * 0.75f).dp
+            }
 
             // 消息发送者标识函数（用于分组判断：USER=发送方，AI/VOICE/STICKER=接收方，SYSTEM=独立）
             // 群聊扩展：群聊会话中按 shipName 区分不同舰娘发送者，使不同舰娘的连续消息独立分组、各自显示头像
             val isGroupSession = currentSession?.isGroup == true
-            val senderOf: (ChatMessage) -> String = { msg ->
-                when (msg.type) {
-                    ChatMessageType.USER.name -> "user"
-                    ChatMessageType.SYSTEM.name -> "system_${msg.id}" // 每条系统消息独立成组
-                    else -> if (isGroupSession) "ai_${msg.shipName}" else "ai" // 群聊按舰娘分组
+            val senderOf: (ChatMessage) -> String = remember(isGroupSession) {
+                { msg ->
+                    when (msg.type) {
+                        ChatMessageType.USER.name -> "user"
+                        ChatMessageType.SYSTEM.name -> "system_${msg.id}" // 每条系统消息独立成组
+                        else -> if (isGroupSession) "ai_${msg.shipName}" else "ai" // 群聊按舰娘分组
+                    }
                 }
             }
 
@@ -473,7 +505,9 @@ fun JiuxinChatScreen(
                 state = listState,
                 verticalArrangement = Arrangement.spacedBy(0.dp) // 间距由 item 自身控制（组间12dp/组内4dp）
             ) {
-                item { Spacer(modifier = Modifier.height(8.dp)) }
+                item(key = "top_spacer", contentType = "spacer") {
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 itemsIndexed(
                     items = chatState.messages,
@@ -505,10 +539,12 @@ fun JiuxinChatScreen(
                                 }
                             }
                         },
-                        onStickerClick = { /* 以后可以做点击查看大图或保存表情包 */ },
-                        onMessageLongClick = {
-                            val isUser = message.type == ChatMessageType.USER.name
-                            messageActionTarget = Pair(message.id, isUser)
+                        onStickerClick = EmptyCallback,
+                        onMessageLongClick = remember(message.id, message.type) {
+                            {
+                                val isUser = message.type == ChatMessageType.USER.name
+                                messageActionTarget = Pair(message.id, isUser)
+                            }
                         }
                     )
                 }
@@ -518,7 +554,7 @@ fun JiuxinChatScreen(
                 // 私聊模式或 typingMembers 为空时：回退到基于 isLoading 的单一指示器
                 if (chatState.typingMembers.isNotEmpty()) {
                     chatState.typingMembers.forEach { typingMember ->
-                        item(key = "typing_${typingMember.name}_${typingMember.avatarUrl}") {
+                        item(key = "typing_${typingMember.name}_${typingMember.avatarUrl}", contentType = "typing") {
                             TypingIndicator(
                                 jiuxinName = typingMember.name,
                                 avatarUrl = typingMember.avatarUrl,
@@ -527,7 +563,7 @@ fun JiuxinChatScreen(
                         }
                     }
                 } else if (chatState.isLoading) {
-                    item {
+                    item(key = "typing_single", contentType = "typing") {
                         TypingIndicator(
                             jiuxinName = jiuxinName,
                             avatarUrl = avatarUrl,
@@ -537,7 +573,7 @@ fun JiuxinChatScreen(
                 }
 
                 if (chatState.error != null) {
-                    item {
+                    item(key = "error_banner", contentType = "error") {
                         val errorBg = if (isDark) JuusColors.Dark.ErrorBg else JuusColors.ErrorBg
                         val errorText = if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText
                         Box(
@@ -558,7 +594,9 @@ fun JiuxinChatScreen(
                     }
                 }
 
-                item { Spacer(modifier = Modifier.height(8.dp)) }
+                item(key = "bottom_spacer", contentType = "spacer") {
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
             }
 
             ChatInputBar(
@@ -1120,7 +1158,7 @@ private fun HistoryPanel(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    items(sessions, key = { it.id }) { session ->
+                    items(sessions, key = { it.id }, contentType = { "session_item" }) { session ->
                         val isCurrent = session.id == currentSessionId
                         // 显示对话名称（name），为空或为默认格式时回退到啾信名称（jiuxinName）
                         // 名称职责隔离：对话名称可被用户重命名修改，啾信名称来自配置不可被重命名修改
@@ -1253,7 +1291,7 @@ private fun GroupMemberPanel(
                 }
 
                 // ── 成员选择列表 ──
-                items(personaConfigs, key = { it.id }) { persona ->
+                items(personaConfigs, key = { it.id }, contentType = { "persona_item" }) { persona ->
                     val isMember = persona.id in selectedPersonaIds
                     Row(
                         modifier = Modifier
@@ -1850,7 +1888,7 @@ fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDi
                 StableOutlinedTextField(value = searchQuery, onValueChange = viewModel::setShipSearchQuery, modifier = Modifier.fillMaxWidth().padding(horizontal = AppSpacing.Lg), placeholder = { Text("搜索舰娘...") }, singleLine = true, textStyle = AppTypography.BodyMedium, colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary), shape = RoundedCornerShape(AppSpacing.Corner.Sm))
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-                    items(filteredShips, key = { it.name }) { ship ->
+                    items(filteredShips, key = { it.name }, contentType = { "ship_avatar" }) { ship ->
                         // 优先使用本地高清头像，匹配不到回退网络 URL
                         val effectiveAvatar = remember(ship.name, ship.avatarUrl, ship.archiveType) {
                             LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.archiveType, ship.avatarUrl)
@@ -2394,18 +2432,20 @@ private fun MessageEditSheet(
     }
 }
 
-private fun formatTime(timestamp: Long): String {
-    val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
-    return sdf.format(Date(timestamp))
-}
+// SimpleDateFormat 实例缓存 — 仅在主线程使用，避免每次调用都新建实例（内部含 Calendar、TimeZone 等数百字节）
+// 注意：SimpleDateFormat 非线程安全，这里仅供 Compose 主线程调用，未来如需后台调用请改用 ThreadLocal
+private val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+private val dateFormatter = SimpleDateFormat("yyyy/MM/dd", Locale.getDefault())
+
+private fun formatTime(timestamp: Long): String = timeFormatter.format(Date(timestamp))
 
 private fun formatSessionTime(timestamp: Long): String {
     val now = System.currentTimeMillis()
     val diff = now - timestamp
     return when {
         diff < 60_000 -> "刚刚"
-        diff < 86_400_000 -> SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
+        diff < 86_400_000 -> timeFormatter.format(Date(timestamp))
         diff < 604_800_000 -> "${diff / 86_400_000}天前"
-        else -> SimpleDateFormat("yyyy/MM/dd", Locale.getDefault()).format(Date(timestamp))
+        else -> dateFormatter.format(Date(timestamp))
     }
 }

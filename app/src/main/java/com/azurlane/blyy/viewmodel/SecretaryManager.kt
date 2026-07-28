@@ -30,7 +30,11 @@ data class SecretaryManagerState(
     /** 当前播放语音的台词文本（null 表示无台词显示） */
     val currentDialogue: String? = null,
     /** 台词弹窗开关（true=显示，false=隐藏） */
-    val dialogueEnabled: Boolean = true
+    val dialogueEnabled: Boolean = true,
+    /** SD 小人皮肤名（"" / "default" 用默认皮肤，"gai" / "skin2" 等为其他皮肤） */
+    val sdSkin: String = "",
+    /** SD 小人显示缩放倍率（1.0 = 默认大小，0.5 = 半尺寸，1.5 = 放大 50%） */
+    val sdScale: Float = 1.0f
 )
 
 @Singleton
@@ -49,6 +53,8 @@ class SecretaryManager @Inject constructor(
     private val _isLoadingVoices = MutableStateFlow(false)
     private val _voiceLanguage = MutableStateFlow(VoiceLanguage.CN)
     private val _currentDialogue = MutableStateFlow<String?>(null)
+    private val _sdSkin = MutableStateFlow("")
+    private val _sdScale = MutableStateFlow(1.0f)
     private var autoPlayJob: Job? = null
     private var dialogueClearJob: Job? = null
     
@@ -66,7 +72,9 @@ class SecretaryManager @Inject constructor(
         settingsDataStore.secretaryAutoPlayEnabled,
         settingsDataStore.secretaryAutoPlayIntervalMinutes,
         _currentDialogue,
-        settingsDataStore.secretaryDialogueEnabled
+        settingsDataStore.secretaryDialogueEnabled,
+        _sdSkin,
+        _sdScale
     ) { args ->
         SecretaryManagerState(
             shipName = args[0] as String,
@@ -78,7 +86,9 @@ class SecretaryManager @Inject constructor(
             autoPlayEnabled = args[6] as Boolean,
             autoPlayIntervalMinutes = args[7] as Int,
             currentDialogue = args[8] as String?,
-            dialogueEnabled = args[9] as Boolean
+            dialogueEnabled = args[9] as Boolean,
+            sdSkin = args[10] as String,
+            sdScale = args[11] as Float
         )
     }.stateIn(
         scope = scope,
@@ -119,6 +129,12 @@ class SecretaryManager @Inject constructor(
                 }
             }
         }
+        scope.launch {
+            settingsDataStore.secretarySdSkin.collect { _sdSkin.value = it }
+        }
+        scope.launch {
+            settingsDataStore.secretarySdScale.collect { _sdScale.value = it }
+        }
     }
 
     suspend fun selectRandom(): Ship? {
@@ -151,13 +167,15 @@ class SecretaryManager @Inject constructor(
             _voices.value = voices
             _isLoadingVoices.value = false
             
-            // 异步保存到持久化存储
+            // 异步保存到持久化存储（NonCancellable：即使 scope 被取消也需完成写入，避免状态丢失）
             scope.launch {
-                settingsDataStore.saveSecretaryShip(ship.name, finalFigureUrl, ship.avatarUrl)
+                withContext(NonCancellable) {
+                    settingsDataStore.saveSecretaryShip(ship.name, finalFigureUrl, ship.avatarUrl)
+                }
             }
-            
+
             if (state.value.autoPlayEnabled) startAutoPlay()
-            
+
             Log.d(TAG, "selectShip: 完成，立绘URL=$finalFigureUrl，耗时 ${System.currentTimeMillis() - startTime}ms")
         } catch (e: Exception) {
             Log.e(TAG, "selectShip: 选择失败，使用头像降级", e)
@@ -165,9 +183,11 @@ class SecretaryManager @Inject constructor(
             _figureUrl.value = ship.avatarUrl
             _voices.value = emptyList()
             _isLoadingVoices.value = false
-            
+
             scope.launch {
-                settingsDataStore.saveSecretaryShip(ship.name, ship.avatarUrl, ship.avatarUrl)
+                withContext(NonCancellable) {
+                    settingsDataStore.saveSecretaryShip(ship.name, ship.avatarUrl, ship.avatarUrl)
+                }
             }
         }
     }
@@ -188,12 +208,14 @@ class SecretaryManager @Inject constructor(
             _figureUrl.value = figureUrl
             _avatarUrl.value = ship.avatarUrl
             _voices.value = voices
-            
-            // 异步保存
+
+            // 异步保存（NonCancellable：确保写入完成）
             scope.launch {
-                settingsDataStore.saveSecretaryShip(ship.name, figureUrl, ship.avatarUrl)
+                withContext(NonCancellable) {
+                    settingsDataStore.saveSecretaryShip(ship.name, figureUrl, ship.avatarUrl)
+                }
             }
-            
+
             Log.d(TAG, "loadFigureAndSave: 成功，耗时 ${System.currentTimeMillis() - startTime}ms")
         } catch (e: Exception) {
             Log.e(TAG, "loadFigureAndSave: 加载失败，使用头像降级", e)
@@ -202,9 +224,11 @@ class SecretaryManager @Inject constructor(
             _figureUrl.value = ship.avatarUrl
             _avatarUrl.value = ship.avatarUrl
             _voices.value = emptyList()
-            
+
             scope.launch {
-                settingsDataStore.saveSecretaryShip(ship.name, ship.avatarUrl, ship.avatarUrl)
+                withContext(NonCancellable) {
+                    settingsDataStore.saveSecretaryShip(ship.name, ship.avatarUrl, ship.avatarUrl)
+                }
             }
         } finally {
             _isLoadingVoices.value = false
@@ -214,13 +238,17 @@ class SecretaryManager @Inject constructor(
 
     fun clearSecretary() {
         Log.d(TAG, "clearSecretary: 清除秘书舰")
+        // 立即更新内存状态（UI 即时响应，不依赖协程）
+        _shipName.value = ""
+        _figureUrl.value = ""
+        _avatarUrl.value = ""
+        _voices.value = emptyList()
+        stopAutoPlay()
+        // 持久化清理（NonCancellable：即使 scope 被取消也需完成，避免重启后残留旧数据）
         scope.launch {
-            settingsDataStore.clearSecretaryShip()
-            _shipName.value = ""
-            _figureUrl.value = ""
-            _avatarUrl.value = ""
-            _voices.value = emptyList()
-            stopAutoPlay()
+            withContext(NonCancellable) {
+                settingsDataStore.clearSecretaryShip()
+            }
         }
     }
 
@@ -299,7 +327,9 @@ class SecretaryManager @Inject constructor(
 
     fun setAutoPlay(enabled: Boolean, intervalMinutes: Int) {
         scope.launch {
-            settingsDataStore.setSecretaryAutoPlay(enabled, intervalMinutes)
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretaryAutoPlay(enabled, intervalMinutes)
+            }
             if (enabled && _shipName.value.isNotEmpty()) startAutoPlay()
             else stopAutoPlay()
         }
@@ -307,13 +337,37 @@ class SecretaryManager @Inject constructor(
 
     fun setVoiceLanguage(language: VoiceLanguage) {
         scope.launch {
-            settingsDataStore.setVoiceLanguage(language)
+            withContext(NonCancellable) {
+                settingsDataStore.setVoiceLanguage(language)
+            }
         }
     }
 
     fun setDialogueEnabled(enabled: Boolean) {
         scope.launch {
-            settingsDataStore.setSecretaryDialogueEnabled(enabled)
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretaryDialogueEnabled(enabled)
+            }
+        }
+    }
+
+    fun setSdSkin(skin: String) {
+        // 立即更新内存状态，确保 UI 实时响应（皮肤切换无需等待 DataStore 异步写入）
+        _sdSkin.value = skin
+        scope.launch {
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretarySdSkin(skin)
+            }
+        }
+    }
+
+    fun setSdScale(scale: Float) {
+        // 立即更新内存状态，确保 UI 实时响应滑块拖动（避免等待 DataStore 异步写入 + collect 回调的延迟）
+        _sdScale.value = scale
+        scope.launch {
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretarySdScale(scale)
+            }
         }
     }
 

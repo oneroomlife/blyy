@@ -147,6 +147,7 @@ import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipRandomScreen
+import com.azurlane.blyy.ui.screens.SecretaryShipSettingsScreen
 import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
@@ -168,9 +169,9 @@ import com.azurlane.blyy.viewmodel.VoiceViewModel
 import com.azurlane.blyy.viewmodel.ArchiveType
 import com.azurlane.blyy.viewmodel.UpdateCheckViewModel
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
-import com.azurlane.blyy.utils.OverlayPermissionHelper
 import com.azurlane.blyy.SecretaryOverlayService
 import com.azurlane.blyy.util.AppUpdateChecker
+import com.azurlane.blyy.util.OverlayPermissionHelper
 import com.azurlane.blyy.util.UpdateInfo
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -183,6 +184,9 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
     object Gallery : Screen("gallery", "船坞", Icons.AutoMirrored.Filled.List)
     object About : Screen("about", "关于", Icons.Default.Info)
 }
+
+// 顶级函数（AppContent 等）共用的日志 TAG — MainActivity 类内部用 companion object 的 TAG_OVERLAY
+private const val TAG = "MainActivity"
 
 /** Material Motion — Fade Through，用于底部 Tab 同级切换 */
 private fun tabFadeThroughEnter(): EnterTransition =
@@ -211,10 +215,13 @@ class MainActivity : ComponentActivity() {
     ) { }
 
     companion object {
+        // 悬浮窗相关日志使用独立 TAG，便于按功能模块过滤
+        private const val TAG_OVERLAY = "SecretaryOverlay"
+
         // 用于跨组件通信的悬浮窗状态
         private val _overlayState = MutableStateFlow(SecretaryOverlayService.isServiceRunning())
         val overlayState = _overlayState.asStateFlow()
-        
+
         fun updateOverlayState(isRunning: Boolean) {
             _overlayState.value = isRunning
         }
@@ -299,10 +306,10 @@ class MainActivity : ComponentActivity() {
      * 启动系统悬浮窗服务
      */
     fun startOverlayService() {
-        Log.d("SecretaryOverlay", "startOverlayService: 开始启动悬浮窗服务")
+        Log.d(TAG_OVERLAY, "startOverlayService: 开始启动悬浮窗服务")
         
         if (OverlayPermissionHelper.hasOverlayPermission(this)) {
-            Log.d("SecretaryOverlay", "startOverlayService: 权限已授予，启动服务")
+            Log.d(TAG_OVERLAY, "startOverlayService: 权限已授予，启动服务")
             
             // 保存状态（绑定 Activity 生命周期，避免 GlobalScope 泄漏）
             lifecycleScope.launch {
@@ -319,7 +326,7 @@ class MainActivity : ComponentActivity() {
             // 显示成功提示
             Toast.makeText(this, "悬浮窗已开启", Toast.LENGTH_SHORT).show()
         } else {
-            Log.d("SecretaryOverlay", "startOverlayService: 权限未授予，请求权限")
+            Log.d(TAG_OVERLAY, "startOverlayService: 权限未授予，请求权限")
             Toast.makeText(this, "需要悬浮窗权限才能显示", Toast.LENGTH_SHORT).show()
             requestOverlayPermission()
         }
@@ -444,7 +451,7 @@ fun AppContent() {
                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(currentUpdateInfo.downloadUrl))
                         context.startActivity(intent)
                     } catch (e: Exception) {
-                        Log.e("MainActivity", "Failed to open GitHub update URL", e)
+                        Log.e(TAG, "Failed to open GitHub update URL", e)
                         Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
                     }
                     updateCheckViewModel.dismissUpdate()
@@ -459,7 +466,7 @@ fun AppContent() {
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(linkToOpen.url))
                                 context.startActivity(intent)
                             } catch (e: Exception) {
-                                Log.e("MainActivity", "Failed to open drive URL", e)
+                                Log.e(TAG, "Failed to open drive URL", e)
                                 Toast.makeText(context, "无法打开浏览器，请稍后重试", Toast.LENGTH_SHORT).show()
                             }
                         } else {
@@ -474,7 +481,7 @@ fun AppContent() {
                         try {
                             updateChecker.skipVersion(currentUpdateInfo.versionName)
                         } catch (e: Exception) {
-                            Log.e("MainActivity", "Failed to skip version", e)
+                            Log.e(TAG, "Failed to skip version", e)
                         }
                     }
                     updateCheckViewModel.dismissUpdate()
@@ -501,7 +508,7 @@ fun AppContent() {
                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 context.startActivity(browserIntent)
                             } catch (e: Exception) {
-                                Log.e("MainActivity", "No browser available to open Live2D", e)
+                                Log.e(TAG, "No browser available to open Live2D", e)
                                 Toast.makeText(context, "未找到可用的浏览器应用", Toast.LENGTH_SHORT).show()
                             }
                         } else {
@@ -870,21 +877,26 @@ fun AppContent() {
                         )
                     }
                     composable("secretary_mode") {
-                        // 使用 collectAsState 实现响应式状态更新
-                        val overlayEnabled by MainActivity.overlayState.collectAsState()
-                        
                         SecretaryShipModeScreen(
                             secretaryState = secretaryState,
                             onBack = { navController.popBackStack() },
                             onRandomFlip = { navController.navigate("secretary_random") },
                             onSelectFromHome = { navController.navigate("secretary_pick_home") },
                             onSelectFromGallery = { navController.navigate("secretary_pick_gallery") },
-                            onSetAutoPlay = { enabled, interval ->
-                                secretaryViewModel.onIntent(SecretaryShipIntent.SetAutoPlay(enabled, interval))
-                            },
                             onClearSecretary = {
                                 secretaryViewModel.onIntent(SecretaryShipIntent.ClearSecretary)
                             },
+                            onOpenSettings = { navController.navigate("secretary_settings") }
+                        )
+                    }
+                    composable("secretary_settings") {
+                        // 使用 collectAsState 实现响应式状态更新
+                        val overlayEnabled by MainActivity.overlayState.collectAsState()
+
+                        SecretaryShipSettingsScreen(
+                            secretaryState = secretaryState,
+                            onBack = { navController.popBackStack() },
+                            isOverlayEnabled = overlayEnabled,
                             onToggleOverlay = { enabled ->
                                 val activity = context as? MainActivity
                                 if (enabled) {
@@ -893,9 +905,17 @@ fun AppContent() {
                                     activity?.stopOverlayService()
                                 }
                             },
-                            isOverlayEnabled = overlayEnabled,
                             onToggleDialogue = { enabled ->
                                 secretaryViewModel.onIntent(SecretaryShipIntent.SetDialogueEnabled(enabled))
+                            },
+                            onSetAutoPlay = { enabled, interval ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetAutoPlay(enabled, interval))
+                            },
+                            onSetSdSkin = { skin ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetSdSkin(skin))
+                            },
+                            onSetSdScale = { scale ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetSdScale(scale))
                             }
                         )
                     }
@@ -943,7 +963,9 @@ fun AppContent() {
                         onTap = {
                             secretaryViewModel.ensureVoicesLoaded(secretaryState.shipName)
                             secretaryViewModel.onIntent(SecretaryShipIntent.PlayRandomVoice)
-                        }
+                        },
+                        selectedSkin = secretaryState.sdSkin,
+                        sdScale = secretaryState.sdScale
                     )
                 }
 
