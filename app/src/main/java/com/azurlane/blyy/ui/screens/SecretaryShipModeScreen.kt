@@ -1,5 +1,9 @@
 package com.azurlane.blyy.ui.screens
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -31,6 +35,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Favorite
@@ -171,6 +176,19 @@ fun SecretaryShipModeScreen(
                     }
                 }
 
+                // SD 资源下载入口：跳转夸克网盘下载完整 SD 小人资源包
+                // 独立 Section，使用 tertiary 颜色与主功能区（primary/secondary）区分，
+                // 与下方"当前秘书舰" Section 视觉上形成层次。
+                SecretarySection(
+                    title = "SD 资源下载",
+                    icon = Icons.Rounded.CloudDownload,
+                    accentColor = MaterialTheme.colorScheme.tertiary
+                ) {
+                    ResourceDownloadCard(
+                        url = "https://pan.quark.cn/s/ed497182ee99?pwd=hNJx"
+                    )
+                }
+
                 if (secretaryState.shipName.isNotEmpty()) {
                     // 当前秘书舰：同样使用 SecretarySection + 独立卡片，
                     // 让舰名信息和设置入口各自有清晰边界。
@@ -217,6 +235,87 @@ fun SecretaryShipModeScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * SD 资源下载卡片 — 跳转夸克网盘下载完整 SD 小人资源包。
+ *
+ * 设计要点：
+ * - 整卡可点击跳转浏览器打开网盘链接（Intent.ACTION_VIEW）
+ * - 使用 tertiary 颜色作为主色调，区别于主功能区 primary/secondary
+ * - 整体复用 [BlyyPanel] 风格保持与其他卡片视觉一致
+ *
+ * 容错处理：
+ * - [ActivityNotFoundException]：设备无浏览器可用时 Toast 提示
+ */
+@Composable
+private fun ResourceDownloadCard(
+    url: String
+) {
+    val context = LocalContext.current
+    val accentColor = MaterialTheme.colorScheme.tertiary
+
+    BlyyPanel(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppSpacing.Corner.Md)),
+        accentColor = accentColor
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                .clickable {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    try {
+                        context.startActivity(intent)
+                    } catch (_: ActivityNotFoundException) {
+                        Toast.makeText(context, "未找到可用浏览器", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .padding(AppSpacing.Lg),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(accentColor.copy(alpha = 0.3f), Color.Transparent)
+                        ),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.CloudDownload,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "夸克网盘资源",
+                    style = AppTypography.TitleSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "下载 SD 小人资源包",
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
