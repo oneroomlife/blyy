@@ -16,6 +16,7 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.viewmodel.PlayMode
 import android.util.Log
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
@@ -53,12 +54,16 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_DIALOGUE_ENABLED_KEY = booleanPreferencesKey("secretary_dialogue_enabled")
         private val SECRETARY_SD_SKIN_KEY = stringPreferencesKey("secretary_sd_skin")
         private val SECRETARY_SD_SCALE_KEY = floatPreferencesKey("secretary_sd_scale")
+        // 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源）
+        private val SECRETARY_SD_RESOURCE_ID_KEY = stringPreferencesKey("secretary_sd_resource_id")
         
         // 语音语言
         private val VOICE_LANGUAGE_KEY = stringPreferencesKey("voice_language")
         
         // 悬浮窗状态
         private val SECRETARY_OVERLAY_ENABLED_KEY = booleanPreferencesKey("secretary_overlay_enabled")
+        // 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互）
+        private val SECRETARY_OVERLAY_TOUCH_PASSTHROUGH_KEY = booleanPreferencesKey("secretary_overlay_touch_passthrough")
 
         // 外观设置
         private val UI_STYLE_KEY = stringPreferencesKey("ui_style")
@@ -138,7 +143,26 @@ class PlayerSettingsDataStore @Inject constructor(
         const val ARCHIVE_CACHE_EXPIRY_MS = 5 * 60 * 1000L
     }
 
-    val playMode: Flow<PlayMode> = context.dataStore.data
+    /**
+     * 带容错的数据流：捕获 DataStore IO 异常（文件损坏/权限/存储空间不足/并发写入冲突），
+     * 发射空 Preferences 兜底，避免异常传播到 collect 导致 ViewModel 协程崩溃闪退。
+     *
+     * 背景：部分设备（尤其是定制 ROM 或低存储空间）首次启动或并发写入时，
+     * DataStore 可能抛出 IOException。原代码直接使用 [context.dataStore.data]，
+     * 异常会传播到 JiuxinViewModel.init 的 collector，导致 ViewModel 创建失败 → 闪退。
+     *
+     * 发射 emptyPreferences() 后，下游 map 会读到各 Flow 的默认兜底值（"" / emptyList()），
+     * 与原有的 `?: ""` / `?: emptyList()` 逻辑配合，保证 UI 永不崩溃。
+     *
+     * 注意：仅捕获读取异常；写入异常（edit {} 内）仍由调用方的 try-catch 处理。
+     */
+    private val safeData: Flow<Preferences> = context.dataStore.data
+        .catch { e ->
+            Log.e(TAG, "DataStore read failed, falling back to empty preferences", e)
+            emit(androidx.datastore.preferences.core.emptyPreferences())
+        }
+
+    val playMode: Flow<PlayMode> = safeData
         .map { preferences: Preferences ->
             val modeName = preferences[PLAY_MODE_KEY] ?: PlayMode.PLAY_ONCE.name
             try {
@@ -148,12 +172,12 @@ class PlayerSettingsDataStore @Inject constructor(
             }
         }
 
-    val favorites: Flow<Set<String>> = context.dataStore.data
+    val favorites: Flow<Set<String>> = safeData
         .map { preferences: Preferences ->
             preferences[FAVORITES_KEY]?.split(",")?.filter { it.isNotEmpty() }?.toSet() ?: emptySet()
         }
 
-    val playLaterList: Flow<List<PlayLaterItem>> = context.dataStore.data
+    val playLaterList: Flow<List<PlayLaterItem>> = safeData
         .map { preferences: Preferences ->
             val json = preferences[PLAY_LATER_KEY] ?: "[]"
             try {
@@ -163,28 +187,34 @@ class PlayerSettingsDataStore @Inject constructor(
             }
         }
 
-    fun getSavedFigure(shipName: String): Flow<String?> = context.dataStore.data
+    fun getSavedFigure(shipName: String): Flow<String?> = safeData
         .map { it[stringPreferencesKey(FIGURE_PREFIX + shipName)] }
 
     // 今日秘书舰
-    val secretaryShipName: Flow<String> = context.dataStore.data.map { it[SECRETARY_SHIP_NAME_KEY] ?: "" }
-    val secretaryFigureUrl: Flow<String> = context.dataStore.data.map { it[SECRETARY_FIGURE_URL_KEY] ?: "" }
-    val secretaryAvatarUrl: Flow<String> = context.dataStore.data.map { it[SECRETARY_AVATAR_URL_KEY] ?: "" }
-    val secretaryAutoPlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
-    val secretaryAutoPlayIntervalMinutes: Flow<Int> = context.dataStore.data.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
-    val secretaryDialogueEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_DIALOGUE_ENABLED_KEY] ?: true }
+    val secretaryShipName: Flow<String> = safeData.map { it[SECRETARY_SHIP_NAME_KEY] ?: "" }
+    val secretaryFigureUrl: Flow<String> = safeData.map { it[SECRETARY_FIGURE_URL_KEY] ?: "" }
+    val secretaryAvatarUrl: Flow<String> = safeData.map { it[SECRETARY_AVATAR_URL_KEY] ?: "" }
+    val secretaryAutoPlayEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
+    val secretaryAutoPlayIntervalMinutes: Flow<Int> = safeData.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
+    val secretaryDialogueEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_DIALOGUE_ENABLED_KEY] ?: true }
 
     /** 秘书舰 SD 小人皮肤名（"" / "default" 用默认皮肤，"gai" / "skin2" 等为其他皮肤） */
-    val secretarySdSkin: Flow<String> = context.dataStore.data.map { it[SECRETARY_SD_SKIN_KEY] ?: "" }
+    val secretarySdSkin: Flow<String> = safeData.map { it[SECRETARY_SD_SKIN_KEY] ?: "" }
 
     /** 秘书舰 SD 小人显示缩放倍率（1.0 = 默认自适应大小，0.5 = 半尺寸，1.5 = 放大 50%） */
-    val secretarySdScale: Flow<Float> = context.dataStore.data.map { it[SECRETARY_SD_SCALE_KEY] ?: 1.0f }
+    val secretarySdScale: Flow<Float> = safeData.map { it[SECRETARY_SD_SCALE_KEY] ?: 1.0f }
+
+    /** 秘书舰自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
+    val secretarySdResourceId: Flow<String> = safeData.map { it[SECRETARY_SD_RESOURCE_ID_KEY] ?: "" }
     
     // 悬浮窗状态
-    val secretaryOverlayEnabled: Flow<Boolean> = context.dataStore.data.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
+    val secretaryOverlayEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
+
+    // 悬浮窗触摸穿透
+    val secretaryOverlayTouchPassthrough: Flow<Boolean> = safeData.map { it[SECRETARY_OVERLAY_TOUCH_PASSTHROUGH_KEY] ?: false }
 
     // 外观
-    val uiStyle: Flow<UiStyle> = context.dataStore.data.map { prefs ->
+    val uiStyle: Flow<UiStyle> = safeData.map { prefs ->
         when (prefs[UI_STYLE_KEY]) {
             UiStyle.CLASSIC.name -> UiStyle.CLASSIC
             else -> UiStyle.COMMAND_CENTER
@@ -192,27 +222,27 @@ class PlayerSettingsDataStore @Inject constructor(
     }
 
     /** 默认 false — 跟随系统深浅色设置 */
-    val forceDarkTheme: Flow<Boolean> = context.dataStore.data.map { it[FORCE_DARK_THEME_KEY] ?: false }
+    val forceDarkTheme: Flow<Boolean> = safeData.map { it[FORCE_DARK_THEME_KEY] ?: false }
 
     /** Material You 动态取色 — Android 12+ 默认开启 */
-    val dynamicColorEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
+    val dynamicColorEnabled: Flow<Boolean> = safeData.map { prefs ->
         prefs[DYNAMIC_COLOR_KEY] ?: (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
     }
 
     /** 沉浸式：隐藏状态栏，默认开启。用户可从屏幕顶部下滑临时呼出（sticky immersive） */
-    val hideStatusBar: Flow<Boolean> = context.dataStore.data.map { it[HIDE_STATUS_BAR_KEY] ?: true }
+    val hideStatusBar: Flow<Boolean> = safeData.map { it[HIDE_STATUS_BAR_KEY] ?: true }
 
     /** Live2D 域名证书信任标记，仅对 l2d.su 生效 */
-    val live2dSslTrusted: Flow<Boolean> = context.dataStore.data.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
+    val live2dSslTrusted: Flow<Boolean> = safeData.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
 
     /** 自动检测更新开关，默认开启 */
-    val autoCheckUpdateEnabled: Flow<Boolean> = context.dataStore.data.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
+    val autoCheckUpdateEnabled: Flow<Boolean> = safeData.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
 
     /** 用户跳过的更新版本号，用于"稍后提醒"功能 */
-    val skippedUpdateVersion: Flow<String> = context.dataStore.data.map { it[SKIPPED_UPDATE_VERSION_KEY] ?: "" }
+    val skippedUpdateVersion: Flow<String> = safeData.map { it[SKIPPED_UPDATE_VERSION_KEY] ?: "" }
 
     // 语音语言
-    val voiceLanguage: Flow<VoiceLanguage> = context.dataStore.data
+    val voiceLanguage: Flow<VoiceLanguage> = safeData
         .map { preferences: Preferences ->
             val langName = preferences[VOICE_LANGUAGE_KEY] ?: VoiceLanguage.CN.name
             try {
@@ -237,6 +267,7 @@ class PlayerSettingsDataStore @Inject constructor(
             prefs.remove(SECRETARY_AVATAR_URL_KEY)
             prefs.remove(SECRETARY_SD_SKIN_KEY)
             prefs.remove(SECRETARY_SD_SCALE_KEY)
+            prefs.remove(SECRETARY_SD_RESOURCE_ID_KEY)
         }
     }
 
@@ -264,11 +295,23 @@ class PlayerSettingsDataStore @Inject constructor(
             prefs[SECRETARY_SD_SCALE_KEY] = scale.coerceIn(0.3f, 2.0f)
         }
     }
+
+    suspend fun setSecretarySdResourceId(resourceId: String) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_SD_RESOURCE_ID_KEY] = resourceId
+        }
+    }
     
     // 悬浮窗状态
     suspend fun setSecretaryOverlayEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_OVERLAY_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setSecretaryOverlayTouchPassthrough(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_OVERLAY_TOUCH_PASSTHROUGH_KEY] = enabled
         }
     }
 
@@ -399,10 +442,10 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 小助手配置 ──
 
     /** 小助手默认 UID */
-    val assistantDefaultUid: Flow<String> = context.dataStore.data.map { it[ASSISTANT_DEFAULT_UID_KEY] ?: "" }
+    val assistantDefaultUid: Flow<String> = safeData.map { it[ASSISTANT_DEFAULT_UID_KEY] ?: "" }
 
     /** 小助手默认服务器名/ID */
-    val assistantDefaultServer: Flow<String> = context.dataStore.data.map { it[ASSISTANT_DEFAULT_SERVER_KEY] ?: "" }
+    val assistantDefaultServer: Flow<String> = safeData.map { it[ASSISTANT_DEFAULT_SERVER_KEY] ?: "" }
 
     suspend fun setAssistantDefaultUid(uid: String) {
         context.dataStore.edit { it[ASSISTANT_DEFAULT_UID_KEY] = uid }
@@ -415,7 +458,7 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 排行榜自定义昵称 ──
 
     /** 排行榜自定义昵称（无法通过助手查询到玩家信息时使用） */
-    val leaderboardNickname: Flow<String> = context.dataStore.data.map { it[LEADERBOARD_NICKNAME_KEY] ?: "" }
+    val leaderboardNickname: Flow<String> = safeData.map { it[LEADERBOARD_NICKNAME_KEY] ?: "" }
 
     suspend fun setLeaderboardNickname(nickname: String) {
         context.dataStore.edit { it[LEADERBOARD_NICKNAME_KEY] = nickname.trim() }
@@ -423,22 +466,22 @@ class PlayerSettingsDataStore @Inject constructor(
 
     // ── AI 配置 ──
 
-    val aiApiKey: Flow<String> = context.dataStore.data.map { it[AI_API_KEY_KEY] ?: "" }
-    val aiCustomBaseUrl: Flow<String> = context.dataStore.data.map { it[AI_CUSTOM_BASE_URL_KEY] ?: "" }
-    val aiSystemPrompt: Flow<String> = context.dataStore.data.map { it[AI_SYSTEM_PROMPT_KEY] ?: "" }
-    val aiName: Flow<String> = context.dataStore.data.map { it[AI_NAME_KEY] ?: "" }
-    val aiAvatarUrl: Flow<String> = context.dataStore.data.map { it[AI_AVATAR_URL_KEY] ?: "" }
-    val aiVoiceEnabled: Flow<Boolean> = context.dataStore.data.map { it[AI_VOICE_ENABLED_KEY] ?: true }
-    val aiVoiceRandomChance: Flow<Float> = context.dataStore.data.map {
+    val aiApiKey: Flow<String> = safeData.map { it[AI_API_KEY_KEY] ?: "" }
+    val aiCustomBaseUrl: Flow<String> = safeData.map { it[AI_CUSTOM_BASE_URL_KEY] ?: "" }
+    val aiSystemPrompt: Flow<String> = safeData.map { it[AI_SYSTEM_PROMPT_KEY] ?: "" }
+    val aiName: Flow<String> = safeData.map { it[AI_NAME_KEY] ?: "" }
+    val aiAvatarUrl: Flow<String> = safeData.map { it[AI_AVATAR_URL_KEY] ?: "" }
+    val aiVoiceEnabled: Flow<Boolean> = safeData.map { it[AI_VOICE_ENABLED_KEY] ?: true }
+    val aiVoiceRandomChance: Flow<Float> = safeData.map {
         it[AI_VOICE_RANDOM_CHANCE_KEY] ?: 0.1f
     }
-    val aiVoiceKeywords: Flow<String> = context.dataStore.data.map { it[AI_VOICE_KEYWORDS_KEY] ?: "你好;早安;晚安;加油;辛苦了" }
-    val aiChatHistory: Flow<String> = context.dataStore.data.map { it[AI_CHAT_HISTORY_KEY] ?: "[]" }
-    val aiModel: Flow<String> = context.dataStore.data.map { it[AI_MODEL_KEY] ?: "" }
-    val aiVoiceShipName: Flow<String> = context.dataStore.data.map { it[AI_VOICE_SHIP_NAME_KEY] ?: "" }
-    val aiVoiceShipAvatar: Flow<String> = context.dataStore.data.map { it[AI_VOICE_SHIP_AVATAR_KEY] ?: "" }
-    val aiStickersEnabled: Flow<Boolean> = context.dataStore.data.map { it[AI_STICKERS_ENABLED_KEY] ?: true }
-    val aiStickerChance: Flow<Float> = context.dataStore.data.map { it[AI_STICKER_CHANCE_KEY] ?: 0.8f }
+    val aiVoiceKeywords: Flow<String> = safeData.map { it[AI_VOICE_KEYWORDS_KEY] ?: "你好;早安;晚安;加油;辛苦了" }
+    val aiChatHistory: Flow<String> = safeData.map { it[AI_CHAT_HISTORY_KEY] ?: "[]" }
+    val aiModel: Flow<String> = safeData.map { it[AI_MODEL_KEY] ?: "" }
+    val aiVoiceShipName: Flow<String> = safeData.map { it[AI_VOICE_SHIP_NAME_KEY] ?: "" }
+    val aiVoiceShipAvatar: Flow<String> = safeData.map { it[AI_VOICE_SHIP_AVATAR_KEY] ?: "" }
+    val aiStickersEnabled: Flow<Boolean> = safeData.map { it[AI_STICKERS_ENABLED_KEY] ?: true }
+    val aiStickerChance: Flow<Float> = safeData.map { it[AI_STICKER_CHANCE_KEY] ?: 0.8f }
 
     suspend fun setAiApiKey(key: String) { context.dataStore.edit { it[AI_API_KEY_KEY] = key } }
     suspend fun setAiCustomBaseUrl(url: String) { context.dataStore.edit { it[AI_CUSTOM_BASE_URL_KEY] = url } }
@@ -459,13 +502,13 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 历史对话会话管理 ──
 
     /** 所有会话元数据列表 */
-    val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = context.dataStore.data.map { prefs ->
+    val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = safeData.map { prefs ->
         val json = prefs[AI_CHAT_SESSIONS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode chat sessions", e); emptyList() }
     }
 
     /** 当前会话 ID */
-    val aiCurrentSessionId: Flow<String> = context.dataStore.data.map { it[AI_CURRENT_SESSION_ID_KEY] ?: "" }
+    val aiCurrentSessionId: Flow<String> = safeData.map { it[AI_CURRENT_SESSION_ID_KEY] ?: "" }
 
     /** 保存会话列表 */
     suspend fun setAiChatSessions(sessions: List<com.azurlane.blyy.data.model.ChatSession>) { context.dataStore.edit { it[AI_CHAT_SESSIONS_KEY] = lenientJson.encodeToString(sessions) } }
@@ -476,7 +519,7 @@ class PlayerSettingsDataStore @Inject constructor(
     }
 
     /** 获取指定会话的消息 */
-    fun aiSessionMessages(sessionId: String): Flow<List<com.azurlane.blyy.data.model.ChatMessage>> = context.dataStore.data.map { prefs ->
+    fun aiSessionMessages(sessionId: String): Flow<List<com.azurlane.blyy.data.model.ChatMessage>> = safeData.map { prefs ->
         val key = stringPreferencesKey("ai_session_msgs_$sessionId")
         val json = prefs[key] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode session messages for $sessionId", e); emptyList() }
@@ -495,7 +538,7 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 啾信预设配置管理 ──
 
     /** 所有已保存的啾信预设列表 */
-    val aiJiuxinPresets: Flow<List<com.azurlane.blyy.data.model.JiuxinPreset>> = context.dataStore.data.map { prefs ->
+    val aiJiuxinPresets: Flow<List<com.azurlane.blyy.data.model.JiuxinPreset>> = safeData.map { prefs ->
         val json = prefs[AI_JIUXIN_PRESETS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode presets", e); emptyList() }
     }
@@ -506,7 +549,7 @@ class PlayerSettingsDataStore @Inject constructor(
     }
 
     /** 会话列表自定义排序（session id 列表，用户拖动后的顺序） */
-    val aiSessionOrder: Flow<List<String>> = context.dataStore.data.map { prefs ->
+    val aiSessionOrder: Flow<List<String>> = safeData.map { prefs ->
         val json = prefs[AI_SESSION_ORDER_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<String>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode session order", e); emptyList() }
     }
@@ -517,7 +560,7 @@ class PlayerSettingsDataStore @Inject constructor(
     }
 
     /** 聊天背景图片 URL（空表示使用默认纯色背景） */
-    val aiChatBackgroundUrl: Flow<String> = context.dataStore.data.map { it[AI_CHAT_BACKGROUND_URL_KEY] ?: "" }
+    val aiChatBackgroundUrl: Flow<String> = safeData.map { it[AI_CHAT_BACKGROUND_URL_KEY] ?: "" }
 
     /** 保存聊天背景图片 URL */
     suspend fun setAiChatBackgroundUrl(url: String) {
@@ -527,7 +570,7 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 多套 API 配置管理 ──
 
     /** 所有已保存的 API 配置列表 */
-    val aiApiConfigs: Flow<List<com.azurlane.blyy.data.model.ApiConfig>> = context.dataStore.data.map { prefs ->
+    val aiApiConfigs: Flow<List<com.azurlane.blyy.data.model.ApiConfig>> = safeData.map { prefs ->
         val json = prefs[AI_API_CONFIGS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode API configs", e); emptyList() }
     }
@@ -540,7 +583,7 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 多套舰娘人格配置管理 ──
 
     /** 所有已保存的舰娘人格配置列表 */
-    val aiPersonaConfigs: Flow<List<com.azurlane.blyy.data.model.PersonaConfig>> = context.dataStore.data.map { prefs ->
+    val aiPersonaConfigs: Flow<List<com.azurlane.blyy.data.model.PersonaConfig>> = safeData.map { prefs ->
         val json = prefs[AI_PERSONA_CONFIGS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.PersonaConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode persona configs", e); emptyList() }
     }
@@ -551,8 +594,8 @@ class PlayerSettingsDataStore @Inject constructor(
     }
 
     // ── 用户（指挥官）配置 ──
-    val userName: Flow<String> = context.dataStore.data.map { it[USER_NAME_KEY] ?: "指挥官" }
-    val userAvatarUrl: Flow<String> = context.dataStore.data.map { it[USER_AVATAR_URL_KEY] ?: "" }
+    val userName: Flow<String> = safeData.map { it[USER_NAME_KEY] ?: "指挥官" }
+    val userAvatarUrl: Flow<String> = safeData.map { it[USER_AVATAR_URL_KEY] ?: "" }
 
     suspend fun setUserName(name: String) { context.dataStore.edit { it[USER_NAME_KEY] = name } }
     suspend fun setUserAvatarUrl(url: String) { context.dataStore.edit { it[USER_AVATAR_URL_KEY] = url } }
@@ -564,7 +607,7 @@ class PlayerSettingsDataStore @Inject constructor(
      * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
      */
     suspend fun getLeaderboardCache(): Pair<String, Long>? {
-        val prefs = context.dataStore.data.first()
+        val prefs = safeData.first()
         val json = prefs[LEADERBOARD_CACHE_JSON_KEY] ?: return null
         val ts = prefs[LEADERBOARD_CACHE_TIMESTAMP_KEY] ?: 0L
         return json to ts
@@ -593,7 +636,7 @@ class PlayerSettingsDataStore @Inject constructor(
      * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
      */
     suspend fun getCachedDriveLink(): Pair<String, Long>? {
-        val prefs = context.dataStore.data.first()
+        val prefs = safeData.first()
         val json = prefs[CACHED_DRIVE_LINK_JSON_KEY] ?: return null
         val ts = prefs[CACHED_DRIVE_LINK_AT_KEY] ?: 0L
         return json to ts
@@ -619,7 +662,7 @@ class PlayerSettingsDataStore @Inject constructor(
 
     /** 获取档案缓存时间戳，返回 0 表示无缓存 */
     suspend fun getArchiveCacheTimestamp(archiveType: String): Long {
-        val prefs = context.dataStore.data.first()
+        val prefs = safeData.first()
         val key = if (archiveType == "STUDENT") ARCHIVE_CACHE_TIMESTAMP_STUDENT_KEY else ARCHIVE_CACHE_TIMESTAMP_DOCK_KEY
         return prefs[key] ?: 0L
     }
@@ -640,15 +683,15 @@ class PlayerSettingsDataStore @Inject constructor(
     // ── 自定义 App 图标偏好 ──
 
     /** 当前图标类型（DEFAULT / CLASSIC / BLUE / PURPLE / CUSTOM） */
-    val appIconType: Flow<String> = context.dataStore.data
+    val appIconType: Flow<String> = safeData
         .map { it[APP_ICON_TYPE_KEY] ?: "DEFAULT" }
 
     /** 自定义图标内部存储路径（仅 CUSTOM 类型有效） */
-    val appCustomIconPath: Flow<String> = context.dataStore.data
+    val appCustomIconPath: Flow<String> = safeData
         .map { it[APP_CUSTOM_ICON_PATH_KEY] ?: "" }
 
     /** 图标选择时间戳 */
-    val appIconSelectedAt: Flow<Long> = context.dataStore.data
+    val appIconSelectedAt: Flow<Long> = safeData
         .map { it[APP_ICON_SELECTED_AT_KEY] ?: 0L }
 
     /**

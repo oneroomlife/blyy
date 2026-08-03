@@ -148,6 +148,7 @@ import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipRandomScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipSettingsScreen
+import com.azurlane.blyy.ui.screens.SdResourceGalleryScreen
 import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
@@ -397,6 +398,7 @@ fun AppContent() {
             currentDestination?.route != "jiuxin_ship_config" &&
             currentDestination?.route != "jiuxin_conversation_list" &&
             currentDestination?.route != "app_icon_settings" &&
+            currentDestination?.route != "sd_resource_gallery" &&
             currentDestination?.route?.startsWith("image_cropper") != true
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
@@ -916,7 +918,23 @@ fun AppContent() {
                             },
                             onSetSdScale = { scale ->
                                 secretaryViewModel.onIntent(SecretaryShipIntent.SetSdScale(scale))
+                            },
+                            onOpenSdGallery = { navController.navigate("sd_resource_gallery") },
+                            onClearSdResource = {
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetSdResourceId(""))
+                            },
+                            onToggleOverlayTouchPassthrough = { enabled ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetOverlayTouchPassthrough(enabled))
                             }
+                        )
+                    }
+                    composable("sd_resource_gallery") {
+                        SdResourceGalleryScreen(
+                            selectedResourceId = secretaryState.sdResourceId,
+                            onSelectResource = { resourceId ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetSdResourceId(resourceId))
+                            },
+                            onBack = { navController.popBackStack() }
                         )
                     }
                     composable("secretary_random") {
@@ -953,8 +971,11 @@ fun AppContent() {
                 }
 
                 // 只有当悬浮窗未开启时才在应用内显示立绘
+                // 显示条件：figureUrl 非空（网络立绘回退）或 sdResourceId 非空（SD 资源直接渲染）
                 val overlayEnabledForChibi by MainActivity.overlayState.collectAsState()
-                if (secretaryState.figureUrl.isNotEmpty() && !overlayEnabledForChibi) {
+                val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
+                    secretaryState.sdResourceId.isNotEmpty()
+                if (hasChibiContent && !overlayEnabledForChibi) {
                     SecretaryChibiOverlay(
                         figureUrl = secretaryState.figureUrl,
                         shipName = secretaryState.shipName,
@@ -965,7 +986,9 @@ fun AppContent() {
                             secretaryViewModel.onIntent(SecretaryShipIntent.PlayRandomVoice)
                         },
                         selectedSkin = secretaryState.sdSkin,
-                        sdScale = secretaryState.sdScale
+                        sdScale = secretaryState.sdScale,
+                        sdResourceId = secretaryState.sdResourceId,
+                        overlayTouchPassthrough = secretaryState.overlayTouchPassthrough
                     )
                 }
 

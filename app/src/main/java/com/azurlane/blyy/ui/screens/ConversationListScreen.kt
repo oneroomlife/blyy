@@ -74,6 +74,8 @@ import androidx.compose.ui.unit.sp
 import android.widget.Toast
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import com.azurlane.blyy.util.findActivityViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.data.model.ApiConfig
@@ -155,7 +157,12 @@ fun ConversationListScreen(
     onNavigateToChat: () -> Unit,
     onNavigateToConfig: () -> Unit,
     viewModel: JiuxinViewModel = hiltViewModel(
-        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+        // 优先使用 Activity 作为 ViewModelStoreOwner，确保跨页面共享同一 ViewModel 实例。
+        // 通过 findActivityViewModelStoreOwner() 解包 ContextWrapper，
+        // 避免直接 `as ViewModelStoreOwner` 强转在部分设备/ROM 上抛出 ClassCastException 导致闪退。
+        viewModelStoreOwner = LocalContext.current.findActivityViewModelStoreOwner()
+            ?: LocalViewModelStoreOwner.current
+            ?: error("No ViewModelStoreOwner available in Context hierarchy")
     )
 ) {
     val conversations by viewModel.uniqueConversations.collectAsStateWithLifecycle()

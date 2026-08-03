@@ -35,6 +35,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.List
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.rounded.SdStorage
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,8 +57,10 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -88,6 +92,7 @@ import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.OrganizePhase
 import com.azurlane.blyy.util.OrganizeProgress
 import com.azurlane.blyy.util.OrganizeResult
+import com.azurlane.blyy.util.SDResourceManager
 import com.azurlane.blyy.util.SdResourceOrganizer
 import com.azurlane.blyy.util.StoragePermissionHelper
 import com.azurlane.blyy.viewmodel.SecretaryShipState
@@ -396,7 +401,13 @@ fun SecretaryShipSettingsScreen(
     onToggleDialogue: (Boolean) -> Unit,
     onSetAutoPlay: (Boolean, Int) -> Unit,
     onSetSdSkin: (String) -> Unit,
-    onSetSdScale: (Float) -> Unit
+    onSetSdScale: (Float) -> Unit,
+    /** 打开 SD 资源管理页面回调 */
+    onOpenSdGallery: () -> Unit = {},
+    /** 清除自定义 SD 资源选择，回退到舰名匹配 */
+    onClearSdResource: () -> Unit = {},
+    /** 切换悬浮窗触摸穿透开关回调 */
+    onToggleOverlayTouchPassthrough: (Boolean) -> Unit = {}
 ) {
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -430,11 +441,12 @@ fun SecretaryShipSettingsScreen(
                     SdSkinSelector(
                         shipName = secretaryState.shipName,
                         selectedSkin = secretaryState.sdSkin,
-                        onSetSdSkin = onSetSdSkin
+                        onSetSdSkin = onSetSdSkin,
+                        sdResourceId = secretaryState.sdResourceId
                     )
                 }
 
-                // 2. 显示设置（悬浮窗 + 台词弹窗）
+                // 2. 显示设置（悬浮窗 + 触摸穿透 + 台词弹窗）
                 BlyySectionPanel(
                     title = "显示设置",
                     icon = Icons.Rounded.Visibility,
@@ -446,6 +458,18 @@ fun SecretaryShipSettingsScreen(
                         description = "在桌面或其他应用上显示秘书舰",
                         checked = isOverlayEnabled,
                         onCheckedChange = onToggleOverlay
+                    )
+                    HorizontalDivider()
+                    BlyySettingsRow(
+                        icon = Icons.Rounded.TouchApp,
+                        title = "触摸穿透",
+                        description = if (secretaryState.overlayTouchPassthrough) {
+                            "已开启：触摸事件穿透到下层应用，SD 小人不可交互"
+                        } else {
+                            "关闭：SD 小人正常响应点击、拖动等交互(需在桌面悬浮窗开启时使用)"
+                        },
+                        checked = secretaryState.overlayTouchPassthrough,
+                        onCheckedChange = onToggleOverlayTouchPassthrough
                     )
                     HorizontalDivider()
                     BlyySettingsRow(
@@ -505,10 +529,18 @@ fun SecretaryShipSettingsScreen(
 
                 // 4. SD 资源管理
                 BlyySectionPanel(
-                    title = "SD 资源管理",
+                    title = "SD 资源库",
                     icon = Icons.Rounded.SdStorage,
                     accentColor = MaterialTheme.colorScheme.tertiary
                 ) {
+                    // SD 资源库入口：跳转到通用 SD 资源管理页面，
+                    // 解除舰名限制，支持选择任意已发现的 SD 资源（舰娘/自定义）
+                    SdResourceGalleryEntry(
+                        sdResourceId = secretaryState.sdResourceId,
+                        onOpenGallery = onOpenSdGallery,
+                        onClearResource = onClearSdResource
+                    )
+                    HorizontalDivider()
                     SdResourceManagement()
                 }
             }
@@ -560,16 +592,25 @@ private fun SdScaleSlider(
 private fun SdSkinSelector(
     shipName: String,
     selectedSkin: String,
-    onSetSdSkin: (String) -> Unit
+    onSetSdSkin: (String) -> Unit,
+    /** 自定义 SD 资源 ID（非空时优先按资源 ID 获取皮肤列表，否则按舰名查找） */
+    sdResourceId: String = ""
 ) {
     val context = LocalContext.current
     var refreshTrigger by remember { mutableStateOf(0) }
 
-    // 将 LocalSdResolver.revision 作为 remember key，
-    // 整理/清理资源后自动刷新皮肤列表，无需手动点击刷新按钮
-    val skins = remember(shipName, refreshTrigger, LocalSdResolver.revision.value) {
-        if (shipName.isBlank()) emptyList()
-        else LocalSdResolver.listSkins(context, shipName)
+    // 皮肤列表来源优先级：
+    // 1. sdResourceId 非空 → 通过 SDResourceManager.listSkins(resourceId) 获取
+    //    确保切换 SD 资源后皮肤列表及时更新为新资源的皮肤
+    // 2. sdResourceId 为空 → 回退到 LocalSdResolver.listSkins(shipName)
+    //    保持原有舰名匹配行为，向后兼容
+    // 同时监听两个 revision，整理/清理任一索引后自动刷新
+    val skins = remember(shipName, sdResourceId, refreshTrigger, LocalSdResolver.revision.value, SDResourceManager.revision.value) {
+        when {
+            sdResourceId.isNotBlank() -> SDResourceManager.listSkins(context, sdResourceId)
+            shipName.isBlank() -> emptyList()
+            else -> LocalSdResolver.listSkins(context, shipName)
+        }
     }
 
     Row(
@@ -627,6 +668,143 @@ private fun SdSkinSelector(
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Medium
             )
+        }
+    }
+}
+
+/**
+ * SD 资源库入口卡 — 跳转到通用 SD 资源管理页面。
+ *
+ * 解除舰名列表驱动限制：用户可在此选择任意已发现的 SD 资源（舰娘/非舰娘/自定义），
+ * 选中后通过 [SDResourceManager.resolveById] 直接按 ID 加载，不再依赖舰名匹配。
+ *
+ * 布局结构：
+ * - 顶部行：资源库图标 + 标题/状态 + "管理"按钮
+ * - 底部行（仅自定义资源时显示）：精致的"清除选择"按钮
+ */
+@Composable
+private fun SdResourceGalleryEntry(
+    sdResourceId: String,
+    onOpenGallery: () -> Unit,
+    onClearResource: () -> Unit
+) {
+    val accentColor = MaterialTheme.colorScheme.primary
+    val hasCustomResource = sdResourceId.isNotBlank()
+    val errorColor = MaterialTheme.colorScheme.error
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)
+    ) {
+        // 顶部行：图标 + 标题/状态 + 管理按钮
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+            ) {
+                // 资源库图标（带强调色背景圆形）
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                        .background(accentColor.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.SdStorage,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                Column {
+                    Text(
+                        "SD 资源库",
+                        style = AppTypography.BodySmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        if (hasCustomResource) "已选择：$sdResourceId"
+                        else "未指定（跟随当前秘书舰）",
+                        style = AppTypography.LabelSmall,
+                        color = if (hasCustomResource) accentColor
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // 管理按钮 — OutlinedButton 带箭头图标，精致美观
+            OutlinedButton(
+                onClick = onOpenGallery,
+                shape = RoundedCornerShape(AppSpacing.Corner.Sm),
+                border = androidx.compose.foundation.BorderStroke(
+                    AppSpacing.Border.Thin,
+                    accentColor.copy(alpha = 0.5f)
+                ),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = accentColor
+                ),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = AppSpacing.Md,
+                    vertical = AppSpacing.Xs
+                )
+            ) {
+                Text("管理", style = AppTypography.LabelMedium)
+                Spacer(modifier = Modifier.size(AppSpacing.Xs))
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+
+        // 底部：清除自定义选择按钮（仅自定义资源时显示）
+        // 使用带边框和淡背景的精致按钮样式，error 色调提示风险操作
+        if (hasCustomResource) {
+            Spacer(modifier = Modifier.height(AppSpacing.Sm))
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+                    .clickable(onClick = onClearResource),
+                shape = RoundedCornerShape(AppSpacing.Corner.Sm),
+                color = errorColor.copy(alpha = 0.08f),
+                border = androidx.compose.foundation.BorderStroke(
+                    AppSpacing.Border.Thin,
+                    errorColor.copy(alpha = 0.3f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Clear,
+                        contentDescription = null,
+                        tint = errorColor,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.size(AppSpacing.Xs))
+                    Text(
+                        "清除自定义选择，回退舰名匹配",
+                        style = AppTypography.LabelMedium,
+                        color = errorColor,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
         }
     }
 }

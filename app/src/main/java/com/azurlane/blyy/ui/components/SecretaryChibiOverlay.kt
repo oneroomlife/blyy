@@ -60,6 +60,8 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalSdResolver
+import com.azurlane.blyy.util.SDResourceManager
+import com.azurlane.blyy.util.SDResourceType
 import kotlin.math.roundToInt
 
 /**
@@ -84,6 +86,46 @@ private const val CHIBI_VIEWPORT_USAGE = 0.95f
  */
 private const val CHIBI_DRAG_MARGIN_RATIO = 0.15f
 
+/** SD 小人基础宽度（dp），用于窗口尺寸计算 */
+private val CHIBI_BASE_WIDTH = 110.dp
+
+/** SD 小人基础高度（dp），用于窗口尺寸计算 */
+private val CHIBI_BASE_HEIGHT = 165.dp
+
+/**
+ * 已解析的 SD 资源资产信息。
+ *
+ * 替代旧的 Triple(dirPath, assetName, isSpine)，明确区分 Spine 动画和静态图片，
+ * 支持静态图片资源通过 [AsyncImage] 直接渲染（无需 Spine 运行时）。
+ */
+private data class ResolvedSdAsset(
+    /** 资源目录绝对路径 */
+    val dirPath: String,
+    /** 三件套主名（.skel 去扩展名）或图片文件名去扩展名 */
+    val assetName: String,
+    /** 资源类型：Spine 动画 / 静态图片 */
+    val type: SDResourceType,
+    /** 静态图片完整文件路径（仅 [type] = STATIC_IMAGE 时有效） */
+    val imageFilePath: String? = null
+) {
+    /** 是否为 Spine 动画资源 */
+    val isSpine: Boolean get() = type == SDResourceType.SPINE
+}
+
+/**
+ * 在目录中查找指定 assetName 对应的图片文件。
+ * 支持 .png / .webp / .jpg / .jpeg 格式。
+ */
+private fun findImageFile(dirPath: String, assetName: String): String? {
+    val dir = java.io.File(dirPath)
+    if (!dir.isDirectory) return null
+    val extensions = listOf(".png", ".webp", ".jpg", ".jpeg")
+    return extensions.firstNotNullOfOrNull { ext ->
+        val file = java.io.File(dir, "$assetName$ext")
+        if (file.exists()) file.absolutePath else null
+    }
+}
+
 @Composable
 fun SecretaryChibiOverlay(
     figureUrl: String,
@@ -96,9 +138,31 @@ fun SecretaryChibiOverlay(
     /** SD 小人皮肤名（null 用默认皮肤，"gai"/"skin2" 等对应 LocalSdResolver 皮肤分类） */
     selectedSkin: String? = null,
     /** SD 小人显示缩放倍率（1.0 = 默认自适应大小，0.5 = 半尺寸，1.5 = 放大 50%）；实时生效无需重建 */
-    sdScale: Float = 1.0f
+    sdScale: Float = 1.0f,
+    /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
+    sdResourceId: String = "",
+    /**
+     * 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互）。
+     *
+     * - 系统悬浮窗场景：由 Service 层 FLAG_NOT_TOUCHABLE 控制，此参数不影响渲染层
+     * - 应用内场景：触摸穿透不生效，SD 小人始终可交互（点击/拖动）。
+     *   触摸穿透是系统悬浮窗专属功能，应用内 SD 小人是 App UI 的一部分，应始终响应触摸
+     */
+    overlayTouchPassthrough: Boolean = false,
+    /**
+     * 拖动状态变化回调（仅 [isSystemOverlay] = true 时触发）。
+     *
+     * Service 层据此切换辅助窗口内容：
+     * - 拖动开始 → 辅助窗口显示"拖动调整位置"提示
+     * - 拖动结束 → 辅助窗口恢复显示气泡（若有对话）或移除
+     */
+    onDragStateChanged: ((Boolean) -> Unit)? = null
 ) {
-    if (figureUrl.isEmpty()) return
+    // 同时检查 figureUrl 和 sdResourceId：
+    // - 两者都空 → 无任何可渲染内容，提前返回
+    // - figureUrl 空 + sdResourceId 非空 → 有 SD 资源，继续渲染（Spine/静态图片不依赖 figureUrl）
+    // - figureUrl 非空 → 有网络立绘回退，继续渲染
+    if (figureUrl.isEmpty() && sdResourceId.isEmpty()) return
 
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
@@ -106,16 +170,180 @@ fun SecretaryChibiOverlay(
     val context = LocalContext.current
 
     // 尝试解析 SD 小人动画资源；解析到则用 Spine 渲染，否则回退静态立绘。
-    // 关键：将 LocalSdResolver.revision 作为 remember key，
+    // 统一使用 SDResourceManager.resolve：
+    // - 优先用 sdResourceId 直接按 ID 加载（解除舰名限制，支持任意 SD 资源）
+    // - sdResourceId 为空时回退到舰名匹配（向后兼容）
+    // 关键：将 SDResourceManager.revision 作为 remember key，
     // 整理/清理资源后 refreshIndex() 递增 revision，触发 sdAsset 重新解析，
     // 避免整理后仍使用旧的 null 结果导致 SD 小人不可动。
-    val sdAsset = remember(shipName, selectedSkin, LocalSdResolver.revision.value) {
-        LocalSdResolver.resolve(context, shipName, selectedSkin)
+    val sdResource = remember(shipName, selectedSkin, sdResourceId, SDResourceManager.revision.value) {
+        SDResourceManager.resolve(context, sdResourceId, shipName, selectedSkin)
+    }
+    // 将 SDResource 转换为渲染所需的 ResolvedSdAsset：
+    // - Spine 动画 → 传递 dirPath + assetName 给 SpineSdView
+    // - 静态图片 → 查找实际图片文件路径，用 AsyncImage 渲染
+    // - 未知类型 → 返回 null，回退到网络立绘 figureUrl
+    val sdAsset = sdResource?.let { res ->
+        val skin = res.getSkin(selectedSkin)
+        when (skin.type) {
+            SDResourceType.SPINE -> ResolvedSdAsset(
+                dirPath = skin.dirPath,
+                assetName = skin.assetName,
+                type = SDResourceType.SPINE
+            )
+            SDResourceType.STATIC_IMAGE -> {
+                val imagePath = findImageFile(skin.dirPath, skin.assetName)
+                if (imagePath != null) {
+                    ResolvedSdAsset(
+                        dirPath = skin.dirPath,
+                        assetName = skin.assetName,
+                        type = SDResourceType.STATIC_IMAGE,
+                        imageFilePath = imagePath
+                    )
+                } else null
+            }
+            SDResourceType.UNKNOWN -> null
+        }
     }
 
     val screenWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeight = with(density) { configuration.screenHeightDp.dp.toPx() }
 
+    val displayScale = sdScale.coerceIn(0.3f, 2.0f)
+    val baseWidthPx = with(density) { CHIBI_BASE_WIDTH.toPx() }
+    val baseHeightPx = with(density) { CHIBI_BASE_HEIGHT.toPx() }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // 系统悬浮窗场景：主窗口尺寸紧贴小人实际显示范围
+    // ════════════════════════════════════════════════════════════════════════════
+    //
+    // 【优化前】单一 220×365dp 大窗口容纳立绘(110×165dp) + 气泡(220×200dp)，
+    //   透明区域被 WindowManager 吞掉触摸事件，导致用户无法操作下方 App。
+    //
+    // 【优化后】主窗口仅包含 SpineSdView，尺寸 = baseSize × displayScale：
+    //   - sdScale=1.0 → 110×165dp（面积仅占原 220×365dp 的 22.5%）
+    //   - sdScale=0.5 → 55×82dp
+    //   - sdScale=2.0 → 220×330dp
+    //   触摸区域天然贴合小人显示范围，无透明区域拦截问题。
+    //   气泡和拖动提示由 Service 层独立辅助窗口处理（紧贴主窗口上方）。
+    //
+    // SpineSdView scaleMultiplier = 1.0：
+    //   视口尺寸已反映 displayScale（窗口=baseSize×displayScale），
+    //   SpineRenderer 自适应缩放 min(vw/boundsW, vh/boundsH)*0.95 已正确，
+    //   无需额外 userScale。小人渲染高度 = baseHeightPx × displayScale × 0.95（高瘦型）。
+    if (isSystemOverlay) {
+        val overlayWidth = CHIBI_BASE_WIDTH * displayScale
+        val overlayHeight = CHIBI_BASE_HEIGHT * displayScale
+
+        var isDragging by remember { mutableStateOf(false) }
+        var isTapped by remember { mutableStateOf(false) }
+
+        // scale/alpha 动画仅用于静态立绘回退场景；
+        // SD 小人（SpineSdView）不应用 scale 动画（GLSurfaceView 缩放会导致渲染异常），
+        // 也不应用 alpha 动画（GLSurfaceView 的 Surface 独立于 Compose 图层，alpha 不生效）。
+        val staticScale by animateFloatAsState(
+            targetValue = when {
+                isDragging -> 1.25f
+                isTapped -> 1.15f
+                else -> 1f
+            },
+            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+            finishedListener = { isTapped = false },
+            label = "StaticFigureScale"
+        )
+        val staticAlpha by animateFloatAsState(
+            targetValue = if (isDragging) 0.7f else 1f,
+            animationSpec = tween(250),
+            label = "StaticFigureAlpha"
+        )
+
+        Box(modifier = modifier.size(overlayWidth, overlayHeight)) {
+            if (sdAsset != null && sdAsset.isSpine) {
+                // ── SD 小人（Spine 动画）──
+                // 直接 fillMaxSize：窗口尺寸 = 渲染尺寸，无需 requiredSize + offset 补偿。
+                // 触摸穿透由 SpineSdGlSurfaceView 内部用骨骼 bounds 判断，无需外部限制。
+                // scaleMultiplier = 1.0：视口已反映 displayScale，SpineRenderer 自适应缩放即可。
+                SpineSdView(
+                    dirPath = sdAsset.dirPath,
+                    assetName = sdAsset.assetName,
+                    modifier = Modifier.fillMaxSize(),
+                    scaleMultiplier = 1.0f,
+                    onTap = {
+                        isTapped = true
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onTap()
+                    },
+                    onDragStart = {
+                        isDragging = true
+                        onDragStateChanged?.invoke(true)
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    },
+                    onDrag = { dx, dy -> onPositionChange?.invoke(dx, dy) },
+                    onDragEnd = {
+                        isDragging = false
+                        onDragStateChanged?.invoke(false)
+                    }
+                )
+            } else {
+                // ── 静态图片资源 / 网络立绘回退 ──
+                // 静态图片资源用 sdAsset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
+                // 窗口尺寸 = baseSize × displayScale，AsyncImage ContentScale.Fit 自动适配。
+                // 拖动/点击通过 pointerInput 处理，位置变化通过 onPositionChange 通知 Service。
+                val imageModel = sdAsset?.imageFilePath ?: figureUrl
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = staticScale
+                            scaleY = staticScale
+                            this.alpha = staticAlpha
+                        }
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onTap = {
+                                    isTapped = true
+                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onTap()
+                                }
+                            )
+                        }
+                        .pointerInput(Unit) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    isDragging = true
+                                    onDragStateChanged?.invoke(true)
+                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDragEnd = {
+                                    isDragging = false
+                                    onDragStateChanged?.invoke(false)
+                                },
+                                onDragCancel = {
+                                    isDragging = false
+                                    onDragStateChanged?.invoke(false)
+                                }
+                            ) { change, dragAmount ->
+                                change.consume()
+                                onPositionChange?.invoke(dragAmount.x, dragAmount.y)
+                            }
+                        }
+                ) {
+                    AsyncImage(
+                        model = imageModel,
+                        contentDescription = "秘书舰 $shipName",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+        }
+    } else {
+        // ════════════════════════════════════════════════════════════════════════════
+        // 内嵌场景（isSystemOverlay=false）：保持原有逻辑
+        //
+        // 内嵌场景下 Compose 事件分发正常穿透（不像 WindowManager 窗口吞掉事件），
+    // 无透明区域拦截问题，保持原有的容器跟随放大 + 中心位置补偿方案。
+    //
     // ── 容器跟随放大 + 中心位置补偿方案 ──
     //
     // 目标：
@@ -135,19 +363,12 @@ fun SecretaryChibiOverlay(
     // - offset 补偿：GLSurfaceView 相对外层 Box 居中（offset = (baseSize - renderSize) / 2），
     //   外层 Box 位置不变（基于 baseSize 计算），GLSurfaceView 中心 = 外层 Box 中心，
     //   SpineRenderer 内部骨骼也居中渲染，因此小人中心位置始终保持不变
-    val displayScale = sdScale.coerceIn(0.3f, 2.0f)
     val containerScale = displayScale.coerceAtLeast(1.0f)
     val characterScale = displayScale / containerScale  // 放大时=1.0，缩小时=sdScale
 
-    // 固定基础尺寸：外层布局 Box 的尺寸（气泡/提示/拖动边界基于此）
-    val baseWidth = 110.dp
-    val baseHeight = 165.dp
-    val baseWidthPx = with(density) { baseWidth.toPx() }
-    val baseHeightPx = with(density) { baseHeight.toPx() }
-
     // 渲染容器尺寸：放大时跟随放大，保证 Spine 骨骼渲染完整不裁剪
-    val renderWidth = baseWidth * containerScale
-    val renderHeight = baseHeight * containerScale
+    val renderWidth = CHIBI_BASE_WIDTH * containerScale
+    val renderHeight = CHIBI_BASE_HEIGHT * containerScale
 
     // GLSurfaceView 相对外层 Box 的 offset（居中放置，放大时向外扩展）
     // renderOffset = (baseSize - renderSize) / 2，放大时为负值（向左上方扩展）
@@ -224,15 +445,11 @@ fun SecretaryChibiOverlay(
         // 放大时主要向上溢出，头部和身体仍可见，避免关键部位被裁剪。
         // 气泡定位基于固定的基础尺寸，不随 sdScale 变化。
         Box(
-            modifier = if (isSystemOverlay) {
-                Modifier.size(baseWidth, baseHeight).align(Alignment.BottomCenter)
-            } else {
-                Modifier
-                    .size(baseWidth, baseHeight)
-                    .offset { IntOffset(localOffsetX.roundToInt(), localOffsetY.roundToInt()) }
-            }
+            modifier = Modifier
+                .size(CHIBI_BASE_WIDTH, CHIBI_BASE_HEIGHT)
+                .offset { IntOffset(localOffsetX.roundToInt(), localOffsetY.roundToInt()) }
         ) {
-            if (sdAsset != null) {
+            if (sdAsset != null && sdAsset.isSpine) {
                 // ── SD 小人（Spine 动画）──
                 // GLSurfaceView 容器尺寸 = renderWidth × renderHeight（放大时跟随放大，渲染完整不裁剪）。
                 //
@@ -252,9 +469,10 @@ fun SecretaryChibiOverlay(
                 // - sdScale > 1.0：characterScale=1.0，容器变大 SpineRenderer 自适应放大
                 // 缩放实时生效（update 回调更新 scaleMultiplier，SpineRenderer 每帧读取）。
                 //
-                // touchAreaRatio：放大时限制触摸区域为中心基础尺寸部分，避免溢出区域误触。
-                // ratio = baseWidth / renderWidth = 1 / containerScale。
-                val touchRatio = if (containerScale > 1.0f) (1.0f / containerScale) else 1.0f
+                // 触摸穿透由 SpineSdGlSurfaceView 内部用骨骼 bounds 判断：
+                // 放大时 GLSurfaceView 容器变大（renderWidth > baseWidth），
+                // 但骨骼 bounds 只占视口 95%（0.95 系数），bounds 外的透明区域事件穿透。
+                // 无需外层 touchAreaRatio 限制，bounds 判断更精确（贴合角色实际形状）。
                 SpineSdView(
                     dirPath = sdAsset.dirPath,
                     assetName = sdAsset.assetName,
@@ -262,7 +480,9 @@ fun SecretaryChibiOverlay(
                         .requiredSize(renderWidth, renderHeight)
                         .offset { IntOffset(renderOffsetX.roundToInt(), renderOffsetY.roundToInt()) },
                     scaleMultiplier = characterScale,
-                    touchAreaRatio = touchRatio,
+                    // 应用内场景始终可交互：触摸穿透仅用于系统悬浮窗（FLAG_NOT_TOUCHABLE），
+                    // 应用内 SD 小人是 App UI 的一部分，应始终响应点击/拖动
+                    touchEnabled = true,
                     onTap = {
                         isTapped = true
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -273,20 +493,18 @@ fun SecretaryChibiOverlay(
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                     onDrag = { dx, dy ->
-                        if (isSystemOverlay) {
-                            onPositionChange?.invoke(dx, dy)
-                        } else {
-                            localOffsetX = (localOffsetX + dx).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
-                            localOffsetY = (localOffsetY + dy).coerceIn(dragMinY, dragMaxY)
-                        }
+                        localOffsetX = (localOffsetX + dx).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
+                        localOffsetY = (localOffsetY + dy).coerceIn(dragMinY, dragMaxY)
                     },
                     onDragEnd = { isDragging = false }
                 )
             } else {
-                // ── 静态立绘回退 ──
+                // ── 静态图片资源 / 网络立绘回退 ──
+                // 静态图片资源用 sdAsset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
                 // 仅在此场景使用 pointerInput + scale/alpha 动画
                 // 渲染层尺寸同 SD 小人场景，保证放大时渲染完整
                 // 同样使用 requiredSize 突破外层 Box 的尺寸约束（见上方 SD 小人注释）
+                val imageModel = sdAsset?.imageFilePath ?: figureUrl
                 Box(
                     modifier = Modifier
                         .requiredSize(renderWidth, renderHeight)
@@ -296,6 +514,7 @@ fun SecretaryChibiOverlay(
                             scaleY = staticScale
                             this.alpha = staticAlpha
                         }
+                        // 应用内场景始终可交互：触摸穿透仅用于系统悬浮窗
                         .pointerInput(Unit) {
                             detectTapGestures(
                                 onTap = {
@@ -315,17 +534,13 @@ fun SecretaryChibiOverlay(
                                 onDragCancel = { isDragging = false }
                             ) { change, dragAmount ->
                                 change.consume()
-                                if (isSystemOverlay) {
-                                    onPositionChange?.invoke(dragAmount.x, dragAmount.y)
-                                } else {
-                                    localOffsetX = (localOffsetX + dragAmount.x).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
-                                    localOffsetY = (localOffsetY + dragAmount.y).coerceIn(dragMinY, dragMaxY)
-                                }
+                                localOffsetX = (localOffsetX + dragAmount.x).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
+                                localOffsetY = (localOffsetY + dragAmount.y).coerceIn(dragMinY, dragMaxY)
                             }
                         }
                 ) {
                     AsyncImage(
-                        model = figureUrl,
+                        model = imageModel,
                         contentDescription = "秘书舰 $shipName",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit
@@ -376,10 +591,8 @@ fun SecretaryChibiOverlay(
                         // 气泡顶部 Y = headTopY - bubbleHeightPx（气泡底部紧贴小人头顶）
                         var bubbleTopY = headTopY - bubbleHeightPx
                         // 屏幕顶部边界保护：防止气泡跟随小人头顶上移时超出屏幕顶部
-                        if (!isSystemOverlay) {
-                            val minBubbleY = -localOffsetY
-                            if (bubbleTopY < minBubbleY) bubbleTopY = minBubbleY
-                        }
+                        val minBubbleY = -localOffsetY
+                        if (bubbleTopY < minBubbleY) bubbleTopY = minBubbleY
                         IntOffset(0, bubbleTopY.roundToInt())
                     }
             ) {
@@ -405,10 +618,54 @@ fun SecretaryChibiOverlay(
             }
         }
     }
+    } // end else (isSystemOverlay=false)
+}
+
+/**
+ * 悬浮窗辅助窗口内容：根据状态显示气泡或拖动提示。
+ *
+ * 供 [SecretaryOverlayService] 的独立辅助窗口使用，与主窗口（仅含 SpineSdView）分离。
+ * - 非拖动且有对话 → 显示气泡（紧贴主窗口上方）
+ * - 拖动中 → 显示"拖动调整位置"提示
+ * - 其他 → 空内容（Service 会移除辅助窗口）
+ *
+ * @param onSizeChanged 辅助内容尺寸变化回调，Service 据此更新窗口位置（紧贴主窗口上方）
+ */
+@Composable
+fun SecretaryOverlayAuxiliaryContent(
+    dialogue: String?,
+    isDragging: Boolean,
+    modifier: Modifier = Modifier,
+    onSizeChanged: ((widthPx: Int, heightPx: Int) -> Unit)? = null
+) {
+    if (dialogue == null && !isDragging) return
+    val isDark = LocalIsDark.current
+    Box(
+        modifier = modifier.onGloballyPositioned {
+            onSizeChanged?.invoke(it.size.width, it.size.height)
+        }
+    ) {
+        if (isDragging) {
+            Surface(
+                shape = RoundedCornerShape(AppSpacing.Corner.Sm),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                shadowElevation = 4.dp
+            ) {
+                Text(
+                    text = "拖动调整位置",
+                    style = AppTypography.LabelSmallBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs)
+                )
+            }
+        } else {
+            SecretarySpeechBubble(text = dialogue ?: "", isDark = isDark)
+        }
+    }
 }
 
 @Composable
-private fun SecretarySpeechBubble(text: String, isDark: Boolean) {
+internal fun SecretarySpeechBubble(text: String, isDark: Boolean) {
     val bubbleColor = if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
     val textColor = if (isDark) Color.White else Color.Black
 

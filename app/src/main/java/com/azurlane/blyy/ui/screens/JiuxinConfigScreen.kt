@@ -105,16 +105,24 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalAvatarResolver
+import com.azurlane.blyy.util.findActivityViewModelStoreOwner
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 import com.azurlane.blyy.viewmodel.ModelListState
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import kotlinx.coroutines.launch
 
 @Composable
 fun JiuxinConfigScreen(
     onBack: () -> Unit,
     viewModel: JiuxinViewModel = hiltViewModel(
-        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+        // 优先使用 Activity 作为 ViewModelStoreOwner，确保跨页面共享同一 ViewModel 实例。
+        // 通过 findActivityViewModelStoreOwner() 解包 ContextWrapper，
+        // 避免直接 `as ViewModelStoreOwner` 强转在部分设备/ROM 上抛出 ClassCastException 导致闪退。
+        // 回退到 LocalViewModelStoreOwner.current（NavBackStackEntry 或 Activity）。
+        viewModelStoreOwner = LocalContext.current.findActivityViewModelStoreOwner()
+            ?: LocalViewModelStoreOwner.current
+            ?: error("No ViewModelStoreOwner available in Context hierarchy")
     )
 ) {
     val context = LocalContext.current

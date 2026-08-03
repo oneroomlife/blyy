@@ -29,7 +29,11 @@ data class SecretaryShipState(
     /** SD 小人皮肤名（"" / "default" 用默认皮肤，"gai" / "skin2" 等为其他皮肤） */
     val sdSkin: String = "",
     /** SD 小人显示缩放倍率（1.0 = 默认大小，0.5 = 半尺寸，1.5 = 放大 50%） */
-    val sdScale: Float = 1.0f
+    val sdScale: Float = 1.0f,
+    /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源） */
+    val sdResourceId: String = "",
+    /** 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互） */
+    val overlayTouchPassthrough: Boolean = false
 )
 
 sealed class SecretaryShipIntent {
@@ -41,6 +45,8 @@ sealed class SecretaryShipIntent {
     data class SetDialogueEnabled(val enabled: Boolean) : SecretaryShipIntent()
     data class SetSdSkin(val skin: String) : SecretaryShipIntent()
     data class SetSdScale(val scale: Float) : SecretaryShipIntent()
+    data class SetSdResourceId(val resourceId: String) : SecretaryShipIntent()
+    data class SetOverlayTouchPassthrough(val enabled: Boolean) : SecretaryShipIntent()
     object StartFlipAnimation : SecretaryShipIntent()
     object EndFlipAnimation : SecretaryShipIntent()
 }
@@ -71,7 +77,9 @@ class SecretaryShipViewModel @Inject constructor(
             currentDialogue = managerState.currentDialogue,
             dialogueEnabled = managerState.dialogueEnabled,
             sdSkin = managerState.sdSkin,
-            sdScale = managerState.sdScale
+            sdScale = managerState.sdScale,
+            sdResourceId = managerState.sdResourceId,
+            overlayTouchPassthrough = managerState.overlayTouchPassthrough
         )
     }.stateIn(
         scope = viewModelScope,
@@ -93,6 +101,8 @@ class SecretaryShipViewModel @Inject constructor(
             is SecretaryShipIntent.SetDialogueEnabled -> secretaryManager.setDialogueEnabled(intent.enabled)
             is SecretaryShipIntent.SetSdSkin -> secretaryManager.setSdSkin(intent.skin)
             is SecretaryShipIntent.SetSdScale -> secretaryManager.setSdScale(intent.scale)
+            is SecretaryShipIntent.SetSdResourceId -> secretaryManager.setSdResourceId(intent.resourceId)
+            is SecretaryShipIntent.SetOverlayTouchPassthrough -> secretaryManager.setOverlayTouchPassthrough(intent.enabled)
             SecretaryShipIntent.StartFlipAnimation -> _isFlipping.value = true
             SecretaryShipIntent.EndFlipAnimation -> _isFlipping.value = false
         }

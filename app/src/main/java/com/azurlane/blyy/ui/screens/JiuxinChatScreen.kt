@@ -1,6 +1,7 @@
 package com.azurlane.blyy.ui.screens
 
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -119,6 +120,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import com.azurlane.blyy.util.findActivityViewModelStoreOwner
 import com.valentinilk.shimmer.shimmer
 import coil.compose.AsyncImage
 import coil.compose.AsyncImagePainter
@@ -299,8 +302,12 @@ fun JiuxinChatScreen(
     // 关键修复：绑定到 Activity 而非 NavBackStackEntry，确保跨页面共享同一 ViewModel 实例。
     // 修复"聊天记录退出后丢失"问题：避免每个屏幕持有独立 ViewModel 导致状态不同步。
     // NavBackStackEntry 作用域会导致：聊天页 ViewModel A 销毁保存 → 列表页 ViewModel B 用过期数据覆盖
+    // 通过 findActivityViewModelStoreOwner() 解包 ContextWrapper，
+    // 避免直接 `as ViewModelStoreOwner` 强转在部分设备/ROM 上抛出 ClassCastException 导致闪退。
     viewModel: JiuxinViewModel = hiltViewModel(
-        viewModelStoreOwner = LocalContext.current as ViewModelStoreOwner
+        viewModelStoreOwner = LocalContext.current.findActivityViewModelStoreOwner()
+            ?: LocalViewModelStoreOwner.current
+            ?: error("No ViewModelStoreOwner available in Context hierarchy")
     )
 ) {
     val chatState by viewModel.chatUiState.collectAsStateWithLifecycle()
@@ -1912,7 +1919,15 @@ fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDi
                         RobustAvatar(url = currentAvatarUrl, modifier = Modifier.size(120.dp).clip(CircleShape).border(2.dp, (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.3f), CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(48.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f)) })
                         Spacer(modifier = Modifier.height(AppSpacing.Md)); Text("当前头像", style = AppTypography.BodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(modifier = Modifier.height(AppSpacing.Lg))
                     }
-                    TextButton(onClick = { imagePickerLauncher.launch(arrayOf("image/*")) }) {
+                    TextButton(onClick = {
+                        // 部分 OEM ROM 精简版或无文件管理器的设备会抛 ActivityNotFoundException
+                        try {
+                            imagePickerLauncher.launch(arrayOf("image/*"))
+                        } catch (e: Exception) {
+                            Log.e("AvatarPickerSheet", "No image picker available", e)
+                            // TODO: 可考虑回退到 PickVisualMedia（Android Photo Picker）
+                        }
+                    }) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                             Icon(Icons.Rounded.AddPhotoAlternate, null)
                             Text("从相册选择图片")

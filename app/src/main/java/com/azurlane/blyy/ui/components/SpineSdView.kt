@@ -3,6 +3,7 @@ package com.azurlane.blyy.ui.components
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.opengl.GLSurfaceView
 import android.os.Handler
 import android.os.Looper
@@ -12,9 +13,10 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.key
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -76,11 +78,8 @@ fun SpineSdView(
     assetName: String,
     modifier: Modifier = Modifier,
     scaleMultiplier: Float = 1f,
-    /** 触摸区域占 view 尺寸的比例（0 < ratio ≤ 1.0）。
-     *  当 view 尺寸大于实际需要的触摸区域时（如放大渲染导致 view 扩大），
-     *  通过此参数限制有效触摸区域为 view 中心的比例部分，避免溢出区域误触。
-     *  例：ratio = 0.7 时，view 中心 70% 区域响应触摸，四周 15% 区域忽略触摸。 */
-    touchAreaRatio: Float = 1.0f,
+    /** 触摸交互开关（false=触摸穿透，应用内场景使用；系统悬浮窗场景保持默认 true） */
+    touchEnabled: Boolean = true,
     onTap: (() -> Unit)? = null,
     onDragStart: (() -> Unit)? = null,
     onDrag: ((dx: Float, dy: Float) -> Unit)? = null,
@@ -88,43 +87,52 @@ fun SpineSdView(
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 用 key 包裹：当 dirPath/assetName 变化（如切换皮肤）时强制重建 GLSurfaceView，
-    // 触发 factory 重新执行加载新的 Spine 资源；仅 scaleMultiplier 变化时不重建，走 update 实时生效。
-    key(dirPath, assetName) {
-        val viewRef = remember { mutableStateOf<SpineSdGlSurfaceView?>(null) }
+    // 保存上次资源路径，用于检测变化触发热重载（替代旧的 key() 重建方案）
+    // 旧方案：key(dirPath, assetName) 变化时销毁重建整个 GLSurfaceView（EGL context 重建 ~100ms）
+    // 新方案：update 中检测变化，调用 reloadAsset 在 GL 线程热重载 Spine 资源（~20ms，无闪烁）
+    var lastDirPath by remember { mutableStateOf(dirPath) }
+    var lastAssetName by remember { mutableStateOf(assetName) }
 
-        AndroidView(
-            factory = { ctx ->
-                SpineSdGlSurfaceView(
-                    ctx = ctx,
-                    dirPath = dirPath,
-                    assetName = assetName,
-                    scaleMultiplier = scaleMultiplier,
-                    touchAreaRatio = touchAreaRatio,
-                    onTap = onTap,
-                    onDragStart = onDragStart,
-                    onDrag = onDrag,
-                    onDragEnd = onDragEnd
-                ).also { viewRef.value = it }
-            },
-            update = { view ->
-                // 实时更新缩放倍率，无需重建 GLSurfaceView（避免重新加载 Spine 资源）
-                view.scaleMultiplier = scaleMultiplier
-                view.touchAreaRatio = touchAreaRatio
-            },
-            modifier = modifier
-        )
+    val viewRef = remember { mutableStateOf<SpineSdGlSurfaceView?>(null) }
 
-        DisposableEffect(lifecycleOwner) {
-            val observer = object : DefaultLifecycleObserver {
-                override fun onResume(owner: LifecycleOwner) { viewRef.value?.onResume() }
-                override fun onPause(owner: LifecycleOwner) { viewRef.value?.onPause() }
+    AndroidView(
+        factory = { ctx ->
+            SpineSdGlSurfaceView(
+                ctx = ctx,
+                dirPath = dirPath,
+                assetName = assetName,
+                scaleMultiplier = scaleMultiplier,
+                touchEnabled = touchEnabled,
+                onTap = onTap,
+                onDragStart = onDragStart,
+                onDrag = onDrag,
+                onDragEnd = onDragEnd
+            ).also { viewRef.value = it }
+        },
+        update = { view ->
+            // 实时更新缩放倍率（无需重建 GLSurfaceView）
+            view.scaleMultiplier = scaleMultiplier
+            // 实时更新触摸开关（应用内触摸穿透模式切换）
+            view.touchEnabled = touchEnabled
+            // 检测 Spine 资源路径变化（切换皮肤）：热重载，不重建 GLSurfaceView
+            if (dirPath != lastDirPath || assetName != lastAssetName) {
+                lastDirPath = dirPath
+                lastAssetName = assetName
+                view.reloadAsset(dirPath, assetName)
             }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose {
-                lifecycleOwner.lifecycle.removeObserver(observer)
-                viewRef.value?.onPause()
-            }
+        },
+        modifier = modifier
+    )
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = object : DefaultLifecycleObserver {
+            override fun onResume(owner: LifecycleOwner) { viewRef.value?.onResume() }
+            override fun onPause(owner: LifecycleOwner) { viewRef.value?.onPause() }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewRef.value?.onPause()
         }
     }
 }
@@ -140,10 +148,10 @@ fun SpineSdView(
  */
 private class SpineSdGlSurfaceView(
     ctx: Context,
-    private val dirPath: String,
-    private val assetName: String,
+    dirPath: String,
+    assetName: String,
     scaleMultiplier: Float,
-    touchAreaRatio: Float,
+    touchEnabled: Boolean,
     private val onTap: (() -> Unit)?,
     private val onDragStart: (() -> Unit)?,
     private val onDrag: ((Float, Float) -> Unit)?,
@@ -154,17 +162,15 @@ private class SpineSdGlSurfaceView(
     var scaleMultiplier: Float = scaleMultiplier
 
     /**
-     * 触摸区域占 view 尺寸的比例（0 < ratio ≤ 1.0）。
+     * 触摸交互开关（由 AndroidView update 回调设置）。
      *
-     * 当 view 尺寸大于实际需要的触摸区域时（如放大渲染导致 view 扩大），
-     * 通过此参数限制有效触摸区域为 view 中心的比例部分，避免溢出区域误触。
-     * - ratio = 1.0：整个 view 响应触摸（默认）
-     * - ratio = 0.7：view 中心 70% 区域响应触摸，四周 15% 忽略触摸
+     * - true（默认）：正常处理点击/拖动/长按，骨骼 bounds 外透明区域事件穿透
+     * - false：OnTouchListener 直接返回 false，所有触摸事件穿透到下层（应用内触摸穿透模式）
      *
-     * 触摸区域检查在 ACTION_DOWN 时执行：
-     * 若触摸点在中心 ratio 区域外，直接返回 false 不消费事件，让父容器处理。
+     * 系统悬浮窗场景下触摸穿透由 WindowManager FLAG_NOT_TOUCHABLE 控制，
+     * 此字段保持 true（GLSurfaceView 本身仍可交互，但窗口不接收触摸）。
      */
-    var touchAreaRatio: Float = touchAreaRatio
+    var touchEnabled: Boolean = touchEnabled
 
     /**
      * GLSurfaceView 最新尺寸缓存（px），由 [onSizeChanged] 在 UI 线程更新，
@@ -201,6 +207,16 @@ private class SpineSdGlSurfaceView(
         super.onSizeChanged(w, h, oldw, oldh)
         liveWidth = w
         liveHeight = h
+    }
+
+    /**
+     * 热重载 Spine 资源（切换皮肤时由 AndroidView update 回调调用）。
+     *
+     * 在 GL 线程执行 [SpineRenderer.reloadAsset]，复用现有 GLSurfaceView / EGL context，
+     * 仅重新加载 Spine 三件套资源，避免重建 GLSurfaceView 的开销（EGL context 重建 ~100ms）。
+     */
+    fun reloadAsset(newDirPath: String, newAssetName: String) {
+        queueEvent { spineRenderer.reloadAsset(newDirPath, newAssetName) }
     }
 
     init {
@@ -272,26 +288,36 @@ private class SpineSdGlSurfaceView(
         }
 
         setOnTouchListener { v, event ->
+            // 触摸穿透模式（应用内场景）：直接返回 false，所有触摸事件穿透到下层 UI
+            // 系统悬浮窗场景下 touchEnabled 保持 true，触摸穿透由 FLAG_NOT_TOUCHABLE 控制
+            if (!touchEnabled) return@setOnTouchListener false
+
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    // 触摸区域限制：仅 view 中心 touchAreaRatio 比例的区域响应触摸。
-                    // 当 sdScale > 1.0 时，GLSurfaceView 尺寸 = 基础尺寸 × containerScale（放大），
-                    // 但有效触摸区域应保持基础尺寸，避免溢出区域误触。
-                    // 通过 touchAreaRatio 限制：若触摸点在中心 ratio 区域外，不消费事件。
-                    val ratio = touchAreaRatio.coerceIn(0.1f, 1.0f)
-                    if (ratio < 1.0f && width > 0 && height > 0) {
+                    // 触摸穿透：仅当触摸点落在骨骼实际边界框内时才消费事件，
+                    // 透明区域返回 false 让事件穿透到下层 App（系统悬浮窗场景）或父容器（内嵌场景）。
+                    //
+                    // 【优化前】用 touchAreaRatio 限制为中心矩形比例，粗糙且仍含大量透明区域；
+                    // 且 OnTouchListener 末尾固定返回 true 消费整个序列，透明区域拦截下层触摸。
+                    //
+                    // 【优化后】用 SpineRenderer 每帧更新的骨骼边界框（idle 动画 bounds × scale）
+                    // 精确判断触摸点是否在角色实际范围内：
+                    // - 在 bounds 内 → 消费事件，正常处理点击/拖动
+                    // - 在 bounds 外 → 返回 false，事件穿透到下层 App
+                    //
+                    // 骨骼边界框居中在 view 中心（SpineRenderer 的 skel.x/skel.y 计算保证），
+                    // 透明区域 = view 矩形 - 骨骼 bounds 矩形，这部分事件全部穿透。
+                    //
+                    // bounds 未就绪（首次渲染前）默认消费，避免首次点击失效；
+                    // 此时 view 还没显示内容，用户也不会点击到。
+                    val bounds = spineRenderer.boundsInViewport
+                    if (bounds != null && width > 0 && height > 0) {
                         val touchX = event.x  // 相对 view 的坐标
                         val touchY = event.y
-                        val marginX = width * (1f - ratio) / 2f
-                        val marginY = height * (1f - ratio) / 2f
-                        val minTouchX = marginX
-                        val maxTouchX = width - marginX
-                        val minTouchY = marginY
-                        val maxTouchY = height - marginY
-                        if (touchX < minTouchX || touchX > maxTouchX ||
-                            touchY < minTouchY || touchY > maxTouchY
+                        if (touchX < bounds.left || touchX > bounds.right ||
+                            touchY < bounds.top || touchY > bounds.bottom
                         ) {
-                            // 触摸点在有效区域外，不消费事件，让父容器处理
+                            // 触摸点在骨骼边界框外（透明区域），不消费事件，让下层 App 处理
                             return@setOnTouchListener false
                         }
                     }
@@ -380,8 +406,8 @@ private class SpineSdGlSurfaceView(
  */
 private class SpineRenderer(
     private val appContext: Context,
-    private val dirPath: String,
-    private val assetName: String,
+    dirPath: String,
+    assetName: String,
     /** 缩放倍率提供者：每帧调用读取最新值，支持运行时动态调整（如用户在设置面板拖动滑块） */
     private val scaleProvider: () -> Float,
     /**
@@ -402,6 +428,13 @@ private class SpineRenderer(
      */
     private val viewSizeProvider: () -> Pair<Int, Int>
 ) : GLSurfaceView.Renderer {
+
+    /** 当前 Spine 资源目录路径（@Volatile 支持 GL 线程热重载时读取最新值） */
+    @Volatile private var currentDirPath: String = dirPath
+    /** 当前 Spine 资源三件套主名（@Volatile 支持 GL 线程热重载时读取最新值） */
+    @Volatile private var currentAssetName: String = assetName
+    /** TextureAtlas 引用，热重载时需 dispose 释放旧 GL 纹理 */
+    private var atlas: TextureAtlas? = null
 
     /**
      * 预定义的 idle 动画名集合（覆盖碧蓝航线 SD 小人常见命名）。
@@ -452,52 +485,68 @@ private class SpineRenderer(
     /** 当前是否正在播放 drag 动画（防止与 action 冲突） */
     @Volatile private var isDragging = false
 
-    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        // 1. 初始化 libgdx 静态桥接（GLES20 在 GLSurfaceView 创建 GLContext 后才可用）
-        if (Gdx.gl == null) {
-            val gl20 = AndroidGL20()
-            Gdx.gl = gl20
-            Gdx.gl20 = gl20
-        }
-        if (Gdx.files == null) {
-            val ctxWrapper = appContext as? ContextWrapper
-            if (ctxWrapper != null) {
-                Gdx.files = DefaultAndroidFiles(appContext.assets, ctxWrapper, false)
-            } else {
-                Log.w(TAG, "appContext is not a ContextWrapper, Gdx.files not initialized")
-            }
-        }
+    /**
+     * 当前帧骨骼边界框在 view 坐标系中的位置（Android 坐标系，原点左上、Y 朝下）。
+     *
+     * 由 [onDrawFrame] 每帧更新，供 [SpineSdGlSurfaceView] 的 OnTouchListener 在
+     * ACTION_DOWN 时判断触摸点是否落在角色实际范围内：
+     * - 在 bounds 内 → 消费事件，正常处理点击/拖动
+     * - 在 bounds 外 → 返回 false，事件穿透到下层 App（解决透明区域拦截触摸的问题）
+     *
+     * 【坐标系转换】SpineRenderer 用 libgdx 坐标系（原点左下、Y 朝上），
+     * skel.x/skel.y 是根骨骼世界坐标。骨骼边界框居中在 view 中心：
+     *   left = (vw - baseBoundsW * scale) / 2
+     *   top = (vh - baseBoundsH * scale) / 2
+     *   right = left + baseBoundsW * scale
+     *   bottom = top + baseBoundsH * scale
+     * （推导：baseBoundsOffsetX/Y 在居中计算中被消去，只剩 baseBoundsW/H × scale）
+     *
+     * 用 @Volatile 保证 GL 线程写入对 UI 线程立即可见；每帧创建新 RectF 实例，
+     * 避免 RectF 内部字段跨线程写入的部分可见性问题。
+     *
+     * null 表示首次渲染前 bounds 未就绪，调用方应默认消费事件（避免首次点击失效）。
+     */
+    @Volatile private var _boundsInViewport: RectF? = null
+    val boundsInViewport: RectF? get() = _boundsInViewport
 
-        // 2. 加载 libgdx native 库
-        GdxNativesLoader.load()
+    /**
+     * 加载 Spine 三件套资源（.skel + .atlas + .png）。
+     *
+     * 从 [onSurfaceCreated] 和 [reloadAsset] 调用，在 GL 线程执行。
+     * 首次加载时 [atlas]/[batch] 为 null，直接创建；
+     * 热重载时先 dispose 旧资源（释放 GL 纹理和 GPU 缓冲区）再重新加载。
+     *
+     * 加载步骤：
+     * 1. 释放旧资源（热重载场景）
+     * 2. 读取 .skel + .atlas，创建 TextureAtlas / Skeleton / AnimationState
+     * 3. 采样 idle 动画边界作为自适应缩放基准
+     * 4. 分类动画（idle / action / drag）
+     * 5. 创建 PolygonSpriteBatch，默认播放随机 idle 循环
+     */
+    private fun loadAsset() {
+        // 释放旧资源（热重载场景）：atlas 持有 GL 纹理，batch 持有 GPU 顶点缓冲区
+        atlas?.dispose()
+        batch?.dispose()
+        skeleton = null
+        animState = null
+        renderer = null
+        batch = null
+        atlas = null
+        isPlayingAction = false
+        isDragging = false
 
-        // 3. 初始化 Gdx.graphics stub
-        if (Gdx.graphics == null) {
-            val density = appContext.resources.displayMetrics.density
-            stubGraphics = StubGraphics(density).also { Gdx.graphics = it }
-            Log.i(TAG, "Injected StubGraphics into Gdx.graphics (density=$density)")
-        } else {
-            Log.i(TAG, "Gdx.graphics already set, reusing existing instance")
-        }
-
-        // 4. 初始化 Gdx.app stub
-        if (Gdx.app == null) {
-            Gdx.app = StubApplication()
-            Log.i(TAG, "Injected StubApplication into Gdx.app")
-        }
-
-        // 5. 加载 Spine 三件套（从外部存储绝对路径加载）
         try {
-            val skelFile: FileHandle = Gdx.files.absolute("$dirPath/$assetName.skel")
+            val skelFile: FileHandle = Gdx.files.absolute("$currentDirPath/$currentAssetName.skel")
             // atlas 优先用 assetName.atlas（如 boge_g.atlas），
             // 不存在则回退到目录名同名 atlas（如 boge.atlas，改造/换皮皮肤复用默认皮肤 atlas）
-            val dirName = dirPath.substringAfterLast('/')
-            val primaryAtlas = Gdx.files.absolute("$dirPath/$assetName.atlas")
+            val dirName = currentDirPath.substringAfterLast('/')
+            val primaryAtlas = Gdx.files.absolute("$currentDirPath/$currentAssetName.atlas")
             val atlasFile: FileHandle = if (primaryAtlas.exists()) primaryAtlas
-                else Gdx.files.absolute("$dirPath/$dirName.atlas")
+                else Gdx.files.absolute("$currentDirPath/$dirName.atlas")
 
-            val atlas = TextureAtlas(atlasFile)
-            val loader = AtlasAttachmentLoader(atlas)
+            val newAtlas = TextureAtlas(atlasFile)
+            atlas = newAtlas
+            val loader = AtlasAttachmentLoader(newAtlas)
             val skelReader = SkeletonBinary(loader).apply { scale = 1f }
             val skeletonData = skelReader.readSkeletonData(skelFile)
 
@@ -506,7 +555,7 @@ private class SpineRenderer(
                 updateWorldTransform()
             }
 
-            // 6. 计算 idle 动画边界：采样待机动画的关键帧作为缩放基准。
+            // 计算 idle 动画边界：采样待机动画的关键帧作为缩放基准。
             //    仅用 idle 动画（stand/normal 等）的边界而非全局所有动画，
             //    因为 attack/dance 等动作动画肢体伸展范围远大于待机，
             //    用全局最大边界会导致 idle 时小人缩得太小。
@@ -588,7 +637,7 @@ private class SpineRenderer(
                 "offset=($baseBoundsOffsetX, $baseBoundsOffsetY), " +
                 "size=($baseBoundsW, $baseBoundsH)")
 
-            // 7. 分类动画
+            // 分类动画
             allAnimationNames = skeletonData.animations.map { it.name }
             availableIdleNames = idleAnimationNames.filter { allAnimationNames.contains(it) }
                 .ifEmpty { allAnimationNames.take(1) }
@@ -597,11 +646,11 @@ private class SpineRenderer(
             actionAnimationNames = allAnimationNames.filter {
                 it !in idleAnimationNames && it !in dragAnimationNames
             }
-            Log.i(TAG, "Loaded Spine asset=$assetName, all=${allAnimationNames.size} " +
+            Log.i(TAG, "Loaded Spine asset=$currentAssetName, all=${allAnimationNames.size} " +
                 "animations, idle=$availableIdleNames, drag=$availableDragNames, " +
                 "action=$actionAnimationNames")
 
-            // 8. 创建 AnimationState，设置默认混合过渡（0.2s 平滑切换）
+            // 创建 AnimationState，设置默认混合过渡（0.2s 平滑切换）
             val stateData = AnimationStateData(skeletonData).apply {
                 defaultMix = 0.2f
             }
@@ -617,8 +666,65 @@ private class SpineRenderer(
             lastTimeNs = System.nanoTime()
         } catch (e: Exception) {
             loadFailed = true
-            Log.e(TAG, "Failed to load Spine asset=$assetName", e)
+            Log.e(TAG, "Failed to load Spine asset=$currentAssetName", e)
         }
+    }
+
+    /**
+     * 热重载 Spine 资源（切换皮肤时调用，在 GL 线程执行）。
+     *
+     * 与 [onSurfaceCreated] + 重建 GLSurfaceView 的方案相比，热重载复用现有
+     * GLSurfaceView / EGL context / GL 线程，仅重新加载 Spine 三件套资源：
+     * - dispose 旧 TextureAtlas（释放 GL 纹理）和 PolygonSpriteBatch（释放 GPU 缓冲区）
+     * - 用新路径重新加载 .skel + .atlas + .png
+     * - 重新采样 idle 边界、分类动画、创建 AnimationState
+     *
+     * 优势：无需重建 EGL context（耗时 ~100ms），仅资源加载（~20ms），皮肤切换几乎无延迟。
+     */
+    fun reloadAsset(newDirPath: String, newAssetName: String) {
+        if (newDirPath == currentDirPath && newAssetName == currentAssetName) return
+        currentDirPath = newDirPath
+        currentAssetName = newAssetName
+        loadFailed = false
+        loadAsset()
+    }
+
+    override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        // 1. 初始化 libgdx 静态桥接（GLES20 在 GLSurfaceView 创建 GLContext 后才可用）
+        if (Gdx.gl == null) {
+            val gl20 = AndroidGL20()
+            Gdx.gl = gl20
+            Gdx.gl20 = gl20
+        }
+        if (Gdx.files == null) {
+            val ctxWrapper = appContext as? ContextWrapper
+            if (ctxWrapper != null) {
+                Gdx.files = DefaultAndroidFiles(appContext.assets, ctxWrapper, false)
+            } else {
+                Log.w(TAG, "appContext is not a ContextWrapper, Gdx.files not initialized")
+            }
+        }
+
+        // 2. 加载 libgdx native 库
+        GdxNativesLoader.load()
+
+        // 3. 初始化 Gdx.graphics stub
+        if (Gdx.graphics == null) {
+            val density = appContext.resources.displayMetrics.density
+            stubGraphics = StubGraphics(density).also { Gdx.graphics = it }
+            Log.i(TAG, "Injected StubGraphics into Gdx.graphics (density=$density)")
+        } else {
+            Log.i(TAG, "Gdx.graphics already set, reusing existing instance")
+        }
+
+        // 4. 初始化 Gdx.app stub
+        if (Gdx.app == null) {
+            Gdx.app = StubApplication()
+            Log.i(TAG, "Injected StubApplication into Gdx.app")
+        }
+
+        // 5. 加载 Spine 三件套资源（抽取到 loadAsset，支持热重载复用）
+        loadAsset()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -683,6 +789,27 @@ private class SpineRenderer(
         skel.scaleY = scale
         skel.x = vw / 2f - (baseBoundsOffsetX + baseBoundsW / 2f) * scale
         skel.y = vh / 2f - (baseBoundsOffsetY + baseBoundsH / 2f) * scale
+
+        // 更新骨骼边界框在 view 坐标系中的位置（Android 坐标系，原点左上、Y 朝下），
+        // 供 OnTouchListener 判断触摸点是否落在角色实际范围内（触摸穿透透明区域）。
+        //
+        // 骨骼边界框居中在 view 中心（上方 skel.x/skel.y 计算保证），因此：
+        //   left = (vw - baseBoundsW * scale) / 2
+        //   top  = (vh - baseBoundsH * scale) / 2
+        // baseBoundsOffsetX/Y 在居中计算中被消去，只剩 baseBoundsW/H × scale。
+        //
+        // 注意：baseBounds 是 idle 动画采样边界，action 动画时肢体可能略超出此范围，
+        // 但触摸判断只在 ACTION_DOWN（idle 状态）执行，所以用 idle bounds 是精确的。
+        val renderedBoundsW = baseBoundsW * scale
+        val renderedBoundsH = baseBoundsH * scale
+        val boundsLeft = (vw - renderedBoundsW) / 2f
+        val boundsTop = (vh - renderedBoundsH) / 2f
+        _boundsInViewport = RectF(
+            boundsLeft,
+            boundsTop,
+            boundsLeft + renderedBoundsW,
+            boundsTop + renderedBoundsH
+        )
 
         // 清屏 + 绘制
         Gdx.gl.glClearColor(0f, 0f, 0f, 0f)

@@ -1,18 +1,23 @@
 package com.azurlane.blyy.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
+import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.domain.SelectSecretaryUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
+import com.azurlane.blyy.util.PinyinHelper
+import com.azurlane.blyy.util.SDResourceManager
 import com.google.common.util.concurrent.MoreExecutors
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import javax.inject.Inject
@@ -34,15 +39,21 @@ data class SecretaryManagerState(
     /** SD 小人皮肤名（"" / "default" 用默认皮肤，"gai" / "skin2" 等为其他皮肤） */
     val sdSkin: String = "",
     /** SD 小人显示缩放倍率（1.0 = 默认大小，0.5 = 半尺寸，1.5 = 放大 50%） */
-    val sdScale: Float = 1.0f
+    val sdScale: Float = 1.0f,
+    /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
+    val sdResourceId: String = "",
+    /** 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互） */
+    val overlayTouchPassthrough: Boolean = false
 )
 
 @Singleton
 class SecretaryManager @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val settingsDataStore: PlayerSettingsDataStore,
     private val selectSecretaryUseCase: SelectSecretaryUseCase,
     private val getVoicesUseCase: GetVoicesUseCase,
-    private val playbackServiceConnection: PlaybackServiceConnection
+    private val playbackServiceConnection: PlaybackServiceConnection,
+    private val shipDao: ShipDao
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -55,6 +66,7 @@ class SecretaryManager @Inject constructor(
     private val _currentDialogue = MutableStateFlow<String?>(null)
     private val _sdSkin = MutableStateFlow("")
     private val _sdScale = MutableStateFlow(1.0f)
+    private val _sdResourceId = MutableStateFlow("")
     private var autoPlayJob: Job? = null
     private var dialogueClearJob: Job? = null
     
@@ -74,7 +86,9 @@ class SecretaryManager @Inject constructor(
         _currentDialogue,
         settingsDataStore.secretaryDialogueEnabled,
         _sdSkin,
-        _sdScale
+        _sdScale,
+        _sdResourceId,
+        settingsDataStore.secretaryOverlayTouchPassthrough
     ) { args ->
         SecretaryManagerState(
             shipName = args[0] as String,
@@ -88,7 +102,9 @@ class SecretaryManager @Inject constructor(
             currentDialogue = args[8] as String?,
             dialogueEnabled = args[9] as Boolean,
             sdSkin = args[10] as String,
-            sdScale = args[11] as Float
+            sdScale = args[11] as Float,
+            sdResourceId = args[12] as String,
+            overlayTouchPassthrough = args[13] as Boolean
         )
     }.stateIn(
         scope = scope,
@@ -134,6 +150,9 @@ class SecretaryManager @Inject constructor(
         }
         scope.launch {
             settingsDataStore.secretarySdScale.collect { _sdScale.value = it }
+        }
+        scope.launch {
+            settingsDataStore.secretarySdResourceId.collect { _sdResourceId.value = it }
         }
     }
 
@@ -304,12 +323,19 @@ class SecretaryManager @Inject constructor(
     }
 
     fun ensureVoicesLoaded(shipName: String) {
+        // 舰名为空时不加载语音（自定义非舰娘资源无语音，避免错误触发网络请求）
+        if (shipName.isBlank()) return
         if (_shipName.value == shipName && _voices.value.isEmpty() && !_isLoadingVoices.value) {
             loadVoicesInBackground(shipName)
         }
     }
 
     private fun loadVoicesInBackground(shipName: String) {
+        // 舰名为空时不加载语音（自定义非舰娘资源无对应舰娘，不应触发语音加载）
+        if (shipName.isBlank()) {
+            _voices.value = emptyList()
+            return
+        }
         scope.launch {
             _isLoadingVoices.value = true
             try {
@@ -351,6 +377,23 @@ class SecretaryManager @Inject constructor(
         }
     }
 
+    /**
+     * 设置悬浮窗触摸穿透开关。
+     *
+     * 触摸穿透开启后，悬浮窗主窗口添加 [android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE]，
+     * 所有触摸事件直接穿透到下层 App；关闭后恢复正常点击/拖动/缩放交互。
+     *
+     * 仅写入 DataStore，[SecretaryOverlayService] 通过 collect 状态实时更新窗口 flags，
+     * 无需重启 App，多角色切换保持统一设置。
+     */
+    fun setOverlayTouchPassthrough(enabled: Boolean) {
+        scope.launch {
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretaryOverlayTouchPassthrough(enabled)
+            }
+        }
+    }
+
     fun setSdSkin(skin: String) {
         // 立即更新内存状态，确保 UI 实时响应（皮肤切换无需等待 DataStore 异步写入）
         _sdSkin.value = skin
@@ -367,6 +410,121 @@ class SecretaryManager @Inject constructor(
         scope.launch {
             withContext(NonCancellable) {
                 settingsDataStore.setSecretarySdScale(scale)
+            }
+        }
+    }
+
+    fun setSdResourceId(resourceId: String) {
+        // 立即更新内存状态，确保 UI 实时响应
+        _sdResourceId.value = resourceId
+        // 切换资源时重置皮肤为默认，避免旧皮肤名不适用于新资源
+        _sdSkin.value = ""
+        scope.launch {
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretarySdResourceId(resourceId)
+                settingsDataStore.setSecretarySdSkin("")
+            }
+            // 联动更新语音和立绘：如果选择的 SD 资源对应一个舰娘，
+            // 同时更新秘书舰名和语音列表，确保皮肤切换和语音与 SD 小人保持一致
+            if (resourceId.isNotBlank()) {
+                updateShipFromResourceId(resourceId)
+            }
+        }
+    }
+
+    /**
+     * 从 SD 资源 ID 反查中文舰名，联动更新秘书舰名和语音。
+     *
+     * 反查策略：
+     * 1. 先通过 [SDResourceManager.resolveById] 获取资源，检查是否有 shipName 字段
+     * 2. 如果没有 shipName，但资源来源是舰娘，遍历舰娘数据库用拼音匹配
+     * 3. 如果找到对应舰娘且与当前舰名不同，更新舰名、语音和立绘
+     * 4. 如果资源无对应舰娘（自定义非舰娘资源），清空舰名和语音，
+     *    避免错误使用原舰娘语音
+     */
+    private suspend fun updateShipFromResourceId(resourceId: String) {
+        // 策略1：通过 SDResourceManager 获取资源的 shipName（resolveByShipName 构建的资源有此字段）
+        val resource = withContext(Dispatchers.IO) {
+            SDResourceManager.resolveById(appContext, resourceId)
+        }
+        val shipName = when {
+            // 资源自带 shipName 字段（resolveByShipName 构建的资源）
+            !resource?.shipName.isNullOrBlank() -> resource!!.shipName
+            // 资源来源是舰娘但没有 shipName，遍历数据库拼音匹配
+            resource?.source == com.azurlane.blyy.util.SDResourceSource.SHIP ->
+                resolveShipNameByPinyin(resourceId)
+            // 自定义资源，无对应舰娘
+            else -> null
+        }
+
+        if (shipName.isNullOrBlank()) {
+            // 无对应舰娘的自定义资源：清空舰名和语音，避免错误使用原语音
+            // 即使原秘书舰有语音，切换到无语音资源后也不应继续播放原语音
+            if (_shipName.value.isNotEmpty() || _voices.value.isNotEmpty()) {
+                Log.d(TAG, "updateShipFromResourceId: 资源 $resourceId 无对应舰娘，清空舰名和语音（原 ${_shipName.value}）")
+                _shipName.value = ""
+                _voices.value = emptyList()
+                _avatarUrl.value = ""
+                _figureUrl.value = ""
+                _currentDialogue.value = null
+                stopAutoPlay()
+                // 停止当前正在播放的语音
+                onController { it.pause() }
+                // 持久化清空，避免重启后残留原舰名导致错误加载语音
+                withContext(NonCancellable) {
+                    settingsDataStore.saveSecretaryShip("", "", "")
+                }
+            }
+            return
+        }
+
+        // 找到对应舰名，且与当前舰名不同，则更新秘书舰和语音
+        if (shipName != _shipName.value) {
+            Log.d(TAG, "updateShipFromResourceId: 资源 $resourceId → 舰名 $shipName（原 ${_shipName.value}）")
+            _shipName.value = shipName
+            _voices.value = emptyList()
+            _avatarUrl.value = ""
+            _figureUrl.value = ""
+            _currentDialogue.value = null
+            stopAutoPlay()
+            // 停止当前正在播放的旧语音，避免新语音加载期间继续播放旧语音
+            onController { it.pause() }
+            // 持久化新舰名，立绘和头像清空让后续加载流程重新获取
+            withContext(NonCancellable) {
+                settingsDataStore.saveSecretaryShip(shipName, "", "")
+            }
+            // 后台加载新舰娘的语音
+            loadVoicesInBackground(shipName)
+        }
+    }
+
+    /**
+     * 通过拼音匹配从舰娘数据库反查中文舰名。
+     *
+     * 遍历所有 DOCK 类型舰娘，用 [PinyinHelper.toPinyin] 将舰名转拼音后与资源 ID 匹配。
+     * 同时支持首字母缩写匹配和前缀匹配，覆盖 LocalSdResolver 的多种匹配策略。
+     */
+    private suspend fun resolveShipNameByPinyin(resourceId: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val ships = shipDao.getShipsByArchiveType(ArchiveType.DOCK.name).first()
+                // 1. 拼音全拼精确匹配
+                ships.firstOrNull { PinyinHelper.toPinyin(it.name) == resourceId }?.name
+                    // 2. 拼音首字母缩写匹配
+                    ?: ships.firstOrNull { PinyinHelper.toPinyinInitials(it.name) == resourceId }?.name
+                    // 3. 资源ID是舰名全拼的前缀（资源用简写命名）
+                    ?: ships.firstOrNull {
+                        val pinyin = PinyinHelper.toPinyin(it.name)
+                        pinyin.length >= 3 && pinyin.startsWith(resourceId)
+                    }?.name
+                    // 4. 舰名全拼是资源ID的前缀（资源用完整命名）
+                    ?: ships.firstOrNull {
+                        val pinyin = PinyinHelper.toPinyin(it.name)
+                        resourceId.length >= pinyin.length && resourceId.startsWith(pinyin)
+                    }?.name
+            } catch (e: Exception) {
+                Log.e(TAG, "resolveShipNameByPinyin: 反查舰名失败 $resourceId", e)
+                null
             }
         }
     }

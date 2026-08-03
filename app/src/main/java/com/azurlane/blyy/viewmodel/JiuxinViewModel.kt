@@ -249,6 +249,28 @@ class JiuxinViewModel @Inject constructor(
      */
     private val saveScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * 安全启动协程：捕获所有异常防止 DataStore/IO 错误导致应用闪退。
+     *
+     * 背景：viewModelScope 默认使用 SupervisorJob，但未捕获的异常仍会传播到
+     * Android 的 UncaughtExceptionHandler，导致应用闪退。
+     * 部分设备上 DataStore 首次读取可能失败（文件创建/权限/存储空间不足），
+     * 需要兜底处理，避免 ViewModel 初始化失败导致"点击啾信配置时闪退"。
+     *
+     * 仅用于 init 块中无需对外暴露错误的内部协程（如状态同步）。
+     * 对外暴露状态的协程（如 fetchModels）应使用 viewModelScope.launch + try-catch
+     * 并将错误写入对应的 StateFlow，让 UI 可见。
+     */
+    private fun safeLaunch(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (e: Exception) {
+                Log.e(TAG, "ViewModel coroutine failed", e)
+            }
+        }
+    }
+
     // ── 啾信预设配置 ──
     val presets: StateFlow<List<JiuxinPreset>> = settings.aiJiuxinPresets
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -501,7 +523,10 @@ class JiuxinViewModel @Inject constructor(
         // 旧值会覆盖新值，导致 StableOutlinedTextField 收到旧值重置光标（光标跳末尾问题）。
         // 过滤策略：如果 DataStore 回流的会话 ID 列表与内存相同但内容不同，视为旧值回流，忽略。
         // 仅在会话 ID 列表不同时（初始加载/外部新增删除会话）才接受 DataStore 的值。
-        viewModelScope.launch {
+        //
+        // 异常容错：使用 [safeLaunch] 兜底，避免 DataStore 在部分设备首次读取失败
+        // （文件创建/IO 异常/存储空间不足）导致协程崩溃，进而引发"点击啾信配置闪退"。
+        safeLaunch {
             settings.aiChatSessions.collect { sessionList ->
                 val current = _sessions.value
                 val currentIds = current.map { it.id }
@@ -521,7 +546,7 @@ class JiuxinViewModel @Inject constructor(
         //   → init collector 派发旧值 A → 覆盖 _currentSessionId 回 A
         //   → ChatScreen 显示旧会话 A
         // 因此这里只用 first() 读取一次初始值，后续由内存状态驱动
-        viewModelScope.launch {
+        safeLaunch {
             val initialSessionId = settings.aiCurrentSessionId.first()
             // 仅在内存值为空时初始化，避免覆盖已通过其他路径设置的值
             if (_currentSessionId.value.isBlank() && initialSessionId.isNotBlank()) {
@@ -529,7 +554,7 @@ class JiuxinViewModel @Inject constructor(
             }
         }
         // 加载当前会话消息
-        viewModelScope.launch {
+        safeLaunch {
             _currentSessionId.flatMapLatest { sessionId ->
                 if (sessionId.isNotBlank()) {
                     settings.aiSessionMessages(sessionId)
@@ -564,7 +589,7 @@ class JiuxinViewModel @Inject constructor(
             }
         }
         // 旧数据迁移：如果存在旧的 aiChatHistory 且无会话，自动迁移
-        viewModelScope.launch {
+        safeLaunch {
             val existingSessions = settings.aiChatSessions.first()
             if (existingSessions.isEmpty()) {
                 val oldHistory = settings.aiChatHistory.first()
@@ -589,20 +614,20 @@ class JiuxinViewModel @Inject constructor(
                 }
             }
         }
-        viewModelScope.launch {
+        safeLaunch {
             voiceKeywords.collect { keywords ->
                 val list = keywords.split(";").filter { k -> k.isNotBlank() }
                 _chatState.update { it.copy(voiceKeywords = list, voiceTagMappings = buildVoiceTagMappings(list)) }
             }
         }
-        viewModelScope.launch {
+        safeLaunch {
             shipRepository.allShips.collect { ships ->
                 _shipList.value = ships
             }
         }
         // 加载 systemPrompt 初始值：只读取一次，不持续监听 DataStore
         // 避免快速输入时 DataStore 旧值回流覆盖 _systemPrompt.value（光标跳末尾问题）
-        viewModelScope.launch {
+        safeLaunch {
             _systemPrompt.value = settings.aiSystemPrompt.first()
         }
     }
@@ -1819,10 +1844,15 @@ class JiuxinViewModel @Inject constructor(
     // ── 连接测试 ──
     fun testConnection() {
         viewModelScope.launch {
-            val key = settings.aiApiKey.first()
-            val baseUrl = settings.aiCustomBaseUrl.first().trim()
-            val modelStr = settings.aiModel.first()
-            _connectionTestState.value = performConnectionTest(baseUrl, key, modelStr)
+            try {
+                val key = settings.aiApiKey.first()
+                val baseUrl = settings.aiCustomBaseUrl.first().trim()
+                val modelStr = settings.aiModel.first()
+                _connectionTestState.value = performConnectionTest(baseUrl, key, modelStr)
+            } catch (e: Exception) {
+                Log.e(TAG, "testConnection failed", e)
+                _connectionTestState.value = ConnectionTestState.Error("读取配置失败：${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -1833,12 +1863,20 @@ class JiuxinViewModel @Inject constructor(
      *
      * 委托 [JiuxinApiRepository.fetchModelList] 执行，采用多端点回退 + 多格式解析策略，
      * 兼容各类 OpenAI 兼容 / 第三方代理 API。结果写入 [modelListState]。
+     *
+     * 异常容错：包裹 try-catch 防止 DataStore 读取失败（部分设备首次启动时 IO 异常、
+     * 存储空间不足等）导致协程崩溃进而闪退。错误状态写入 [modelListState]。
      */
     fun fetchModels() {
         viewModelScope.launch {
-            val key = settings.aiApiKey.first()
-            val baseUrl = settings.aiCustomBaseUrl.first().trim()
-            performFetchModels(baseUrl, key)
+            try {
+                val key = settings.aiApiKey.first()
+                val baseUrl = settings.aiCustomBaseUrl.first().trim()
+                performFetchModels(baseUrl, key)
+            } catch (e: Exception) {
+                Log.e(TAG, "fetchModels failed", e)
+                _modelListState.value = ModelListState.Error("读取配置失败：${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -1847,6 +1885,8 @@ class JiuxinViewModel @Inject constructor(
      *
      * 读取当前会话的 apiUrl/apiKey/model，回退到全局默认值，
      * 结果写入共享的 [connectionTestState]（同一时刻仅一个界面可见，无冲突）。
+     *
+     * 异常容错：同 [fetchModels]，防止 DataStore 读取失败导致闪退。
      */
     fun testConnectionForCurrentSession() {
         val session = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
@@ -1855,10 +1895,15 @@ class JiuxinViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
-            val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
-            val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
-            val modelStr = session.model.ifBlank { settings.aiModel.first() }
-            _connectionTestState.value = performConnectionTest(baseUrl, key, modelStr)
+            try {
+                val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
+                val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
+                val modelStr = session.model.ifBlank { settings.aiModel.first() }
+                _connectionTestState.value = performConnectionTest(baseUrl, key, modelStr)
+            } catch (e: Exception) {
+                Log.e(TAG, "testConnectionForCurrentSession failed", e)
+                _connectionTestState.value = ConnectionTestState.Error("读取配置失败：${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -1867,14 +1912,21 @@ class JiuxinViewModel @Inject constructor(
      *
      * 读取当前会话的 apiUrl/apiKey，回退到全局默认值，
      * 结果写入共享的 [modelListState]（同一时刻仅一个界面可见，无冲突）。
+     *
+     * 异常容错：同 [fetchModels]，防止 DataStore 读取失败导致闪退。
      */
     fun fetchModelsForCurrentSession() {
         val session = _sessions.value.firstOrNull { it.id == _currentSessionId.value }
         if (session == null) return
         viewModelScope.launch {
-            val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
-            val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
-            performFetchModels(baseUrl, key)
+            try {
+                val key = session.apiKey.ifBlank { settings.aiApiKey.first() }
+                val baseUrl = session.apiUrl.ifBlank { settings.aiCustomBaseUrl.first() }.trim()
+                performFetchModels(baseUrl, key)
+            } catch (e: Exception) {
+                Log.e(TAG, "fetchModelsForCurrentSession failed", e)
+                _modelListState.value = ModelListState.Error("读取配置失败：${e.message ?: e.javaClass.simpleName}")
+            }
         }
     }
 
