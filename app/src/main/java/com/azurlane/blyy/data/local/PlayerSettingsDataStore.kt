@@ -82,6 +82,10 @@ class PlayerSettingsDataStore @Inject constructor(
         private val CACHED_DRIVE_LINK_JSON_KEY = stringPreferencesKey("cached_drive_link_json")
         private val CACHED_DRIVE_LINK_AT_KEY = androidx.datastore.preferences.core.longPreferencesKey("cached_drive_link_at")
 
+        // SD 资源下载链接持久化缓存（与网盘链接缓存机制相同，独立存储避免互相覆盖）
+        private val CACHED_SD_RESOURCE_LINK_JSON_KEY = stringPreferencesKey("cached_sd_resource_link_json")
+        private val CACHED_SD_RESOURCE_LINK_AT_KEY = androidx.datastore.preferences.core.longPreferencesKey("cached_sd_resource_link_at")
+
         // 小助手配置
         private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
         private val ASSISTANT_DEFAULT_SERVER_KEY = stringPreferencesKey("assistant_default_server")
@@ -655,6 +659,35 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { prefs ->
             prefs.remove(CACHED_DRIVE_LINK_JSON_KEY)
             prefs.remove(CACHED_DRIVE_LINK_AT_KEY)
+        }
+    }
+
+    // ── SD 资源下载链接持久化缓存 ──
+
+    /**
+     * 读取 SD 资源下载链接持久化缓存。
+     * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
+     */
+    suspend fun getCachedSdResourceLink(): Pair<String, Long>? {
+        val prefs = safeData.first()
+        val json = prefs[CACHED_SD_RESOURCE_LINK_JSON_KEY] ?: return null
+        val ts = prefs[CACHED_SD_RESOURCE_LINK_AT_KEY] ?: 0L
+        return json to ts
+    }
+
+    /** 写入 SD 资源下载链接持久化缓存（JSON + 当前时间戳） */
+    suspend fun setCachedSdResourceLink(json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[CACHED_SD_RESOURCE_LINK_JSON_KEY] = json
+            prefs[CACHED_SD_RESOURCE_LINK_AT_KEY] = System.currentTimeMillis()
+        }
+    }
+
+    /** 清空 SD 资源下载链接持久化缓存 */
+    suspend fun clearCachedSdResourceLink() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(CACHED_SD_RESOURCE_LINK_JSON_KEY)
+            prefs.remove(CACHED_SD_RESOURCE_LINK_AT_KEY)
         }
     }
 

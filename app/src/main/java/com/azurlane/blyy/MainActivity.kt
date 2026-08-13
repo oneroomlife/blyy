@@ -879,6 +879,8 @@ fun AppContent() {
                         )
                     }
                     composable("secretary_mode") {
+                        val sdResourceLink by secretaryViewModel.sdResourceLink.collectAsStateWithLifecycle()
+                        val isRefreshingSdLink by secretaryViewModel.isRefreshingSdLink.collectAsStateWithLifecycle()
                         SecretaryShipModeScreen(
                             secretaryState = secretaryState,
                             onBack = { navController.popBackStack() },
@@ -888,7 +890,11 @@ fun AppContent() {
                             onClearSecretary = {
                                 secretaryViewModel.onIntent(SecretaryShipIntent.ClearSecretary)
                             },
-                            onOpenSettings = { navController.navigate("secretary_settings") }
+                            onOpenSettings = { navController.navigate("secretary_settings") },
+                            sdResourceLink = sdResourceLink,
+                            isRefreshingSdLink = isRefreshingSdLink,
+                            onRefreshSdLink = { secretaryViewModel.refreshSdResourceLink() },
+                            onEnsureSdLinkLoaded = { secretaryViewModel.ensureSdResourceLinkLoaded() }
                         )
                     }
                     composable("secretary_settings") {

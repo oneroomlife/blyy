@@ -55,6 +55,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -108,9 +109,20 @@ fun SecretaryShipModeScreen(
     onSelectFromHome: () -> Unit,
     onSelectFromGallery: () -> Unit,
     onClearSecretary: () -> Unit = {},
-    onOpenSettings: () -> Unit = {}
+    onOpenSettings: () -> Unit = {},
+    sdResourceLink: com.azurlane.blyy.util.SdResourceLink? = null,
+    isRefreshingSdLink: Boolean = false,
+    onRefreshSdLink: () -> Unit = {},
+    onEnsureSdLinkLoaded: () -> Unit = {}
 ) {
     var heartExpanded by remember { mutableStateOf(false) }
+
+    // 进入页面时确保 SD 资源链接已加载：
+    // 若启动阶段获取失败（网络异常等），进入页面会自动重试获取最新链接；
+    // 已加载成功或正在加载中则自动跳过（由 ensureSdResourceLinkLoaded 内部判断）。
+    LaunchedEffect(Unit) {
+        onEnsureSdLinkLoaded()
+    }
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -181,7 +193,7 @@ fun SecretaryShipModeScreen(
                     }
                 }
 
-                // SD 资源下载入口：跳转夸克网盘下载完整 SD 小人资源包
+                // SD 资源下载入口：远程获取网盘链接，支持刷新和加载状态
                 // 独立 Section，使用 tertiary 颜色与主功能区（primary/secondary）区分，
                 // 与下方"当前秘书舰" Section 视觉上形成层次。
                 SecretarySection(
@@ -190,7 +202,9 @@ fun SecretaryShipModeScreen(
                     accentColor = MaterialTheme.colorScheme.tertiary
                 ) {
                     ResourceDownloadCard(
-                        url = "https://pan.quark.cn/s/ed497182ee99?pwd=hNJx"
+                        sdResourceLink = sdResourceLink,
+                        isRefreshing = isRefreshingSdLink,
+                        onRefresh = onRefreshSdLink
                     )
                 }
 
@@ -245,10 +259,15 @@ fun SecretaryShipModeScreen(
 }
 
 /**
- * SD 资源下载卡片 — 跳转夸克网盘下载完整 SD 小人资源包。
+ * SD 资源下载卡片 — 远程获取网盘链接并跳转浏览器下载完整 SD 小人资源包。
  *
  * 设计要点：
- * - 整卡可点击跳转浏览器打开网盘链接（Intent.ACTION_VIEW）
+ * - 链接通过 [SdResourceLinkProvider] 远程获取（多源策略 + 三级缓存），
+ *   避免硬编码链接失效问题，可在不更新 App 的前提下动态更新下载地址
+ * - 三种状态：
+ *   - 加载中（isRefreshing=true）：显示加载指示器，禁用点击
+ *   - 加载成功（sdResourceLink != null）：显示网盘类型 + 资源版本，点击跳转浏览器
+ *   - 加载失败（sdResourceLink == null 且 !isRefreshing）：显示错误提示 + 刷新按钮
  * - 使用 tertiary 颜色作为主色调，区别于主功能区 primary/secondary
  * - 整体复用 [BlyyPanel] 风格保持与其他卡片视觉一致
  *
@@ -257,7 +276,9 @@ fun SecretaryShipModeScreen(
  */
 @Composable
 private fun ResourceDownloadCard(
-    url: String
+    sdResourceLink: com.azurlane.blyy.util.SdResourceLink?,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit
 ) {
     val context = LocalContext.current
     val accentColor = MaterialTheme.colorScheme.tertiary
@@ -272,7 +293,8 @@ private fun ResourceDownloadCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
-                .clickable {
+                .clickable(enabled = sdResourceLink != null && !isRefreshing) {
+                    val url = sdResourceLink?.url ?: return@clickable
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     try {
@@ -296,31 +318,55 @@ private fun ResourceDownloadCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.CloudDownload,
-                    contentDescription = null,
-                    tint = accentColor,
-                    modifier = Modifier.size(22.dp)
-                )
+                if (isRefreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = accentColor
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.CloudDownload,
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "夸克网盘资源",
+                    text = sdResourceLink?.label ?: if (isRefreshing) "正在获取下载链接..." else "下载链接获取失败",
                     style = AppTypography.TitleSmall,
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "下载 SD 小人资源包",
+                    text = when {
+                        sdResourceLink != null ->
+                            if (sdResourceLink.note.isNotEmpty()) sdResourceLink.note else "下载 SD 小人资源包"
+                        isRefreshing -> "从远程仓库获取最新链接"
+                        else -> "点击右侧刷新按钮重试"
+                    },
                     style = AppTypography.BodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Icon(
-                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // 右侧操作区：加载成功显示箭头，失败显示刷新按钮
+            if (sdResourceLink != null && !isRefreshing) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else if (sdResourceLink == null && !isRefreshing) {
+                IconButton(onClick = onRefresh) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "刷新链接",
+                        tint = accentColor
+                    )
+                }
+            }
         }
     }
 }

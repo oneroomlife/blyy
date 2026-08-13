@@ -100,6 +100,15 @@ class SecretaryOverlayService : Service() {
         /** SD 小人基础高度（dp），与 SecretaryChibiOverlay 的 CHIBI_BASE_HEIGHT 一致 */
         private const val CHIBI_BASE_HEIGHT_DP = 165f
 
+        /**
+         * 拖动到屏幕上方时允许的向上溢出比例（相对于窗口高度）。
+         *
+         * 与 SecretaryChibiOverlay 应用内场景的 CHIBI_DRAG_MARGIN_RATIO 保持一致（0.15f），
+         * 允许小人头顶超出屏幕顶端 15% 窗口高度的距离，
+         * 既能让用户把小人拖到屏幕上方靠近状态栏区域，又不会完全拖出屏幕不可见。
+         */
+        private const val DRAG_OVERFLOW_RATIO = 0.15f
+
         private val isRunning = AtomicBoolean(false)
         fun isServiceRunning(): Boolean = isRunning.get()
     }
@@ -131,8 +140,11 @@ class SecretaryOverlayService : Service() {
             // - FLAG_NOT_FOCUSABLE：不抢占输入焦点
             // - FLAG_LAYOUT_IN_SCREEN：允许窗口覆盖状态栏区域
             // - FLAG_NOT_TOUCH_MODAL：窗口外事件穿透到下层 App
-            // 移除 FLAG_LAYOUT_NO_LIMITS：窗口尺寸已紧贴小人，无需溢出；
-            //   且 FLAG_LAYOUT_NO_LIMITS 会让窗口位置超出屏幕导致触摸坐标异常
+            // - FLAG_LAYOUT_NO_LIMITS：允许窗口位置超出屏幕边界（y 可为负），
+            //   使小人可拖动到屏幕上方靠近状态栏区域。
+            //   安全性保障：SpineSdView 的 OnTouchListener 使用 event.rawX/rawY
+            //   （屏幕绝对坐标）计算拖动偏移，不依赖 view 自身位置，因此窗口超出
+            //   屏幕边界不会导致触摸坐标异常或拖动卡死。
             val params = WindowManager.LayoutParams(
                 overlayWidthPx,
                 overlayHeightPx,
@@ -143,7 +155,8 @@ class SecretaryOverlayService : Service() {
                 },
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
             )
             params.gravity = Gravity.TOP or Gravity.START
@@ -286,10 +299,13 @@ class SecretaryOverlayService : Service() {
         lp.x = oldCenterX - newWidth / 2
         lp.y = oldCenterY - newHeight / 2
 
-        // 边界检查：确保窗口完全在屏幕内
+        // 边界检查：x 限制在屏幕内；y 允许向上溢出 DRAG_OVERFLOW_RATIO 比例
+        // 与 moveMainWindow 的边界限制保持一致，确保缩放后小人仍可位于屏幕上方区域
         val dm = resources.displayMetrics
         lp.x = lp.x.coerceIn(0, (dm.widthPixels - newWidth).coerceAtLeast(0))
-        lp.y = lp.y.coerceIn(0, (dm.heightPixels - newHeight).coerceAtLeast(0))
+        val minY = -(newHeight * DRAG_OVERFLOW_RATIO).toInt()
+        val maxY = (dm.heightPixels - newHeight).coerceAtLeast(0)
+        lp.y = lp.y.coerceIn(minY, maxY)
 
         try {
             windowManager?.updateViewLayout(view, lp)
@@ -320,10 +336,13 @@ class SecretaryOverlayService : Service() {
         // - FLAG_NOT_FOCUSABLE：不抢占输入焦点
         // - FLAG_LAYOUT_IN_SCREEN：允许窗口覆盖状态栏区域
         // - FLAG_NOT_TOUCH_MODAL：窗口外事件穿透到下层 App
+        // - FLAG_LAYOUT_NO_LIMITS：允许窗口位置超出屏幕边界（y 可为负），
+        //   使小人可拖动到屏幕上方区域
         val baseFlags = (
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         )
 
         // 触摸穿透模式追加 FLAG_NOT_TOUCHABLE：窗口完全不接收触摸事件
@@ -344,16 +363,24 @@ class SecretaryOverlayService : Service() {
     /**
      * 移动主窗口（拖动时调用）。
      *
-     * 限制窗口完全在屏幕内，同步更新辅助窗口位置。
+     * 边界限制：
+     * - x：限制在 [0, 屏幕宽度 - 窗口宽度]，水平方向不允许超出屏幕
+     * - y：允许向上溢出一定距离（[DRAG_OVERFLOW_RATIO] × 窗口高度），
+     *   使小人可拖动到屏幕上方靠近状态栏区域；向下限制为屏幕底部
+     *
+     * 同步更新辅助窗口位置（紧贴主窗口上方，FLAG_LAYOUT_NO_LIMITS 允许 y 为负）。
      */
     private fun moveMainWindow(dx: Float, dy: Float) {
         val lp = overlayLayoutParams ?: return
         val view = composeView ?: return
         val dm = resources.displayMetrics
         val maxX = (dm.widthPixels - lp.width).coerceAtLeast(0)
+        // 允许向上溢出：minY = -窗口高度 × DRAG_OVERFLOW_RATIO
+        // 这样小人头顶最多超出屏幕顶端 15% 窗口高度，仍保持可见可拖动
+        val minY = -(lp.height * DRAG_OVERFLOW_RATIO).toInt()
         val maxY = (dm.heightPixels - lp.height).coerceAtLeast(0)
         lp.x = (lp.x + dx.toInt()).coerceIn(0, maxX)
-        lp.y = (lp.y + dy.toInt()).coerceIn(0, maxY)
+        lp.y = (lp.y + dy.toInt()).coerceIn(minY, maxY)
         try {
             windowManager?.updateViewLayout(view, lp)
         } catch (e: Exception) {
