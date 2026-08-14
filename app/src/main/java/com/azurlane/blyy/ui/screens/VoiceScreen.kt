@@ -78,7 +78,6 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.*
-import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.PlayerUiState
 import com.azurlane.blyy.viewmodel.PlayerViewModel
 import com.azurlane.blyy.viewmodel.PlayMode
@@ -151,12 +150,8 @@ fun VoiceScreenContent(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // 优先使用本地高清头像，匹配不到时回退到网络 URL
-    // 区分档案类型：studentLink 非空表示学生档案（STUDENT），避免同名不同类型舰娘误匹配
-    val archiveType = if (voiceState.studentLink.isNotBlank()) "STUDENT" else "DOCK"
-    val effectiveAvatarUrl = remember(voiceState.shipName, voiceState.avatarUrl, archiveType) {
-        LocalAvatarResolver.resolveOrDefault(context, voiceState.shipName, archiveType, voiceState.avatarUrl)
-    }
+    // 啾信功能仅使用网络加载获取的头像
+    val effectiveAvatarUrl = voiceState.avatarUrl
 
     LaunchedEffect(playbackError) {
         playbackError?.let {

@@ -104,7 +104,6 @@ import com.azurlane.blyy.ui.components.StableOutlinedTextField
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
-import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.util.findActivityViewModelStoreOwner
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
@@ -639,7 +638,7 @@ fun JiuxinConfigScreen(
             onDismiss = { showVoiceShipPicker = false },
             onShipSelected = { ship ->
                 viewModel.saveVoiceShipName(ship.name)
-                // 选中语音舰娘时，复制 asset 到内部存储，确保 file:// 路径可靠加载
+                // 选中语音舰娘时，归一化网络 URL 后保存
                 scope.launch {
                     val reliableAvatar = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl)
                     viewModel.saveVoiceShipAvatar(reliableAvatar)
@@ -1456,7 +1455,6 @@ fun VoiceShipPickerSheet(
 ) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
-    val context = LocalContext.current
 
     BlyyBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.fillMaxWidth().height(480.dp)) {
@@ -1502,10 +1500,8 @@ fun VoiceShipPickerSheet(
             ) {
                 items(filteredShips, key = { it.name }) { ship ->
                         val isSelected = ship.name == currentShipName
-                        // 优先使用本地高清头像
-                        val effectiveAvatar = remember(ship.name, ship.avatarUrl, ship.archiveType) {
-                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.archiveType, ship.avatarUrl)
-                        }
+                        // 啾信功能仅使用网络加载获取的头像
+                        val effectiveAvatar = ship.avatarUrl
                         Row(
                         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(AppSpacing.Corner.Md))
                             .background(if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color.Transparent)

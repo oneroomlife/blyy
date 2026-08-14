@@ -30,7 +30,6 @@ import com.azurlane.blyy.data.repository.JiuxinApiResult
 import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.data.model.StickerResource
-import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.util.StickerMatcher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -676,62 +675,17 @@ class JiuxinViewModel @Inject constructor(
     }
 
     /**
-     * 解析舰娘头像并复制到内部存储，返回可靠的 file:// 路径。
+     * 解析舰娘头像 URL。
      *
-     * 解决 file:///android_asset/ URI 在某些设备/Coil 版本上加载失败的问题：
-     * - 将 asset 文件复制到 filesDir/avatars/ 目录
-     * - 返回的 file:// 路径可被 Coil 的 FileUriFetcher 稳定加载
-     * - 若 LocalAvatarResolver 未匹配到本地资源，回退到网络 URL
+     * 啾信相关功能仅使用网络加载获取的资源，不再使用本地 assets 文件。
      *
-     * @param shipName 舰娘名称
-     * @param networkUrl 网络头像 URL（作为回退）
-     * @return 复合格式头像 URL（primary||fallback），本地文件优先，网络 URL 作为回退
+     * @param shipName 舰娘名称（保留参数以兼容现有调用方，当前未使用）
+     * @param networkUrl 网络头像 URL
+     * @param archiveType 档案类型（保留参数以兼容现有调用方，当前未使用）
+     * @return 归一化后的网络头像 URL
      */
     suspend fun resolveAndCopyShipAvatar(shipName: String, networkUrl: String, archiveType: String = "DOCK"): String {
-        val normalizedNetworkUrl = normalizeUrl(networkUrl)
-        val assetUri = LocalAvatarResolver.resolve(context, shipName, archiveType)
-        if (assetUri == null) {
-            return normalizedNetworkUrl
-        }
-
-        // 从 URI 提取 asset 路径：Uri.Builder().scheme("file").path("/android_asset/xxx")
-        // 生成的字符串为 "file:/android_asset/xxx"（单斜杠），需用 Uri.parse().path 获取解码路径
-        val uriPath = Uri.parse(assetUri).path
-        val assetPath = uriPath?.removePrefix("/android_asset/")
-        if (assetPath.isNullOrBlank()) {
-            Log.e(TAG, "Cannot extract asset path from: $assetUri")
-            return normalizedNetworkUrl
-        }
-
-        return withContext(Dispatchers.IO) {
-            try {
-                val avatarDir = File(context.filesDir, "avatars").apply { mkdirs() }
-                // 文件名包含 archiveType，避免同名不同类型舰娘的头像文件碰撞
-                val safeFileName = shipName.replace(Regex("[^\\w.·\\-()μ★]"), "_")
-                val safeArchiveType = archiveType.replace(Regex("[^\\w]"), "_")
-                val destFile = File(avatarDir, "ship_${safeFileName}_$safeArchiveType.jpg")
-
-                // 如果已复制过且文件存在，直接复用
-                if (!destFile.exists()) {
-                    context.assets.open(assetPath).use { input ->
-                        destFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                }
-                val localPath = "file://${destFile.absolutePath}"
-                // 复合格式：本地文件优先，网络 URL 作为回退
-                if (normalizedNetworkUrl.isNotBlank() && normalizedNetworkUrl != localPath) {
-                    "$localPath||$normalizedNetworkUrl"
-                } else {
-                    localPath
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to copy ship avatar from assets: $assetPath", e)
-                // 复制失败时直接使用网络 URL
-                normalizedNetworkUrl
-            }
-        }
+        return normalizeUrl(networkUrl)
     }
     fun saveVoiceEnabled(enabled: Boolean) { viewModelScope.launch { settings.setAiVoiceEnabled(enabled) } }
     fun saveVoiceRandomChance(chance: Float) { viewModelScope.launch { settings.setAiVoiceRandomChance(chance) } }

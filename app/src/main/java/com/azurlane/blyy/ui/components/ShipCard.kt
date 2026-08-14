@@ -139,6 +139,7 @@ fun ShipCard(
                 avatarUrl = ship.avatarUrl,
                 borderUrl = ship.borderUrl,
                 archiveType = ship.archiveType,
+                isOathed = ship.isFavorite,
                 contentDescription = ship.name
             )
 
@@ -383,12 +384,13 @@ private fun ShipImage(
     avatarUrl: String,
     borderUrl: String?,
     archiveType: String = "DOCK",
+    isOathed: Boolean = false,
     contentDescription: String
 ) {
     val context = LocalContext.current
-    // 优先使用本地高清头像，匹配不到时回退到网络 URL
-    val effectiveAvatar = remember(shipName, avatarUrl, archiveType) {
-        com.azurlane.blyy.util.LocalAvatarResolver.resolveOrDefault(context, shipName, archiveType, avatarUrl)
+    // 优先使用本地高清头像（誓约状态优先匹配 _h 婚皮），匹配不到时回退到网络 URL
+    val effectiveAvatar = remember(shipName, avatarUrl, archiveType, isOathed) {
+        com.azurlane.blyy.util.LocalAvatarResolver.resolveOrDefault(context, shipName, archiveType, isOathed, avatarUrl)
     }
     val request = remember(effectiveAvatar) {
         ImageRequest.Builder(context)

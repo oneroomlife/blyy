@@ -235,9 +235,9 @@ private fun RevealedShipCard(
     )
     val rarityGradient = remember(ship.rarity) { AppColors.Rarity.getRarityGradient(ship.rarity) }
     val context = LocalContext.current
-    // 优先使用本地高清头像
-    val effectiveAvatar = remember(ship.name, ship.avatarUrl, ship.archiveType) {
-        LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.archiveType, ship.avatarUrl)
+    // 优先使用本地高清头像（誓约状态优先匹配 _h 婚皮）
+    val effectiveAvatar = remember(ship.name, ship.avatarUrl, ship.archiveType, ship.isFavorite) {
+        LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.archiveType, ship.isFavorite, ship.avatarUrl)
     }
 
     Column(

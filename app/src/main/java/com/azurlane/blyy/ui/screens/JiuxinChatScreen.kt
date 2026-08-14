@@ -145,7 +145,6 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.JuusPalette
 import com.azurlane.blyy.ui.theme.LocalIsDark
-import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.ConnectionTestState
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 import kotlinx.coroutines.flow.filter
@@ -1864,7 +1863,6 @@ private fun ChatInputBar(
 fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDismiss: () -> Unit, onAvatarSelected: (String) -> Unit) {
     val filteredShips by viewModel.filteredShipList.collectAsStateWithLifecycle()
     val searchQuery by viewModel.shipSearchQuery.collectAsStateWithLifecycle()
-    val context = LocalContext.current
     val isDark = LocalIsDark.current
     val scope = rememberCoroutineScope()
     val imagePickerLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -1896,14 +1894,12 @@ fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDi
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 LazyVerticalGrid(columns = GridCells.Fixed(5), modifier = Modifier.fillMaxSize().padding(horizontal = AppSpacing.Lg), horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm), verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     items(filteredShips, key = { it.name }, contentType = { "ship_avatar" }) { ship ->
-                        // 优先使用本地高清头像，匹配不到回退网络 URL
-                        val effectiveAvatar = remember(ship.name, ship.avatarUrl, ship.archiveType) {
-                            LocalAvatarResolver.resolveOrDefault(context, ship.name, ship.archiveType, ship.avatarUrl)
-                        }
+                        // 啾信功能仅使用网络加载获取的头像
+                        val effectiveAvatar = ship.avatarUrl
                         val isSelected = effectiveAvatar == currentAvatarUrl
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(modifier = Modifier.size(52.dp).clip(CircleShape).border(if (isSelected) 2.dp else 1.dp, if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else Color.LightGray.copy(alpha = 0.3f), CircleShape).clickable {
-                                // 选中舰娘头像时，复制 asset 到内部存储，确保 file:// 路径可靠加载
+                                // 选中舰娘头像时，归一化网络 URL 后回调
                                 scope.launch {
                                     val reliablePath = viewModel.resolveAndCopyShipAvatar(ship.name, ship.avatarUrl, ship.archiveType)
                                     onAvatarSelected(reliablePath)
