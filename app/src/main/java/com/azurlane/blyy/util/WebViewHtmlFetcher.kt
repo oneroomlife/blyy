@@ -366,8 +366,12 @@ object WebViewHtmlFetcher {
      */
     private fun clickSidebarTabIfNeeded(webView: WebView?, url: String?) {
         if (webView == null || url == null) return
-        // 仅对 gamekee.com 学生详情页(/ba/tj/)且带 ?tab= 参数的 URL 生效
-        if (!url.contains("gamekee.com/ba/tj/")) return
+        // 仅对 gamekee.com 学生详情页且带 ?tab= 参数的 URL 生效。
+        // 2026-08 gamekee 改版后学生详情链接格式变化，需兼容三种格式：
+        //   旧版：/ba/tj/59934.html
+        //   新版：/ba/714062（裸 content_id）
+        //   新版：/ba/714501.html（content_id + .html，同一列表页与裸 id 并存）
+        if (!Regex("""gamekee\.com/ba/(?:tj/)?\d+(?:\.html)?""").containsMatchIn(url)) return
         val tabMatch = Regex("""[?&]tab=(\d+)""").find(url) ?: return
         val tabIndex = tabMatch.groupValues[1]
         // 注入轮询 JS：每 200ms 尝试点击侧边栏 tab，最多重试 30 次（6 秒）

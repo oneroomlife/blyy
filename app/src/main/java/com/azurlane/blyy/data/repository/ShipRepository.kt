@@ -665,8 +665,11 @@ class ShipRepository @Inject constructor(
         try {
             // gamekee.com 是 Vue.js SPA，静态 HTML 不含学生数据，需用 WebView 渲染
             // 使用带缓存+重试的版本，5 分钟内重复进入页面无需重新渲染
+            // contentSelector 轮询检测学生条目渲染完成（通常 3-5s），替代固定 8s 等待，更快更稳
             val fetchStart = System.currentTimeMillis()
-            val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(context, url, waitMs = 8000L)
+            val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(
+                context, url, waitMs = 15000L, contentSelector = "a.item[href*=\"/ba/\"]"
+            )
             val fetchDuration = System.currentTimeMillis() - fetchStart
             Log.d(TAG, "HTML fetch completed in ${fetchDuration}ms")
 
@@ -674,14 +677,33 @@ class ShipRepository @Inject constructor(
             val doc = Jsoup.parse(html)
 
             val students = mutableListOf<Ship>()
-            // 学生条目：<a class="item" href="/ba/tj/xxx.html">
-            val items = doc.select("a.item[href*=/ba/tj/]")
-            Log.d(TAG, "Found ${items.size} student items")
+            // 学生条目：<a class="item" href="..." title="学生名">
+            // 2026-08 gamekee 改版后详情链接不再包含 /tj/ 路径，同一列表页存在两种格式：
+            //   /ba/714062（裸 content_id）与 /ba/714501.html（带 .html 后缀）
+            // 且改版后礼物/材料条目与学生共用 a.item + /ba/{id} 结构，无法仅靠链接区分；
+            // 学生分组容器为 icon-size-6（大图网格），礼物/材料分组为 icon-size-2（小图网格）。
+            val studentHrefPattern = Regex("""^/ba/(?:tj/)?\d+(?:\.html)?$""")
+            // 只取第一个 icon-size-6 学生分组（「实装学生」）。
+            // 列表页顶部有 nav-tab：实装学生 / NPC及卫星 / 礼物 / 材料，默认激活「实装学生」。
+            // 但 HTML 中同时预渲染了第二个 icon-size-6 容器「NPC及卫星」（约202条，含佩洛洛/
+            // 唐·阿兰奇诺/市民(合集)等未实装角色与合集条目）。若直接
+            // select("div.item-wrapper.icon-size-6 a.item") 会命中两个容器，把 NPC/卫星混入学生列表，
+            // 因此必须先 firstOrNull() 取「实装学生」容器，再选用其内条目。
+            val items = doc.select("div.item-wrapper.icon-size-6").firstOrNull()
+                ?.select("a.item")
+                ?.filter { studentHrefPattern.matches(it.attr("href")) }
+                ?: emptyList()
+            // 回退：学生分组容器选择器失效（gamekee 再改版改列数）时，退回全量条目 + href 过滤
+            val fallbackItems = if (items.isEmpty()) {
+                doc.select("a.item").filter { studentHrefPattern.matches(it.attr("href")) }
+            } else items
+            Log.d(TAG, "Found ${fallbackItems.size} student items (student-group=${items.size})")
 
             val seenNames = mutableSetOf<String>()
-            items.forEach { el ->
+            fallbackItems.forEach { el ->
                 try {
-                    val name = el.select("span.name").text().trim()
+                    // 名称：span.name 为主（class 为 "name {星级}" 形式），title 属性兜底
+                    val name = el.select("span.name").text().trim().ifEmpty { el.attr("title").trim() }
                     if (name.isEmpty() || name in seenNames) return@forEach
 
                     val relativeLink = el.attr("href")
@@ -693,8 +715,8 @@ class ShipRepository @Inject constructor(
                     var avatar = coverImg?.attr("data-src")?.ifEmpty { coverImg.attr("src") } ?: ""
                     if (avatar.isNotEmpty()) avatar = cleanGamekeeImageUrl(formatGamekeeUrl(avatar))
 
-                    // 从链接中提取学生 ID（如 /ba/tj/59934.html → 59934）
-                    val studentId = Regex("""/ba/tj/(\d+)\.html""").find(relativeLink)?.groupValues?.getOrNull(1) ?: ""
+                    // 从链接中提取学生 ID（兼容 /ba/714062、/ba/714501.html、/ba/tj/59934.html）
+                    val studentId = Regex("""/ba/(?:tj/)?(\d+)(?:\.html)?""").find(relativeLink)?.groupValues?.getOrNull(1) ?: ""
 
                     // 解析列表页可用的筛选数据（星级、学校等）
                     val filterData = parseStudentFilterFromListItem(el)
@@ -722,6 +744,8 @@ class ShipRepository @Inject constructor(
             Log.d(TAG, "Parsed ${students.size} students in ${parseDuration}ms")
 
             if (students.isEmpty()) {
+                // 解析失败：清除 HTML 缓存，防止重试命中未渲染/结构变更的 HTML（缓存污染）
+                WebViewHtmlFetcher.invalidateCache(url)
                 throw IllegalStateException("未解析到任何学生数据，可能页面结构已变更。")
             }
 
@@ -879,7 +903,8 @@ class ShipRepository @Inject constructor(
      */
     suspend fun parseStudentDetailForFilterData(detailUrl: String): StudentFilterData? = withContext(Dispatchers.IO) {
         try {
-            val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(context, detailUrl, waitMs = 6000L)
+            // 侧边栏 tab 点击 JS 注入后内容才渲染，固定等待需覆盖 SPA 初始化 + 点击 + 渲染全流程
+            val html = WebViewHtmlFetcher.fetchRenderedHtmlWithCache(context, detailUrl, waitMs = 10000L)
             val doc = Jsoup.parse(html)
             val fullText = doc.text()
 

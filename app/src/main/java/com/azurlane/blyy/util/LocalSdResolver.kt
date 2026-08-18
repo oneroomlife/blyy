@@ -142,7 +142,9 @@ object LocalSdResolver {
         "曾克海军上将" to "zengkehaijunshangjiang",
         "BLACK★ROCK" to "heiyansheshou",
         // 联动后缀保留命名（CV 联动天城）
-        "天城CV" to "tiancheng_cv"
+        "天城CV" to "tiancheng_cv",
+        // META 特殊命名（mid 前缀，区别于普通赤城）
+        "赤城·META" to "midchicheng_alter"
     )
 
     /** 进程级缓存：资源根目录下所有舰娘目录名（拼音） */
@@ -275,6 +277,10 @@ object LocalSdResolver {
             }
         }
 
+        // 0.7 尾部标记变体优先匹配：舰娘名尾部带 CV/DOA/JP 等英文标记 → 匹配 `拼音_标记` 目录
+        // 与 LocalAvatarResolver.resolveTailMarkVariant 逻辑一致
+        resolveTailMarkVariant(shipName, index, dir)?.let { return it }
+
         // 尝试原始舰娘名匹配
         resolveByName(shipName, index, dir)?.let { return it }
 
@@ -319,9 +325,11 @@ object LocalSdResolver {
             }
 
             // 5. 舰娘全拼是资源目录名的前缀（资源用完整命名，舰娘名是简称）
+            // 排除皮肤后缀目录（如 changchun_g/），默认形态不应误匹配改造/META 等皮肤目录
             val reversePrefixMatch = index.firstOrNull { dirName ->
                 dirName.length >= fullPinyin.length &&
-                    dirName.startsWith(fullPinyin)
+                    dirName.startsWith(fullPinyin) &&
+                    !isExtendedSkinDir(dirName, fullPinyin)
             }
             if (reversePrefixMatch != null) {
                 Log.i(TAG, "Reverse prefix match: $shipName (pinyin=$fullPinyin) → dir=$reversePrefixMatch")
@@ -406,7 +414,10 @@ object LocalSdResolver {
     private fun resolveContainingVariant(pinyin: String, index: Set<String>): String? {
         if (pinyin.length < 3) return null
         val prefix = "${pinyin}_"
-        return index.firstOrNull { it.startsWith(prefix) }
+        return index.firstOrNull {
+            // 排除皮肤后缀目录（_g/_h/_alter 等），与 LocalAvatarResolver 逻辑一致
+            it.startsWith(prefix) && !isSkinSuffix(it.substringAfter('_').lowercase())
+        }
     }
 
     /**
@@ -670,6 +681,67 @@ object LocalSdResolver {
     }
 
     /**
+     * 尾部标记变体优先匹配：舰娘名尾部带英文/数字标记，资源目录用 `拼音_标记小写` 命名。
+     *
+     * 与 [LocalAvatarResolver.resolveTailMarkVariant] 逻辑一致：
+     * - "天城CV" → tiancheng_cv/（CV 联动天城，区别于默认天城 tiancheng/）
+     * - "霞(DOA)" / "霞DOA" → xia_doa/（DOA 联动霞，区别于重樱霞 xia/）
+     *
+     * 优先于目录名精确匹配执行，避免带标记舰娘错误回退到同名默认舰娘目录。
+     */
+    private fun resolveTailMarkVariant(shipName: String, index: Set<String>, dir: File): SdAssetInfo? {
+        val mark = extractTailMark(shipName) ?: return null
+        // 去除尾部标记（含可选括号）："霞(DOA)" → "霞"、"天城CV" → "天城"
+        val tailPattern = Regex("[(（]?${Regex.escape(mark)}[)）]?$")
+        val baseName = shipName.replaceFirst(tailPattern, "").trim()
+        if (baseName.isBlank() || baseName == shipName) return null
+        val markSuffix = "_${mark.lowercase()}"
+
+        // 1. MANUAL_MAP 基础名 + _标记
+        MANUAL_MAP[baseName]?.let { mapped ->
+            val key = "$mapped$markSuffix"
+            if (key in index) return buildAssetInfo(dir, key)
+        }
+
+        // 2. 基础名拼音 + _标记
+        val pinyin = PinyinHelper.toPinyin(baseName)
+        if (pinyin.isNotEmpty()) {
+            val key = "$pinyin$markSuffix"
+            if (key in index) return buildAssetInfo(dir, key)
+        }
+
+        // 3. 变体拼音 + _标记
+        for (variant in buildNameVariants(baseName)) {
+            MANUAL_MAP[variant]?.let { mapped ->
+                val key = "$mapped$markSuffix"
+                if (key in index) return buildAssetInfo(dir, key)
+            }
+            val variantPinyin = PinyinHelper.toPinyin(variant)
+            if (variantPinyin.isNotEmpty() && variantPinyin != pinyin) {
+                val key = "$variantPinyin$markSuffix"
+                if (key in index) return buildAssetInfo(dir, key)
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * 提取舰娘名尾部的英文标记（2-6 个字母，可带数字）。
+     * 与 [LocalAvatarResolver.extractTailMark] 逻辑一致。
+     */
+    private fun extractTailMark(shipName: String): String? {
+        // 1. 括号形式："霞(DOA)" / "霞（DOA）"
+        Regex("[(（]([A-Za-z]{2,6}[0-9]*)[)）]$").find(shipName)?.let {
+            return it.groupValues[1]
+        }
+        // 2. 直接拼接形式：英文尾部前必须有中文/·/. 等非英文字符，
+        // 避免 "Z23"、"HDN101" 这类纯英文数字舰名被误拆
+        val m = Regex("^(.*?[\\u4e00-\\u9fff·.])([A-Za-z]{2,6}[0-9]*)$").find(shipName)
+        return m?.groupValues?.get(2)
+    }
+
+    /**
      * 特殊变体优先匹配：根据舰娘名的特殊标记，映射到对应的 SD 资源目录后缀。
      *
      * 映射规则（与 [LocalAvatarResolver.resolveSpecialVariant] 一致）：
@@ -771,5 +843,41 @@ object LocalSdResolver {
         }
 
         return null
+    }
+
+    /**
+     * 判断目录名是否为 `拼音 + _皮肤后缀` 形式的皮肤目录。
+     *
+     * 用于策略5（舰娘全拼是目录名前缀）排除皮肤目录，例如：
+     * 舰娘 "长春"（pinyin=changchun）不应匹配 changchun_g/（改造目录）。
+     *
+     * @param dirName 资源目录名
+     * @param fullPinyin 舰娘全拼
+     * @return true 表示是皮肤目录（应跳过）
+     */
+    private fun isExtendedSkinDir(dirName: String, fullPinyin: String): Boolean {
+        if (dirName.length <= fullPinyin.length) return false
+        if (dirName[fullPinyin.length] != '_') return false
+        val suffix = dirName.substring(fullPinyin.length + 1).lowercase()
+        return isSkinSuffix(suffix)
+    }
+
+    /**
+     * 判断下划线后的部分是否为已知皮肤后缀。
+     * 与 [LocalAvatarResolver] 的皮肤后缀清单保持一致。
+     *
+     * 皮肤后缀清单：
+     * - `_h` 誓约婚皮、`_g` 改造、`_y` 特约、`_hx` 幻象、`_R` 镜像
+     * - `_alter` META、`_idol` μ兵装、`_younv` 幼女、`_super` 布里
+     * - `_2`/`_3`/`_4`/`_5` 换装编号
+     */
+    private fun isSkinSuffix(suffix: String): Boolean {
+        if (suffix.isEmpty()) return false
+        // 纯数字（换装编号 _2/_3/_12 等）
+        if (suffix.all { it.isDigit() }) return true
+        return when (suffix) {
+            "h", "g", "y", "r", "hx", "alter", "idol", "younv", "super" -> true
+            else -> false
+        }
     }
 }

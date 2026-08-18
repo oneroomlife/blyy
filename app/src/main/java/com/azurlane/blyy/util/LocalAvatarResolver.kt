@@ -84,9 +84,9 @@ object LocalAvatarResolver {
         "苏维埃同盟" to "suweiaitongmengnew",
         "拉·加利索尼埃" to "jialisuoniye",
         "拉·加利索尼埃·META" to "jialisuoniye_alter",
-	"特装型布里MKIII" to "kin",
-        "试作型布里MKII" to "gin",
-        "泛用型布里" to "buli_super",
+	    "特装型布里MKIII" to "buli_super",
+        "试作型布里MKII" to "kin",
+        "泛用型布里" to "gin",
         "玛丽·西莱斯特号" to "mali",
 
         "威廉·D·波特" to "bote",
@@ -101,7 +101,9 @@ object LocalAvatarResolver {
 
         "曾克海军上将" to "zengkehaijunshangjiang",
         "BLACK★ROCK" to "heiyansheshou",
-        "天城CV" to "tiancheng_cv"
+        "天城CV" to "tiancheng_cv",
+        // META 特殊命名（mid 前缀，区别于普通赤城）
+        "赤城·META" to "midchicheng_alter"
     )
 
     /**
@@ -158,6 +160,13 @@ object LocalAvatarResolver {
                     return it
                 }
             }
+        }
+
+        // 0.7 尾部标记变体优先匹配：舰娘名尾部带 CV/DOA/JP 等英文标记 → 匹配 `拼音_标记` 文件
+        // 避免 "天城CV" 错误回退到默认天城 tiancheng，"霞(DOA)" 错配重樱霞 xia
+        resolveTailMarkVariant(context, shipName)?.let {
+            Log.i(TAG, "[MATCH] '$shipName' -> tail mark variant: $it")
+            return it
         }
 
         // 1. 原始舰娘名小写精确匹配
@@ -372,6 +381,12 @@ object LocalAvatarResolver {
         val index = ensureIndex(context)
         if (index.isEmpty()) return null
 
+        // 0. MANUAL_MAP 优先：舰娘名在手动映射表中时，用映射值 + _h
+        // 典型案例："威廉·D·波特" → bote_h、"苏维埃同盟" → suweiaitongmengnew_h
+        MANUAL_MAP[shipName]?.let { mapped ->
+            index["$mapped$OATH_SKIN_SUFFIX"]?.let { return buildAssetUri(it) }
+        }
+
         // 1. 原始舰娘名 + _h
         index["${shipName.lowercase()}$OATH_SKIN_SUFFIX"]?.let { return buildAssetUri(it) }
 
@@ -383,6 +398,9 @@ object LocalAvatarResolver {
 
         // 3. 去后缀变体 + _h
         for (variant in buildVariants(shipName)) {
+            MANUAL_MAP[variant]?.let { mapped ->
+                index["$mapped$OATH_SKIN_SUFFIX"]?.let { return buildAssetUri(it) }
+            }
             index["${variant.lowercase()}$OATH_SKIN_SUFFIX"]?.let { return buildAssetUri(it) }
             val variantPinyin = PinyinHelper.toPinyin(variant)
             if (variantPinyin.isNotEmpty() && variantPinyin != pinyin) {
@@ -433,6 +451,76 @@ object LocalAvatarResolver {
         }
 
         return null
+    }
+
+    /**
+     * 尾部标记变体优先匹配：舰娘名尾部带英文/数字标记，资源文件用 `拼音_标记小写` 命名。
+     *
+     * 典型案例（实际文件名验证）：
+     * - "天城CV" → tiancheng_cv（CV 联动天城，区别于默认天城 tiancheng）
+     * - "霞(DOA)" / "霞DOA" → xia_doa（DOA 联动霞，区别于重樱霞 xia）
+     * - "新月JP" → xinyue_jp
+     *
+     * 优先于拼音精确匹配执行，避免带标记舰娘错误回退到同名默认舰娘。
+     *
+     * @return 尾部标记变体头像 URI，不匹配返回 null
+     */
+    private fun resolveTailMarkVariant(context: Context, shipName: String): String? {
+        val mark = extractTailMark(shipName) ?: return null
+        // 去除尾部标记（含可选括号）："霞(DOA)" → "霞"、"天城CV" → "天城"
+        val tailPattern = Regex("[(（]?${Regex.escape(mark)}[)）]?$")
+        val baseName = shipName.replaceFirst(tailPattern, "").trim()
+        if (baseName.isBlank() || baseName == shipName) return null
+
+        val index = ensureIndex(context)
+        if (index.isEmpty()) return null
+        val markSuffix = "_${mark.lowercase()}"
+
+        // 1. MANUAL_MAP 基础名 + _标记
+        MANUAL_MAP[baseName]?.let { mapped ->
+            index["$mapped$markSuffix"]?.let { return buildAssetUri(it) }
+        }
+
+        // 2. 基础名拼音 + _标记
+        val pinyin = PinyinHelper.toPinyin(baseName)
+        if (pinyin.isNotEmpty()) {
+            index["$pinyin$markSuffix"]?.let { return buildAssetUri(it) }
+        }
+
+        // 3. 变体拼音 + _标记
+        for (variant in buildVariants(baseName)) {
+            MANUAL_MAP[variant]?.let { mapped ->
+                index["$mapped$markSuffix"]?.let { return buildAssetUri(it) }
+            }
+            val variantPinyin = PinyinHelper.toPinyin(variant)
+            if (variantPinyin.isNotEmpty() && variantPinyin != pinyin) {
+                index["$variantPinyin$markSuffix"]?.let { return buildAssetUri(it) }
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * 提取舰娘名尾部的英文标记（2-6 个字母，可带数字）。
+     *
+     * 支持两种形式：
+     * - 括号形式："霞(DOA)" / "霞（DOA）" → "DOA"
+     * - 直接拼接形式（标记前必须有非英文字符，避免吞掉纯英文名）："天城CV" → "CV"、"霞DOA" → "DOA"
+     *
+     * 返回 null 的情况：
+     * - 纯英文数字舰名（如 "Z23"、"HDN101"）—— 整体是舰名而非标记
+     * - 尾部无英文标记（如 "博格"、"滨风.改"）
+     */
+    private fun extractTailMark(shipName: String): String? {
+        // 1. 括号形式："霞(DOA)" / "霞（DOA）"
+        Regex("[(（]([A-Za-z]{2,6}[0-9]*)[)）]$").find(shipName)?.let {
+            return it.groupValues[1]
+        }
+        // 2. 直接拼接形式：英文尾部前必须有中文/·/. 等非英文字符，
+        // 避免 "Z23"、"HDN101" 这类纯英文数字舰名被误拆
+        val m = Regex("^(.*?[\\u4e00-\\u9fff·.])([A-Za-z]{2,6}[0-9]*)$").find(shipName)
+        return m?.groupValues?.get(2)
     }
 
     /**
@@ -514,7 +602,12 @@ object LocalAvatarResolver {
         if (pinyin.length < 3) return null
         val prefix = "${pinyin}_"
         return index.entries
-            .firstOrNull { (key, _) -> key.startsWith(prefix) }
+            .firstOrNull { (key, _) ->
+                // 排除皮肤后缀文件（_h/_g/_alter/_数字等），
+                // 默认形态不应误匹配改造/婚皮/换装文件
+                // 典型案例：舰娘"霞"不应匹配 xia_g（改造）/ xia_alter（META）
+                key.startsWith(prefix) && !isSkinSuffix(key.substringAfter('_').lowercase())
+            }
             ?.value
     }
 
@@ -585,7 +678,7 @@ object LocalAvatarResolver {
         // 纯数字（换装编号 _2/_3/_12 等）
         if (suffix.all { it.isDigit() }) return true
         return when (suffix) {
-            "h", "g", "y", "hx", "R", "alter", "idol", "younv", "super" -> true
+            "h", "g", "y", "r", "hx", "alter", "idol", "younv", "super" -> true
             else -> false
         }
     }
