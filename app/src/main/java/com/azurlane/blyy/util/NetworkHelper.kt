@@ -3,18 +3,11 @@ package com.azurlane.blyy.util
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.jsoup.HttpStatusException
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -22,9 +15,7 @@ import javax.inject.Singleton
 private const val TAG = "NetworkHelper"
 
 @Singleton
-class NetworkHelper @Inject constructor(
-    private val okHttpClient: OkHttpClient
-) {
+class NetworkHelper @Inject constructor() {
 
     private val userAgents = listOf(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -37,9 +28,6 @@ class NetworkHelper @Inject constructor(
     private val lastRequestTime = AtomicLong(0L)
     private val minRequestInterval = 500L
     private val rateLimitMutex = Mutex()
-
-    private val _isRateLimited = MutableStateFlow(false)
-    val isRateLimited: StateFlow<Boolean> = _isRateLimited.asStateFlow()
 
     private fun getRandomUserAgent(): String {
         return userAgents.random()
@@ -56,7 +44,7 @@ class NetworkHelper @Inject constructor(
             lastRequestTime.set(System.currentTimeMillis())
         }
     }
-    
+
     suspend fun fetchDocument(
         url: String,
         maxRetries: Int = 3,
@@ -98,7 +86,6 @@ class NetworkHelper @Inject constructor(
                     CacheManager.put(CacheNamespaces.HTML_DOCUMENT, url, doc)
                 }
 
-                _isRateLimited.value = false
                 Log.d(TAG, "Successfully fetched: $url")
                 return@withContext Result.success(doc)
 
@@ -108,16 +95,12 @@ class NetworkHelper @Inject constructor(
 
                 when {
                     e.message?.contains("403") == true || e.message?.contains("567") == true -> {
-                        _isRateLimited.value = true
-                        val backoffTime = (attempt + 1) * 2000L
-                        Log.w(TAG, "Rate limited, backing off for ${backoffTime}ms")
-                        delay(backoffTime)
+                        // 被反爬拦截：指数退避后重试
+                        delay((attempt + 1) * 2000L)
                     }
                     e.message?.contains("429") == true -> {
-                        _isRateLimited.value = true
-                        val backoffTime = (attempt + 1) * 5000L
-                        Log.w(TAG, "Too many requests, backing off for ${backoffTime}ms")
-                        delay(backoffTime)
+                        // 请求过于频繁：更长的退避
+                        delay((attempt + 1) * 5000L)
                     }
                     else -> {
                         delay((attempt + 1) * 1000L)
@@ -128,81 +111,5 @@ class NetworkHelper @Inject constructor(
 
         Log.e(TAG, "All retries exhausted for: $url")
         Result.failure(lastException ?: Exception("Unknown error"))
-    }
-
-    suspend fun fetchImage(
-        url: String,
-        maxRetries: Int = 3,
-        useCache: Boolean = true
-    ): Result<ByteArray> = withContext(Dispatchers.IO) {
-        if (useCache) {
-            val cached = CacheManager.get<ByteArray>(CacheNamespaces.IMAGE_DATA, url)
-            if (cached != null) {
-                Log.d(TAG, "Image cache hit for: $url")
-                return@withContext Result.success(cached)
-            }
-        }
-
-        var lastException: Exception? = null
-
-        repeat(maxRetries) { attempt ->
-            try {
-                enforceRateLimit()
-
-                val request = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", getRandomUserAgent())
-                    .header("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
-                    .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                    .header("Referer", "https://wiki.biligame.com/")
-                    .build()
-
-                // okHttpClient.newCall().execute() 为阻塞式 HTTP 调用，必须运行在 IO 线程
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        throw Exception("HTTP ${response.code}")
-                    }
-
-                    val bytes = response.body?.bytes() ?: throw Exception("Empty response")
-
-                    if (useCache) {
-                        CacheManager.put(CacheNamespaces.IMAGE_DATA, url, bytes)
-                    }
-
-                    Log.d(TAG, "Successfully fetched image: $url")
-                    return@withContext Result.success(bytes)
-                }
-
-            } catch (e: Exception) {
-                lastException = e
-                Log.w(TAG, "Image fetch attempt ${attempt + 1} failed for $url: ${e.message}")
-                delay((attempt + 1) * 1500L)
-            }
-        }
-
-        Result.failure(lastException ?: Exception("Unknown error"))
-    }
-    
-    fun clearCache() {
-        CacheManager.clearNamespace(CacheNamespaces.HTML_DOCUMENT)
-        CacheManager.clearNamespace(CacheNamespaces.IMAGE_DATA)
-        Log.d(TAG, "Cache cleared")
-    }
-    
-    fun clearExpiredCache() {
-        CacheManager.clearExpired()
-        Log.d(TAG, "Expired cache entries cleared")
-    }
-    
-    fun getCacheStats(): Pair<Int, Int> {
-        val stats = CacheManager.getStats()
-        return Pair(
-            stats[CacheNamespaces.HTML_DOCUMENT] ?: 0,
-            stats[CacheNamespaces.IMAGE_DATA] ?: 0
-        )
-    }
-    
-    fun preloadImages(urls: List<String>) {
-        Log.d(TAG, "Preloading ${urls.size} images")
     }
 }

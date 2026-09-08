@@ -34,6 +34,7 @@ import com.azurlane.blyy.ui.components.BlyyTabRow
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.MedalColors
 import com.azurlane.blyy.viewmodel.LeaderboardViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -238,12 +239,11 @@ private fun LeaderboardRankCard(
     isCurrentUser: Boolean,
     modifier: Modifier = Modifier
 ) {
-    // 前三名渐变色（金/银/铜），其余使用主题中性色
-    // rankColors 缓存：前三名颜色固定可 remember(rank)；其余依赖 MaterialTheme 需每次读取
+    // 前三名渐变色（金/银/铜）统一归口 MedalColors，其余使用主题中性色
     val rankColors = when (rank) {
-        1 -> remember(rank) { listOf(Color(0xFFFFD700), Color(0xFFFFA500)) }
-        2 -> remember(rank) { listOf(Color(0xFFC0C0C0), Color(0xFFA0A0A0)) }
-        3 -> remember(rank) { listOf(Color(0xFFCD7F32), Color(0xFFB87333)) }
+        1 -> MedalColors.GoldGradient
+        2 -> MedalColors.SilverGradient
+        3 -> MedalColors.BronzeGradient
         else -> listOf(
             MaterialTheme.colorScheme.surfaceVariant,
             MaterialTheme.colorScheme.surfaceVariant

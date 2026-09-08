@@ -495,7 +495,6 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setAiVoiceEnabled(enabled: Boolean) { context.dataStore.edit { it[AI_VOICE_ENABLED_KEY] = enabled } }
     suspend fun setAiVoiceRandomChance(chance: Float) { context.dataStore.edit { it[AI_VOICE_RANDOM_CHANCE_KEY] = chance.coerceIn(0f, 1f) } }
     suspend fun setAiVoiceKeywords(keywords: String) { context.dataStore.edit { it[AI_VOICE_KEYWORDS_KEY] = keywords } }
-    suspend fun setAiChatHistory(history: String) { context.dataStore.edit { it[AI_CHAT_HISTORY_KEY] = history } }
     suspend fun setAiModel(model: String) { context.dataStore.edit { it[AI_MODEL_KEY] = model } }
     suspend fun setAiVoiceShipName(name: String) { context.dataStore.edit { it[AI_VOICE_SHIP_NAME_KEY] = name } }
     suspend fun setAiVoiceShipAvatar(avatar: String) { context.dataStore.edit { it[AI_VOICE_SHIP_AVATAR_KEY] = avatar } }

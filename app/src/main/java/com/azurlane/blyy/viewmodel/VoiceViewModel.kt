@@ -15,6 +15,7 @@ import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
+import com.azurlane.blyy.service.whenReady
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,6 +85,15 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     private val _studentLink = MutableStateFlow("")
     private var figureSyncJob: Job? = null
 
+    /** ViewModel 是否已销毁 — 防止销毁后 listener 才被挂到共享 MediaController 上造成泄漏 */
+    private var cleared = false
+
+    /** playerListener 是否已成功挂载到共享 MediaController 上 */
+    private var listenerAttached = false
+
+    /** 串行化 listener 的挂载/卸载决策，彻底封死 attach 与 onCleared 之间的竞态 */
+    private val listenerLock = Any()
+
     companion object {
         private const val TAG = "VoiceViewModel"
         /** 最大重试次数 */
@@ -94,10 +104,12 @@ class VoiceViewModel @OptIn(UnstableApi::class)
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            android.util.Log.d(TAG, "VV onIsPlayingChanged: $isPlaying")
             _isPlaying.value = isPlaying
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            android.util.Log.d(TAG, "VV onMediaItemTransition: ${mediaItem?.mediaId}")
             mediaItem?.mediaId?.let { mediaId ->
                 val voices = state.value.voices
                 val index = voices.indexOfFirst {
@@ -128,10 +140,21 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     }
 
     init {
+        // 修复监听器泄漏竞态：若 ViewModel 在 Future 完成前销毁，原实现会在
+        // onCleared 之后才把 playerListener 挂到共享 MediaController 上，
+        // 导致 listener 永久残留在单例连接上（每次进出语音页泄漏一个）。
+        // 挂载/卸载决策均在 listenerLock 内进行，封死并发窗口。
         playbackServiceConnection.mediaController.addListener({
-            playbackServiceConnection.mediaController.get()?.addListener(playerListener)
+            val controller = playbackServiceConnection.mediaController.get()
+            android.util.Log.d(TAG, "VV future completed, controller=$controller")
+            synchronized(listenerLock) {
+                if (!cleared && controller != null) {
+                    controller.addListener(playerListener)
+                    listenerAttached = true
+                }
+            }
         }, MoreExecutors.directExecutor())
-        
+
         viewModelScope.launch {
             settingsDataStore.voiceLanguage.collect { lang ->
                 _voiceLanguage.value = lang
@@ -202,13 +225,12 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     }
 
     private fun onController(command: (Player) -> Unit) {
-        val mediaControllerFuture = playbackServiceConnection.mediaController
-        mediaControllerFuture.addListener({
-            val controller = mediaControllerFuture.get()
-            if (controller != null) {
-                command(controller)
-            }
-        }, MoreExecutors.directExecutor())
+        // 通过 whenReady 回调执行：Future 完成后 get() 立即返回，不阻塞主线程
+        playbackServiceConnection.mediaController.whenReady(
+            canceled = { cleared }
+        ) { controller ->
+            command(controller)
+        }
     }
 
     private fun togglePlayPause() {
@@ -326,7 +348,9 @@ class VoiceViewModel @OptIn(UnstableApi::class)
                 val result = getVoicesUseCase(shipName)
                 _voices.value = result.first
                 _figureUrl.value = result.second
-                _wikiUrl.value = "https://wiki.biligame.com/blhx/${java.net.URLEncoder.encode(shipName, "UTF-8")}"
+                // Uri.encode 而非 URLEncoder.encode：后者会把空格编码为 "+"（表单编码），
+                // 出现在 URL 路径中会被服务器拒绝；Uri.encode 编码为 "%20" 才是路径编码
+                _wikiUrl.value = "https://wiki.biligame.com/blhx/${android.net.Uri.encode(shipName)}"
             } catch (e: Exception) {
                 _error.value = e.message ?: "加载语音失败"
             } finally {
@@ -436,7 +460,18 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     }
 
     override fun onCleared() {
+        // 与 init 中的挂载回调互斥：确保"挂载决策"与"卸载决策"串行化。
+        // 若 listener 已挂载则安排移除；若尚未挂载，cleared 标记会让挂载回调直接跳过。
+        // 不直接调用 mediaController.get()：Future 未完成时会阻塞主线程。
+        synchronized(listenerLock) {
+            cleared = true
+            if (listenerAttached) {
+                playbackServiceConnection.mediaController.addListener({
+                    playbackServiceConnection.mediaController.get()?.removeListener(playerListener)
+                    synchronized(listenerLock) { listenerAttached = false }
+                }, MoreExecutors.directExecutor())
+            }
+        }
         super.onCleared()
-        playbackServiceConnection.mediaController.get()?.removeListener(playerListener)
     }
 }

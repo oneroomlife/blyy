@@ -2,8 +2,6 @@ package com.azurlane.blyy.util
 
 import android.util.Log
 import java.util.LinkedHashMap
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 object CacheManager {
     private const val TAG = "CacheManager"
@@ -79,21 +77,10 @@ object CacheManager {
         }
     }
 
-    fun <T> getOrPut(namespace: String, key: String, expiresInMs: Long = DEFAULT_EXPIRE_TIME_MS, loader: () -> T): T {
-        synchronized(lock) {
-            val cached = get<T>(namespace, key)
-            if (cached != null) return cached
-            
-            val data = loader()
-            put(namespace, key, data, expiresInMs)
-            return data
-        }
-    }
-
     suspend fun <T> getOrPutSuspend(namespace: String, key: String, expiresInMs: Long = DEFAULT_EXPIRE_TIME_MS, loader: suspend () -> T): T {
         val cached = get<T>(namespace, key)
         if (cached != null) return cached
-        
+
         val data = loader()
         put(namespace, key, data, expiresInMs)
         return data
@@ -104,41 +91,6 @@ object CacheManager {
             val cache = getOrCreateCache<Any>(namespace)
             cache.remove(key)
             Log.d(TAG, "Cache removed: $namespace/$key")
-        }
-    }
-
-    fun clearNamespace(namespace: String) {
-        synchronized(lock) {
-            caches.remove(namespace)
-            Log.d(TAG, "Cache namespace cleared: $namespace")
-        }
-    }
-
-    fun clearAll() {
-        synchronized(lock) {
-            caches.clear()
-            Log.d(TAG, "All caches cleared")
-        }
-    }
-
-    fun clearExpired() {
-        synchronized(lock) {
-            caches.forEach { (namespace, cache) ->
-                cache.entries.removeIf { it.value.isExpired() }
-            }
-            Log.d(TAG, "Expired cache entries cleared")
-        }
-    }
-
-    fun getStats(): Map<String, Int> {
-        synchronized(lock) {
-            return caches.mapValues { it.value.size }
-        }
-    }
-
-    fun getTotalSize(): Int {
-        synchronized(lock) {
-            return caches.values.sumOf { it.size }
         }
     }
 }

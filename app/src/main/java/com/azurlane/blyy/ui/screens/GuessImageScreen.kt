@@ -96,7 +96,6 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
-import com.azurlane.blyy.ui.theme.GameStyles
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.viewmodel.GuessGameUiState
@@ -755,9 +754,9 @@ private fun ModernInputField(
         onValueChange = onValueChange,
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
-            .shadow(6.dp, RoundedCornerShape(20.dp)),
-        placeholder = { 
+            .height(AppSpacing.Game.Input.Height)
+            .shadow(6.dp, RoundedCornerShape(AppSpacing.Game.Input.CornerSize)),
+        placeholder = {
             Text(
                 "输入舰娘名字...",
                 style = AppTypography.BodyMedium,
@@ -765,7 +764,7 @@ private fun ModernInputField(
             )
         },
         singleLine = true,
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(AppSpacing.Game.Input.CornerSize),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = MaterialTheme.colorScheme.primary,
             unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
@@ -798,10 +797,10 @@ private fun ModernPrimaryButton(
     Button(
         onClick = onClick,
         modifier = modifier
-            .height(52.dp)
+            .height(AppSpacing.Game.Button.Height)
             .scale(scale),
         enabled = enabled,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(AppSpacing.Game.Button.CornerSize),
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -812,7 +811,7 @@ private fun ModernPrimaryButton(
         )
     ) {
         icon?.let {
-            Icon(it, contentDescription = null, modifier = Modifier.size(20.dp))
+            Icon(it, contentDescription = null, modifier = Modifier.size(AppSpacing.Game.Button.IconSize))
             Spacer(Modifier.width(6.dp))
         }
         Text(text, style = AppTypography.LabelLarge)
@@ -828,8 +827,8 @@ private fun ModernOutlinedButton(
 ) {
     OutlinedButton(
         onClick = onClick,
-        modifier = modifier.height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+        modifier = modifier.height(AppSpacing.Game.Button.Height),
+        shape = RoundedCornerShape(AppSpacing.Game.Button.CornerSize),
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = MaterialTheme.colorScheme.primary
         )
@@ -852,7 +851,7 @@ private fun ModernSettlementDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(AppSpacing.Corner.Dialog),
         containerColor = MaterialTheme.colorScheme.surface,
         icon = {
             Box(

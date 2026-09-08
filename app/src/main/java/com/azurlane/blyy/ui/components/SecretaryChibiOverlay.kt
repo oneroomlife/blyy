@@ -58,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.ChatColors
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.SDResourceManager
@@ -666,7 +667,7 @@ fun SecretaryOverlayAuxiliaryContent(
 
 @Composable
 internal fun SecretarySpeechBubble(text: String, isDark: Boolean) {
-    val bubbleColor = if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
+    val bubbleColor = if (isDark) ChatColors.SpeechBubbleDark else ChatColors.SpeechBubbleLight
     val textColor = if (isDark) Color.White else Color.Black
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {

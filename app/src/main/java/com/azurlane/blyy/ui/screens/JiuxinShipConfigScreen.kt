@@ -71,6 +71,7 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.StableOutlinedTextField
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.ChatColors
 import com.azurlane.blyy.ui.theme.JuusPalette
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.viewmodel.ConnectionTestState
@@ -107,7 +108,7 @@ fun JiuxinShipConfigScreen(
     // 与 JiuxinConfigScreen 保持一致的暗色适配策略
     val isDark = LocalIsDark.current
     // 连接成功状态色：暗色模式下使用更亮的绿色，确保在深色面板背景上对比度 ≥ 4.5:1
-    val successColor = if (isDark) Color(0xFF7FE09B) else Color(0xFF2E7D32)
+    val successColor = if (isDark) ChatColors.SuccessDark else ChatColors.SuccessLight
     val selectedBg = primaryColor.copy(alpha = 0.08f)
     val selectedBorder = primaryColor.copy(alpha = 0.3f)
     val cardRounded = RoundedCornerShape(AppSpacing.Corner.Md)

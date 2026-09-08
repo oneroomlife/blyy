@@ -40,7 +40,6 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -74,6 +73,7 @@ import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyErrorState
 import com.azurlane.blyy.ui.components.BlyyLoadingState
 import com.azurlane.blyy.ui.components.BlyyPanel
+import com.azurlane.blyy.ui.components.BlyySpeechBubble
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
@@ -1914,7 +1914,7 @@ private fun DraggableFigure(
                 .size(bubbleWidth, bubbleMaxHeight)
         ) {
             Box(contentAlignment = Alignment.BottomCenter) {
-                SpeechBubble(text = dialogue ?: "", isDark = isDark)
+                BlyySpeechBubble(text = dialogue ?: "", isDark = isDark)
             }
         }
 
@@ -1971,46 +1971,6 @@ private fun DraggableFigure(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun SpeechBubble(text: String, isDark: Boolean) {
-    val bubbleColor = if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
-    val textColor = if (isDark) Color.White else Color.Black
-    
-    val hPadding = if (text.length > 40) 16.dp else 12.dp
-    val vPadding = if (text.length > 40) 10.dp else 8.dp
-    val cornerRadius = if (text.length > 60) 16.dp else 12.dp
-
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Surface(
-            shape = RoundedCornerShape(cornerRadius),
-            color = bubbleColor,
-            tonalElevation = 4.dp,
-            shadowElevation = 8.dp,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
-        ) {
-            Text(
-                text = text,
-                modifier = Modifier.padding(horizontal = hPadding, vertical = vPadding),
-                style = AppTypography.BodySmallMedium.copy(
-                    fontSize = if (text.length > 80) 11.sp else 13.sp,
-                    lineHeight = if (text.length > 80) 15.sp else 18.sp
-                ),
-                color = textColor,
-                textAlign = TextAlign.Center
-            )
-        }
-        Canvas(modifier = Modifier.size(12.dp, 6.dp)) {
-            val path = Path().apply {
-                moveTo(0f, 0f)
-                lineTo(size.width, 0f)
-                lineTo(size.width / 2, size.height)
-                close()
-            }
-            drawPath(path, color = bubbleColor)
         }
     }
 }

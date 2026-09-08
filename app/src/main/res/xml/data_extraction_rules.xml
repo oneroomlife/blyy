@@ -1,19 +1,16 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+（API 31+）的数据提取规则。
+
+    安全策略：云备份与设备间迁移均排除 DataStore 文件
+    （player_settings.preferences_pb）。该文件包含 AI API Key、
+    啾信聊天会话与历史消息等敏感数据，不应随备份外发。
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <exclude domain="file" path="datastore/player_settings.preferences_pb" />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="file" path="datastore/player_settings.preferences_pb" />
     </device-transfer>
-    -->
 </data-extraction-rules>

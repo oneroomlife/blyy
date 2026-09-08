@@ -161,6 +161,15 @@ private const val LOAD_TIMEOUT_MS = 45_000L
 private const val STUCK_CHECK_INTERVAL_MS = 5_000L
 private const val STUCK_THRESHOLD_MS = 15_000L
 
+/** 全屏覆盖层（加载/错误/SSL 警告）共用底色与警示色 — 归口管理避免三处重复 */
+private object Live2DOverlayColors {
+    val BgDark = Color(0xFF0D1117)
+    val BgLight = Color(0xFFF6F8FA)
+    // 浅色模式用更深的橙色确保 WCAG AA 对比度（Orange 500 在浅背景仅 ~2:1，Orange 900 达 ~5:1）
+    val WarningDark = Color(0xFFFF9800)
+    val WarningLight = Color(0xFFE65100)
+}
+
 // AnimatedContent phase 切换动画规格 — 提到顶级避免每次重组都新建 2 个 tween 实例
 private val PhaseInSpec = tween<Float>(400, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
 private val PhaseOutSpec = tween<Float>(350)
@@ -2085,7 +2094,7 @@ private fun RenderProcessGoneDetail?.toFriendlyMessage(): String =
 @Composable
 private fun LoadingOverlay(progress: Int) {
     val isDark = LocalIsDark.current
-    val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
+    val bgColor = if (isDark) Live2DOverlayColors.BgDark else Live2DOverlayColors.BgLight
     val boundedProgress = progress.coerceIn(0, COMPLETE_PROGRESS)
 
     Box(
@@ -2122,7 +2131,7 @@ private fun ErrorOverlay(
     onOpenInBrowser: () -> Unit
 ) {
     val isDark = LocalIsDark.current
-    val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
+    val bgColor = if (isDark) Live2DOverlayColors.BgDark else Live2DOverlayColors.BgLight
     Box(
         modifier = Modifier.fillMaxSize().background(bgColor).padding(AppSpacing.Xxl),
         contentAlignment = Alignment.Center
@@ -2188,9 +2197,8 @@ private fun SslWarningOverlay(
     onCopyError: () -> Unit
 ) {
     val isDark = LocalIsDark.current
-    val bgColor = if (isDark) Color(0xFF0D1117) else Color(0xFFF6F8FA)
-    // 浅色模式用更深的橙色确保 WCAG AA 对比度（Orange 500 在浅背景仅 ~2:1，Orange 900 达 ~5:1）
-    val warningColor = if (isDark) Color(0xFFFF9800) else Color(0xFFE65100)
+    val bgColor = if (isDark) Live2DOverlayColors.BgDark else Live2DOverlayColors.BgLight
+    val warningColor = if (isDark) Live2DOverlayColors.WarningDark else Live2DOverlayColors.WarningLight
 
     Box(
         modifier = Modifier.fillMaxSize().background(bgColor),

@@ -425,7 +425,7 @@ private fun SdResourceCard(
                         Spacer(modifier = Modifier.width(2.dp))
                         Text(
                             text = if (resource.isSpine) "动画" else "图片",
-                            style = AppTypography.LabelSmall.copy(fontSize = 9.sp),
+                            style = AppTypography.CardLabel,
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold
                         )
@@ -463,7 +463,7 @@ private fun SdResourceCard(
                     ) {
                         Text(
                             text = "自定义",
-                            style = AppTypography.LabelSmall.copy(fontSize = 9.sp),
+                            style = AppTypography.CardLabel,
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.padding(horizontal = AppSpacing.Xs, vertical = 2.dp)

@@ -98,21 +98,6 @@ sealed class JiuxinApiError(
 sealed class JiuxinApiResult<out T> {
     data class Success<T>(val content: T) : JiuxinApiResult<T>()
     data class Failure(val error: JiuxinApiError) : JiuxinApiResult<Nothing>()
-
-    /** 成功则返回内容，失败则抛出 [JiuxinApiError]（兼容旧调用方 throw 风格） */
-    fun getOrThrow(): T = when (this) {
-        is Success -> content
-        is Failure -> throw error
-    }
-
-    /** 成功则返回内容，失败则返回 null */
-    fun getOrNull(): T? = (this as? Success)?.content
-
-    /** 转为 Result<T>（kotlin.standard） */
-    fun toKtResult(): Result<T> = when (this) {
-        is Success -> Result.success(content)
-        is Failure -> Result.failure(error)
-    }
 }
 
 /**
@@ -324,11 +309,6 @@ class JiuxinApiRepository @Inject constructor(
         if (trimmed.endsWith("/chat/completions", ignoreCase = true)) return trimmed
         return "$trimmed/chat/completions"
     }
-
-    /**
-     * 辅助：解析错误响应体的友好信息（暴露给 ViewModel 用于连接测试等场景）。
-     */
-    fun parseErrorBody(body: String): String = JiuxinResponseParser.parseErrorMessage(body)
 
     // ── 模型列表拉取 ──
 

@@ -1,13 +1,11 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    旧设备（API < 31）的自动备份规则。
+
+    安全策略：排除 DataStore 文件（player_settings.preferences_pb）。
+    该文件包含 AI API Key、啾信聊天会话与历史消息等敏感数据，
+    云备份/设备迁移不应携带明文密钥与私密对话。
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="file" path="datastore/player_settings.preferences_pb" />
 </full-backup-content>

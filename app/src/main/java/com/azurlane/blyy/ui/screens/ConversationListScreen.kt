@@ -5,6 +5,7 @@ package com.azurlane.blyy.ui.screens
 // 第五轮优化：删除筛选/管理UI、长按进入编辑模式、设置图标跳转、玻璃质感设计
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -81,66 +82,14 @@ import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.data.model.ApiConfig
 import com.azurlane.blyy.data.model.PersonaConfig
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
+import com.azurlane.blyy.ui.theme.AppAnimation
+import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.JuusPalette
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.viewmodel.JiuxinViewModel
 
-// ── JUUSTAGRAM 会话列表页色板（玻璃质感设计） ──
-private object JuusListColors {
-    // 背景渐变
-    val BgGradientStart = Color(0xFFD6EFFF)
-    val BgGradientEnd = Color(0xFFE8F4FE)
-
-    val Primary = JuusPalette.Primary
-    val PrimaryLight = JuusPalette.PrimaryLight
-    val TextPrimary = JuusPalette.TextPrimary
-    val TextSecondary = JuusPalette.TextSecondary
-    val TextTertiary = JuusPalette.TextTertiary
-    val Divider = JuusPalette.Divider
-
-    // 导航栏渐变
-    val NavGradientTop = Color(0xFF7DD3FC)
-    val NavGradientBottom = Color(0xFF38BDF8)
-
-    // 玻璃表面 — 提高不透明度补偿移除阴影后的深度感
-    val GlassCard = Color(0xD9FFFFFF)          // 85% 白 — 通透且有实体感
-    val GlassCardSelected = Color(0xF0F0F7FF)   // 94% 白微蓝 — 选中态
-    val GlassHeader = Color(0xE6FFFFFF)         // 90% 白 — 明亮玻璃胶囊
-    val GlassPill = Color(0x99FFFFFF)           // 60% 白
-    val GlassEditBadge = Color(0x335BA4E6)
-    val ChannelEmojiBg = Color(0x33BAE6FD)
-    val ErrorRed = Color(0xFFE53935)
-
-    // 玻璃边框 — 仅用极淡白色提供边缘定义，不与shadow叠加
-    val GlassBorder = Color(0x33FFFFFF)         // 20% 白 — 极淡边框
-    val GlassBorderSelected = Color(0x665BA4E6) // 40% 蓝 — 选中态
-    // 玻璃高光 — 顶部内边缘模拟光反射
-    val GlassHighlight = Color(0x55FFFFFF)      // 33% 白 — 顶部高光
-
-    object Dark {
-        val BgGradientStart = Color(0xFF0A1525)
-        val BgGradientEnd = Color(0xFF102035)
-
-        val Primary = JuusPalette.Dark.Primary
-        val PrimaryLight = JuusPalette.Dark.PrimaryLight
-        val TextPrimary = JuusPalette.Dark.TextPrimary
-        val TextSecondary = JuusPalette.Dark.TextSecondary
-        val TextTertiary = JuusPalette.Dark.TextTertiary
-        val Divider = JuusPalette.Dark.Divider
-
-        val GlassCard = Color(0xCC1E293B)
-        val GlassCardSelected = Color(0xE6243B55)
-        val GlassHeader = Color(0xE61E293B)
-        val GlassPill = Color(0x991E293B)
-        val GlassEditBadge = Color(0x335BA4E6)
-        val ChannelEmojiBg = Color(0x33243559)
-        val ErrorRed = Color(0xFFFF6B6B)
-
-        val GlassBorder = Color(0x15FFFFFF)
-        val GlassBorderSelected = Color(0x405BA4E6)
-        val GlassHighlight = Color(0x22FFFFFF)
-    }
-}
+// ── JUUSTAGRAM 会话列表页 ──
+// 色板统一归口到 ui/theme/Color.kt 的 JuusPalette.ListPage（含 Dark 子对象）
 
 /**
  * JUUSTAGRAM 会话列表页（玻璃质感设计）
@@ -191,11 +140,11 @@ fun ConversationListScreen(
     // 背景渐变
     val bgGradient = Brush.verticalGradient(
         colors = listOf(
-            if (isDark) JuusListColors.Dark.BgGradientStart else JuusListColors.BgGradientStart,
-            if (isDark) JuusListColors.Dark.BgGradientEnd else JuusListColors.BgGradientEnd
+            if (isDark) JuusPalette.ListPage.Dark.BgGradientStart else JuusPalette.ListPage.BgGradientStart,
+            if (isDark) JuusPalette.ListPage.Dark.BgGradientEnd else JuusPalette.ListPage.BgGradientEnd
         )
     )
-    val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
+    val primaryColor = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary
 
     Box(modifier = Modifier.fillMaxSize().background(bgGradient)) {
         Row(modifier = Modifier.fillMaxSize()) {
@@ -247,14 +196,13 @@ fun ConversationListScreen(
                             )
                             Text(
                                 text = "暂无对话",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
+                                style = AppTypography.TitleMedium,
+                                color = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
                             )
                             Text(
                                 text = "点击右上角加号新建对话",
-                                fontSize = 13.sp,
-                                color = if (isDark) JuusListColors.Dark.TextTertiary else JuusListColors.TextTertiary
+                                style = AppTypography.BodyMedium,
+                                color = if (isDark) JuusPalette.ListPage.Dark.TextTertiary else JuusPalette.ListPage.TextTertiary
                             )
                         }
                     }
@@ -311,6 +259,7 @@ fun ConversationListScreen(
 
                             Box(
                                 modifier = Modifier
+                                    .animateItem()
                                     .zIndex(if (isDragging) 1f else 0f)
                                     .graphicsLayer {
                                         if (isDragging) {
@@ -481,7 +430,7 @@ fun ConversationListScreen(
                 TextButton(onClick = {
                     showConfigMissingDialog = false
                     onNavigateToConfig()
-                }) { Text("去配置", color = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary) }
+                }) { Text("去配置", color = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary) }
             },
             dismissButton = {
                 TextButton(onClick = { showConfigMissingDialog = false }) { Text("取消") }
@@ -500,7 +449,7 @@ private fun JuusLeftNavRail(
     onNavigateToConfig: () -> Unit
 ) {
     val gradient = Brush.verticalGradient(
-        colors = listOf(JuusListColors.NavGradientTop, JuusListColors.NavGradientBottom)
+        colors = listOf(JuusPalette.ListPage.NavGradientTop, JuusPalette.ListPage.NavGradientBottom)
     )
 
     Box(
@@ -513,10 +462,8 @@ private fun JuusLeftNavRail(
         // 顶部：JUUS// 文字 — 锚定到顶部，不随高度变化移动
         Text(
             text = "JUUS//",
-            fontSize = 10.sp,
-            fontWeight = FontWeight.ExtraBold,
+            style = AppTypography.CaptionSmall.copy(fontWeight = FontWeight.ExtraBold),
             color = Color.White,
-            letterSpacing = 0.5.sp,
             modifier = Modifier.padding(top = 14.dp)
         )
 
@@ -540,7 +487,7 @@ private fun JuusLeftNavRail(
                 Icon(
                     Icons.Rounded.ChatBubbleOutline,
                     contentDescription = "消息",
-                    tint = JuusListColors.Primary,
+                    tint = JuusPalette.ListPage.Primary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -567,7 +514,7 @@ private fun JuusLeftNavRail(
                 Icon(
                     Icons.Rounded.Settings,
                     contentDescription = "设置",
-                    tint = JuusListColors.Primary,
+                    tint = JuusPalette.ListPage.Primary,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -590,12 +537,12 @@ private fun JuusListHeader(
     onDismissDropdown: () -> Unit = {},
     onExitEditMode: () -> Unit = {}
 ) {
-    val titleColor = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
-    val subtitleColor = if (isDark) JuusListColors.Dark.TextSecondary else JuusListColors.TextSecondary
-    val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
-    val dropdownSurface = if (isDark) Color(0xFF1E293B) else Color.White
-    val glassHeaderColor = if (isDark) JuusListColors.Dark.GlassHeader else JuusListColors.GlassHeader
-    val glassBorderColor = if (isDark) JuusListColors.Dark.GlassBorder else JuusListColors.GlassBorder
+    val titleColor = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
+    val subtitleColor = if (isDark) JuusPalette.ListPage.Dark.TextSecondary else JuusPalette.ListPage.TextSecondary
+    val primaryColor = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary
+    val dropdownSurface = if (isDark) JuusPalette.ListPage.Dark.DropdownSurface else JuusPalette.ListPage.DropdownSurface
+    val glassHeaderColor = if (isDark) JuusPalette.ListPage.Dark.GlassHeader else JuusPalette.ListPage.GlassHeader
+    val glassBorderColor = if (isDark) JuusPalette.ListPage.Dark.GlassBorder else JuusPalette.ListPage.GlassBorder
 
     // 玻璃标题栏 — 无阴影，仅边框+背景，避免阴影透过半透明表面产生双线
     Row(
@@ -613,21 +560,20 @@ private fun JuusListHeader(
         Column {
             Text(
                 text = if (isEditMode) "编辑模式" else "JUUSTAGRAM",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
+                style = AppTypography.TitleMediumBold,
                 color = if (isEditMode) primaryColor else titleColor,
                 letterSpacing = 1.sp
             )
             if (!isEditMode) {
                 Text(
                     text = "消息",
-                    fontSize = 11.sp,
+                    style = AppTypography.CaptionMedium,
                     color = subtitleColor.copy(alpha = 0.6f)
                 )
             } else {
                 Text(
                     text = "拖动排序 · 点击删除",
-                    fontSize = 11.sp,
+                    style = AppTypography.CaptionMedium,
                     color = primaryColor.copy(alpha = 0.7f)
                 )
             }
@@ -653,8 +599,7 @@ private fun JuusListHeader(
                 )
                 Text(
                     text = "完成",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    style = AppTypography.LabelLargeSemiBold,
                     color = primaryColor
                 )
             }
@@ -694,8 +639,8 @@ private fun JuusListHeader(
                                     )
                                     Text(
                                         text = "新建聊天",
-                                        fontSize = 14.sp,
-                                        color = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
+                                        style = AppTypography.BodyMedium,
+                                        color = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
                                     )
                                 }
                             },
@@ -715,8 +660,8 @@ private fun JuusListHeader(
                                     )
                                     Text(
                                         text = "新建群聊",
-                                        fontSize = 14.sp,
-                                        color = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
+                                        style = AppTypography.BodyMedium,
+                                        color = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
                                     )
                                 }
                             },
@@ -756,21 +701,32 @@ private fun JuusConversationItem(
     gestureModifier: Modifier = Modifier,
     onDeleteClick: () -> Unit = {}
 ) {
-    val nameColor = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
-    val previewColor = if (isDark) JuusListColors.Dark.TextSecondary else JuusListColors.TextSecondary
-    val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
-    val cardBg = if (isSelected) {
-        if (isDark) JuusListColors.Dark.GlassCardSelected else JuusListColors.GlassCardSelected
-    } else {
-        if (isDark) JuusListColors.Dark.GlassCard else JuusListColors.GlassCard
-    }
-    val borderColor = if (isSelected) {
-        if (isDark) JuusListColors.Dark.GlassBorderSelected else JuusListColors.GlassBorderSelected
-    } else {
-        if (isDark) JuusListColors.Dark.GlassBorder else JuusListColors.GlassBorder
-    }
+    val nameColor = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
+    val previewColor = if (isDark) JuusPalette.ListPage.Dark.TextSecondary else JuusPalette.ListPage.TextSecondary
+    val primaryColor = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary
+    // 选中态颜色平滑过渡 — 统一 AppAnimation token，避免选中跳变
+    val cardBg by animateColorAsState(
+        targetValue = when {
+            isSelected && isDark -> JuusPalette.ListPage.Dark.GlassCardSelected
+            isSelected -> JuusPalette.ListPage.GlassCardSelected
+            isDark -> JuusPalette.ListPage.Dark.GlassCard
+            else -> JuusPalette.ListPage.GlassCard
+        },
+        animationSpec = AppAnimation.Specs.normal(),
+        label = "cardBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = when {
+            isSelected && isDark -> JuusPalette.ListPage.Dark.GlassBorderSelected
+            isSelected -> JuusPalette.ListPage.GlassBorderSelected
+            isDark -> JuusPalette.ListPage.Dark.GlassBorder
+            else -> JuusPalette.ListPage.GlassBorder
+        },
+        animationSpec = AppAnimation.Specs.normal(),
+        label = "borderColor"
+    )
     val borderWidth = if (isSelected) 1.dp else 0.5.dp
-    val errorColor = if (isDark) JuusListColors.Dark.ErrorRed else JuusListColors.ErrorRed
+    val errorColor = if (isDark) JuusPalette.ListPage.Dark.ErrorRed else JuusPalette.ListPage.ErrorRed
 
     // 玻璃卡片 — 无shadow，仅clip+background+border，避免阴影透过半透明表面产生双线伪影
     Box(
@@ -795,7 +751,7 @@ private fun JuusConversationItem(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(RoundedCornerShape(12.dp))
-                            .background(JuusListColors.ChannelEmojiBg),
+                            .background(JuusPalette.ListPage.ChannelEmojiBg),
                         contentAlignment = Alignment.Center
                     ) {
                         if (avatarsToShow.isNotEmpty()) {
@@ -849,7 +805,7 @@ private fun JuusConversationItem(
                         modifier = Modifier
                             .size(48.dp)
                             .clip(CircleShape)
-                            .background(JuusListColors.ChannelEmojiBg),
+                            .background(JuusPalette.ListPage.ChannelEmojiBg),
                         contentAlignment = Alignment.Center
                     ) {
                         RobustAvatar(
@@ -891,15 +847,14 @@ private fun JuusConversationItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = displayName.ifBlank { "啾信对话" },
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
+                    style = AppTypography.TitleMediumBold,
                     color = nameColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = preview,
-                    fontSize = 13.sp,
+                    style = AppTypography.BodyMedium,
                     color = previewColor.copy(alpha = 0.7f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -955,13 +910,13 @@ private fun JuusNewChatSheet(
     onDismiss: () -> Unit,
     onStart: (apiConfigId: String?, personaConfigId: String?) -> Unit
 ) {
-    val titleColor = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
-    val hintColor = if (isDark) JuusListColors.Dark.TextSecondary else JuusListColors.TextSecondary
-    val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
+    val titleColor = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
+    val hintColor = if (isDark) JuusPalette.ListPage.Dark.TextSecondary else JuusPalette.ListPage.TextSecondary
+    val primaryColor = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary
     val itemDividerColor = if (isDark) JuusPalette.Dark.Divider else JuusPalette.Divider
-    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
-    val sectionBg = if (isDark) Color(0xFF161922) else Color(0xFFF8FAFC)
-    val selectedBg = if (isDark) Color(0xFF1E2A44) else Color(0xFFE6F2FF)
+    val cardBg = if (isDark) JuusPalette.ListPage.Dark.SheetCard else JuusPalette.ListPage.SheetCard
+    val sectionBg = if (isDark) JuusPalette.ListPage.Dark.SheetSection else JuusPalette.ListPage.SheetSection
+    val selectedBg = if (isDark) JuusPalette.ListPage.Dark.SheetSelectedBg else JuusPalette.ListPage.SheetSelectedBg
 
     var selectedApiConfigId by remember { mutableStateOf<String?>(null) }
     var selectedPersonaConfigId by remember { mutableStateOf<String?>(null) }
@@ -984,8 +939,7 @@ private fun JuusNewChatSheet(
                     )
                     Text(
                         text = "新建聊天",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
+                        style = AppTypography.TitleMediumBold,
                         color = titleColor
                     )
                 }
@@ -1002,7 +956,7 @@ private fun JuusNewChatSheet(
             // ── 提示文字 ──
             Text(
                 text = "选择 API 配置和舰娘人格后开始对话，未选择则使用当前全局配置",
-                fontSize = 11.sp,
+                style = AppTypography.CaptionMedium,
                 color = hintColor.copy(alpha = 0.8f),
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
             )
@@ -1111,7 +1065,7 @@ private fun JuusNewChatSheet(
                 )
                 Text(
                     text = comboSummary,
-                    fontSize = 11.sp,
+                    style = AppTypography.CaptionMedium,
                     color = hintColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1131,8 +1085,7 @@ private fun JuusNewChatSheet(
             ) {
                 Text(
                     text = "开始对话",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    style = AppTypography.LabelLargeSemiBold,
                     color = Color.White
                 )
             }
@@ -1169,19 +1122,18 @@ private fun JuusNewChatSectionHeader(
         )
         Text(
             text = title,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
+            style = AppTypography.LabelMediumSemiBold,
             color = primaryColor
         )
         Text(
             text = "($count)",
-            fontSize = 11.sp,
+            style = AppTypography.CaptionMedium,
             color = hintColor
         )
         Spacer(modifier = Modifier.weight(1f))
         Text(
             text = trailing,
-            fontSize = 10.sp,
+            style = AppTypography.CaptionSmall,
             color = hintColor.copy(alpha = 0.7f)
         )
     }
@@ -1214,7 +1166,7 @@ private fun JuusApiConfigRow(
             modifier = Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(if (isSelected) primaryColor.copy(alpha = 0.2f) else JuusListColors.ChannelEmojiBg),
+                .background(if (isSelected) primaryColor.copy(alpha = 0.2f) else JuusPalette.ListPage.ChannelEmojiBg),
             contentAlignment = Alignment.Center
         ) {
             Icon(
@@ -1227,7 +1179,7 @@ private fun JuusApiConfigRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = config.name.ifBlank { "未命名 API 配置" },
-                fontSize = 14.sp,
+                style = AppTypography.TitleSmall,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                 color = if (isSelected) primaryColor else titleColor,
                 maxLines = 1,
@@ -1243,7 +1195,7 @@ private fun JuusApiConfigRow(
                     }
                     if (isEmpty()) append("无 URL")
                 },
-                fontSize = 11.sp,
+                style = AppTypography.CaptionMedium,
                 color = hintColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1294,7 +1246,7 @@ private fun JuusPersonaConfigRow(
             modifier = Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(if (isSelected) primaryColor.copy(alpha = 0.15f) else JuusListColors.ChannelEmojiBg),
+                .background(if (isSelected) primaryColor.copy(alpha = 0.15f) else JuusPalette.ListPage.ChannelEmojiBg),
             contentAlignment = Alignment.Center
         ) {
             RobustAvatar(
@@ -1313,7 +1265,7 @@ private fun JuusPersonaConfigRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = config.name.ifBlank { "未命名舰娘" },
-                fontSize = 14.sp,
+                style = AppTypography.TitleSmall,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                 color = if (isSelected) primaryColor else titleColor,
                 maxLines = 1,
@@ -1328,7 +1280,7 @@ private fun JuusPersonaConfigRow(
                     }
                     if (isEmpty()) append("点击选择")
                 },
-                fontSize = 11.sp,
+                style = AppTypography.CaptionMedium,
                 color = hintColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1378,12 +1330,12 @@ private fun JuusEmptyState(
             )
             Text(
                 text = title,
-                fontSize = 13.sp,
+                style = AppTypography.BodyMedium,
                 color = hintColor
             )
             Text(
                 text = subtitle,
-                fontSize = 11.sp,
+                style = AppTypography.CaptionMedium,
                 color = hintColor.copy(alpha = 0.7f)
             )
         }
@@ -1405,15 +1357,15 @@ private fun JuusNewGroupSheet(
     onDismiss: () -> Unit,
     onCreate: (groupName: String, memberIds: List<String>) -> Unit
 ) {
-    val titleColor = if (isDark) JuusListColors.Dark.TextPrimary else JuusListColors.TextPrimary
-    val hintColor = if (isDark) JuusListColors.Dark.TextSecondary else JuusListColors.TextSecondary
-    val primaryColor = if (isDark) JuusListColors.Dark.Primary else JuusListColors.Primary
+    val titleColor = if (isDark) JuusPalette.ListPage.Dark.TextPrimary else JuusPalette.ListPage.TextPrimary
+    val hintColor = if (isDark) JuusPalette.ListPage.Dark.TextSecondary else JuusPalette.ListPage.TextSecondary
+    val primaryColor = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary
     val itemDividerColor = if (isDark) JuusPalette.Dark.Divider else JuusPalette.Divider
-    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
-    val sectionBg = if (isDark) Color(0xFF161922) else Color(0xFFF8FAFC)
-    val selectedBg = if (isDark) Color(0xFF1E2A44) else Color(0xFFE6F2FF)
-    val fieldBg = if (isDark) Color(0xFF0F172A) else Color(0xFFF1F5F9)
-    val fieldBorder = if (isDark) Color(0xFF334155) else Color(0xFFE2E8F0)
+    val cardBg = if (isDark) JuusPalette.ListPage.Dark.SheetCard else JuusPalette.ListPage.SheetCard
+    val sectionBg = if (isDark) JuusPalette.ListPage.Dark.SheetSection else JuusPalette.ListPage.SheetSection
+    val selectedBg = if (isDark) JuusPalette.ListPage.Dark.SheetSelectedBg else JuusPalette.ListPage.SheetSelectedBg
+    val fieldBg = if (isDark) JuusPalette.ListPage.Dark.SheetFieldBg else JuusPalette.ListPage.SheetFieldBg
+    val fieldBorder = if (isDark) JuusPalette.ListPage.Dark.SheetFieldBorder else JuusPalette.ListPage.SheetFieldBorder
 
     var groupName by remember { mutableStateOf("") }
     var selectedMemberIds by remember { mutableStateOf(setOf<String>()) }
@@ -1436,8 +1388,7 @@ private fun JuusNewGroupSheet(
                     )
                     Text(
                         text = "新建群聊",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
+                        style = AppTypography.TitleMediumBold,
                         color = titleColor
                     )
                 }
@@ -1454,7 +1405,7 @@ private fun JuusNewGroupSheet(
             // ── 提示文字 ──
             Text(
                 text = "设置群聊名称并选择至少 2 位舰娘成员",
-                fontSize = 11.sp,
+                style = AppTypography.CaptionMedium,
                 color = hintColor.copy(alpha = 0.8f),
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
             )
@@ -1473,10 +1424,7 @@ private fun JuusNewGroupSheet(
                     value = groupName,
                     onValueChange = { if (it.length <= 24) groupName = it },
                     singleLine = true,
-                    textStyle = androidx.compose.ui.text.TextStyle(
-                        fontSize = 14.sp,
-                        color = titleColor
-                    ),
+                    textStyle = AppTypography.BodyMedium.copy(color = titleColor),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(primaryColor),
                     decorationBox = { innerTextField ->
                         Box(
@@ -1486,7 +1434,7 @@ private fun JuusNewGroupSheet(
                             if (groupName.isEmpty()) {
                                 Text(
                                     text = "群聊名称（选填，默认自动生成）",
-                                    fontSize = 14.sp,
+                                    style = AppTypography.BodyMedium,
                                     color = hintColor.copy(alpha = 0.6f)
                                 )
                             }
@@ -1563,7 +1511,7 @@ private fun JuusNewGroupSheet(
                 )
                 Text(
                     text = if (selectedNames.isBlank()) "尚未选择成员" else "已选 ${selectedMemberIds.size} 位: $selectedNames",
-                    fontSize = 11.sp,
+                    style = AppTypography.CaptionMedium,
                     color = hintColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1584,8 +1532,7 @@ private fun JuusNewGroupSheet(
             ) {
                 Text(
                     text = if (canCreate) "创建群聊" else "请至少选择 2 位成员",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    style = AppTypography.LabelLargeSemiBold,
                     color = Color.White
                 )
             }

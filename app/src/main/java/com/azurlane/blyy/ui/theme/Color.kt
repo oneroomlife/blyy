@@ -437,18 +437,13 @@ object ClassicColors {
  */
 object MedalColors {
     val Gold: Color = Color(0xFFFFD700)
-    val GoldDark: Color = Color(0xFFB87333)
     val Silver: Color = Color(0xFFC0C0C0)
-    val SilverDark: Color = Color(0xFF9A9A9A)
     val Bronze: Color = Color(0xFFCD7F32)
-    val BronzeDark: Color = Color(0xFF8B5A2B)
 
-    fun medalColor(rank: Int, isDark: Boolean): Color = when (rank) {
-        1 -> if (isDark) GoldDark else Gold
-        2 -> if (isDark) SilverDark else Silver
-        3 -> if (isDark) BronzeDark else Bronze
-        else -> Color.Transparent
-    }
+    // 前三名奖牌渐变对（浅→深），用于排行榜名次卡片
+    val GoldGradient = listOf(Gold, Color(0xFFFFA500))
+    val SilverGradient = listOf(Silver, Color(0xFFA0A0A0))
+    val BronzeGradient = listOf(Bronze, Color(0xFFB87333))
 }
 
 /**
@@ -471,6 +466,14 @@ object ChatColors {
     // 时间戳/已读等辅助文字
     val TimestampLight: Color = Color(0xFF7A9AB0)
     val TimestampDark: Color = Color(0xFF5A7A90)
+
+    // 带尾尖语音气泡（VoiceScreen 台词气泡 / 秘书台桌宠气泡共用）
+    val SpeechBubbleLight: Color = Color.White.copy(alpha = 0.95f)
+    val SpeechBubbleDark: Color = Color(0xFF2C2C2E).copy(alpha = 0.9f)
+
+    // 连接成功状态（啾信 API 连接测试通过提示）
+    val SuccessLight: Color = Color(0xFF2E7D32)
+    val SuccessDark: Color = Color(0xFF7FE09B)
 }
 
 /**
@@ -501,6 +504,20 @@ object JuusPalette {
     val TagWaiting = Color(0xFFFF9500)
     val TagWaitingBg = Color(0x1FFF9500) // rgba(255,149,0,0.12)
 
+    // 语音消息气泡（粉色系，与普通聊天气泡区分）
+    val VoiceBubble = Color(0xFFFFF5F8)
+    val VoiceBorder = Color(0xFFF9D5E5)
+    val VoiceAccent = Color(0xFFFF69B4)
+
+    // 错误消息
+    val ErrorBg = Color(0xFFFFF0F0)
+    val ErrorText = Color(0xFFFF4949)
+
+    // 弹窗表面（聊天气泡操作/编辑弹窗）
+    val DialogSurface = Color(0xFFFFFFFF)
+    val DialogDivider = Color(0x0D000000)      // 5% 黑
+    val DialogWarningBg = Color(0x0D5BA4E6)    // 5% 主色
+
     // 聊天气泡
     val BubbleIncoming = Color(0xFFFFFFFF)
     val BubbleOutgoing = Color(0xFF5BA4E6)
@@ -526,6 +543,84 @@ object JuusPalette {
     val FilterOverlay = Color(0x66000000) // rgba(0,0,0,0.4)
     val FilterPillUnselectedBg = Color(0xFFF4F6F8)
     val FilterCancelBg = Color(0xFFF4F6F8)
+
+    /**
+     * 会话列表页专用色板（玻璃质感设计）
+     * 归口管理，替代 ConversationListScreen 内散落的硬编码颜色
+     */
+    object ListPage {
+        // 基础色别名 — 沿用 JuusPalette 主色与文字色，供列表页统一引用
+        val Primary = JuusPalette.Primary
+        val PrimaryLight = JuusPalette.PrimaryLight
+        val TextPrimary = JuusPalette.TextPrimary
+        val TextSecondary = JuusPalette.TextSecondary
+        val TextTertiary = JuusPalette.TextTertiary
+        val Divider = JuusPalette.Divider
+
+        // 背景渐变
+        val BgGradientStart = Color(0xFFD6EFFF)
+        val BgGradientEnd = Color(0xFFE8F4FE)
+
+        // 导航栏渐变
+        val NavGradientTop = Color(0xFF7DD3FC)
+        val NavGradientBottom = Color(0xFF38BDF8)
+
+        // 玻璃表面 — 提高不透明度补偿移除阴影后的深度感
+        val GlassCard = Color(0xD9FFFFFF)          // 85% 白 — 通透且有实体感
+        val GlassCardSelected = Color(0xF0F0F7FF)   // 94% 白微蓝 — 选中态
+        val GlassHeader = Color(0xE6FFFFFF)         // 90% 白 — 明亮玻璃胶囊
+        val GlassPill = Color(0x99FFFFFF)           // 60% 白
+        val GlassEditBadge = Color(0x335BA4E6)
+        val ChannelEmojiBg = Color(0x33BAE6FD)
+        val ErrorRed = Color(0xFFE53935)
+        val DropdownSurface = Color(0xFFFFFFFF)
+
+        // 玻璃边框 — 仅用极淡白色提供边缘定义，不与shadow叠加
+        val GlassBorder = Color(0x33FFFFFF)         // 20% 白 — 极淡边框
+        val GlassBorderSelected = Color(0x665BA4E6) // 40% 蓝 — 选中态
+        val GlassHighlight = Color(0x55FFFFFF)      // 33% 白 — 顶部高光
+
+        // 新建聊天 Sheet 表面
+        val SheetCard = Color(0xFFFFFFFF)
+        val SheetSection = Color(0xFFF8FAFC)
+        val SheetSelectedBg = Color(0xFFE6F2FF)
+        val SheetFieldBg = Color(0xFFF1F5F9)
+        val SheetFieldBorder = Color(0xFFE2E8F0)
+
+        object Dark {
+            val Primary = JuusPalette.Dark.Primary
+            val PrimaryLight = JuusPalette.Dark.PrimaryLight
+            val TextPrimary = JuusPalette.Dark.TextPrimary
+            val TextSecondary = JuusPalette.Dark.TextSecondary
+            val TextTertiary = JuusPalette.Dark.TextTertiary
+            val Divider = JuusPalette.Dark.Divider
+
+            val BgGradientStart = Color(0xFF0A1525)
+            val BgGradientEnd = Color(0xFF102035)
+
+            val NavGradientTop = Color(0xFF0F2038)
+            val NavGradientBottom = Color(0xFF1A3050)
+
+            val GlassCard = Color(0xCC1E293B)
+            val GlassCardSelected = Color(0xE6243B55)
+            val GlassHeader = Color(0xE61E293B)
+            val GlassPill = Color(0x991E293B)
+            val GlassEditBadge = Color(0x335BA4E6)
+            val ChannelEmojiBg = Color(0x33243559)
+            val ErrorRed = Color(0xFFFF6B6B)
+            val DropdownSurface = Color(0xFF1E293B)
+
+            val GlassBorder = Color(0x15FFFFFF)
+            val GlassBorderSelected = Color(0x405BA4E6)
+            val GlassHighlight = Color(0x22FFFFFF)
+
+            val SheetCard = Color(0xFF1E293B)
+            val SheetSection = Color(0xFF161922)
+            val SheetSelectedBg = Color(0xFF1E2A44)
+            val SheetFieldBg = Color(0xFF0F172A)
+            val SheetFieldBorder = Color(0xFF334155)
+        }
+    }
 
     // 暗色模式适配
     object Dark {
@@ -558,5 +653,19 @@ object JuusPalette {
         val FilterCancelBg = Color(0xFF1F2F45)
         val TagWaiting = Color(0xFFFF9500)
         val TagWaitingBg = Color(0x4DFF9500)
+
+        // 语音消息气泡（粉色系）
+        val VoiceBubble = Color(0xFF2A1A28)
+        val VoiceBorder = Color(0xFF4A2A44)
+        val VoiceAccent = Color(0xFFFF69B4)
+
+        // 错误消息
+        val ErrorBg = Color(0xFF2A1A1A)
+        val ErrorText = Color(0xFFFF6B6B)
+
+        // 弹窗表面
+        val DialogSurface = Color(0xFF1E293B)
+        val DialogDivider = Color(0x1AFFFFFF)   // 10% 白
+        val DialogWarningBg = Color(0x1A5BA4E6) // 10% 主色
     }
 }

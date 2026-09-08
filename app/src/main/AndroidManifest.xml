@@ -28,6 +28,8 @@
     <application
         android:name="com.azurlane.blyy.MyApplication"
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/cf"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/cfr"

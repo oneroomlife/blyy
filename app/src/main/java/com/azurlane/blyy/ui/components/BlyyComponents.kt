@@ -68,6 +68,7 @@ import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.BlyyShapes
+import com.azurlane.blyy.ui.theme.ChatColors
 import com.azurlane.blyy.ui.theme.ClassicColors
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalUiStyle
@@ -1095,7 +1096,7 @@ enum class SpeechBubbleVariant { WithTail, Compact }
 
 @Composable
 private fun WithTailBubble(text: String, isDark: Boolean, modifier: Modifier = Modifier) {
-    val bubbleColor = if (isDark) Color(0xFF2C2C2E).copy(alpha = 0.9f) else Color.White.copy(alpha = 0.95f)
+    val bubbleColor = if (isDark) ChatColors.SpeechBubbleDark else ChatColors.SpeechBubbleLight
     val textColor = if (isDark) Color.White else Color.Black
     val hPadding = if (text.length > 40) AppSpacing.Lg else AppSpacing.Md
     val vPadding = if (text.length > 40) AppSpacing.Padding.ListItemVertical else AppSpacing.Sm

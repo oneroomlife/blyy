@@ -554,10 +554,10 @@ private fun VoicePlayerCard(
             Button(
                 onClick = onReplay,
                 enabled = hasVoice,
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(AppSpacing.Game.Button.CornerSize),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .height(AppSpacing.Game.Button.Height),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.secondary,
                     disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -667,8 +667,8 @@ private fun HintButton(
         enabled = !isLoading && !noMoreHints,
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+            .height(AppSpacing.Game.Button.Height),
+        shape = RoundedCornerShape(AppSpacing.Game.Button.CornerSize),
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = MaterialTheme.colorScheme.tertiary
         )
@@ -872,8 +872,8 @@ private fun VoiceInputField(
         onValueChange = onValueChange,
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
-            .shadow(6.dp, RoundedCornerShape(20.dp)),
+            .height(AppSpacing.Game.Input.Height)
+            .shadow(6.dp, RoundedCornerShape(AppSpacing.Game.Input.CornerSize)),
         placeholder = {
             Text(
                 "输入舰娘名字...",
@@ -882,7 +882,7 @@ private fun VoiceInputField(
             )
         },
         singleLine = true,
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(AppSpacing.Game.Input.CornerSize),
         colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = MaterialTheme.colorScheme.secondary,
             unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
@@ -914,10 +914,10 @@ private fun ModernVoicePrimaryButton(
     Button(
         onClick = onClick,
         modifier = modifier
-            .height(52.dp)
+            .height(AppSpacing.Game.Button.Height)
             .scale(scale),
         enabled = enabled,
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(AppSpacing.Game.Button.CornerSize),
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.secondary,
             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -928,7 +928,7 @@ private fun ModernVoicePrimaryButton(
         )
     ) {
         icon?.let {
-            Icon(it, contentDescription = null, modifier = Modifier.size(20.dp))
+            Icon(it, contentDescription = null, modifier = Modifier.size(AppSpacing.Game.Button.IconSize))
             Spacer(Modifier.width(6.dp))
         }
         Text(text, style = AppTypography.LabelLarge)
@@ -944,8 +944,8 @@ private fun ModernVoiceOutlinedButton(
 ) {
     OutlinedButton(
         onClick = onClick,
-        modifier = modifier.height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+        modifier = modifier.height(AppSpacing.Game.Button.Height),
+        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = MaterialTheme.colorScheme.secondary
         )
@@ -968,7 +968,7 @@ private fun ModernVoiceSettlementDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(AppSpacing.Corner.Dialog),
         containerColor = MaterialTheme.colorScheme.surface,
         icon = {
             Box(

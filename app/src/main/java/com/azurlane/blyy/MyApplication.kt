@@ -10,21 +10,31 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.util.DebugLogger
-import com.azurlane.blyy.BuildConfig
 import com.azurlane.blyy.util.RefererResolver
 import dagger.hilt.android.HiltAndroidApp
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import javax.inject.Inject
 
 @HiltAndroidApp
 class MyApplication : Application(), ImageLoaderFactory {
 
+    /**
+     * 复用 Hilt 单例 OkHttpClient（AppModule 提供）。
+     *
+     * 原实现在此重复构建独立客户端（独立连接池/超时配置），造成：
+     * 1. 双份连接池与线程资源浪费
+     * 2. 网络配置分散在两处，维护时容易失同步
+     *
+     * 通过 newBuilder() 派生图片专用客户端：共享连接池、Dispatcher 与磁盘缓存，
+     * 仅追加图片防盗链所需的 Referer/UA 拦截器。
+     * Hilt 字段注入在 Application.onCreate() 中完成，而 newImageLoader()
+     * 由 Coil 在首次图片请求时（远晚于 onCreate）调用，注入时机安全。
+     */
+    @Inject
+    lateinit var sharedOkHttpClient: OkHttpClient
+
     override fun newImageLoader(): ImageLoader {
-        val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS) // 增加超时时间以应对弱网
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(true) // 开启自动重试
+        val imageOkHttpClient = sharedOkHttpClient.newBuilder()
             .addInterceptor { chain ->
                 val originalRequest = chain.request()
                 val host = originalRequest.url.host
@@ -42,7 +52,7 @@ class MyApplication : Application(), ImageLoaderFactory {
             .build()
 
         val builder = ImageLoader.Builder(this)
-            .okHttpClient(okHttpClient)
+            .okHttpClient(imageOkHttpClient)
             .components {
                 // 开启 GIF 支持
                 if (Build.VERSION.SDK_INT >= 28) {
@@ -60,7 +70,7 @@ class MyApplication : Application(), ImageLoaderFactory {
             .diskCache {
                 DiskCache.Builder()
                     .directory(this.cacheDir.resolve("image_cache"))
-                    .maxSizePercent(0.1) // 增加到 10% 的磁盘空间以存储更多表情包
+                    .maxSizePercent(0.1) // 磁盘缓存 10%，存储更多表情包
                     .build()
             }
             // 优化策略：优先使用缓存，离线可用

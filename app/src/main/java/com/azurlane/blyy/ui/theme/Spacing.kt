@@ -188,7 +188,8 @@ object AppSpacing {
         }
         object Button {
             val Height = 52.dp
-            val CornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Corner.Sm
+            /** 与 Guess 系列实际设计一致的 16dp 圆角按钮 */
+            val CornerSize: androidx.compose.ui.unit.Dp get() = AppSpacing.Corner.Lg
             val IconSize = 20.dp
         }
         object Input {

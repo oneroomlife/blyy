@@ -252,6 +252,12 @@ object AppTypography {
     val BodyMediumMedium = BodyMedium.copy(fontWeight = FontWeight.Medium)
     /** BodySmall 的 Medium 变体 — 用于气泡文字/辅助说明 */
     val BodySmallMedium = BodySmall.copy(fontWeight = FontWeight.Medium)
+    /** LabelLarge 的 SemiBold 变体 — 用于自定义操作按钮文字（开始对话/创建群聊等） */
+    val LabelLargeSemiBold = LabelLarge.copy(fontWeight = FontWeight.SemiBold)
+    /** LabelMedium 的 SemiBold 变体 — 用于分区标题/群聊发送者名称 */
+    val LabelMediumSemiBold = LabelMedium.copy(fontWeight = FontWeight.SemiBold)
+    /** 聊天气泡正文 — BodyMedium 紧凑行高变体（适配气泡内多行阅读节奏） */
+    val BubbleText = BodyMedium.copy(lineHeight = 19.sp)
 }
 
 // Material3 Typography — 经典风格

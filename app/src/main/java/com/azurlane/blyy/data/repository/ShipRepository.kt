@@ -117,16 +117,6 @@ class ShipRepository @Inject constructor(
         return result
     }
 
-    /** 清除指定学生的语音缓存 */
-    fun clearVoiceCache(studentLink: String) {
-        voiceCache.remove(studentLink)
-    }
-
-    /** 清除所有语音缓存 */
-    fun clearAllVoiceCache() {
-        voiceCache.clear()
-    }
-
     suspend fun refreshShipsFromWiki(archiveType: ArchiveType = ArchiveType.DOCK) = withContext(Dispatchers.IO) {
         val url = "https://wiki.biligame.com/blhx/舰船图鉴"
         val result = networkHelper.fetchDocument(url, maxRetries = 3)
@@ -460,19 +450,6 @@ class ShipRepository @Inject constructor(
             .replace("立绘", "")
             .replace("皮肤", "")
             .trim()
-    }
-
-    private fun matchSkinNames(name1: String, name2: String): Boolean {
-        if (name1 == name2) return true
-        if (name1.contains(name2) || name2.contains(name1)) return true
-        
-        val equivalentNames = mapOf(
-            "通常" to setOf("默认", "默认装扮"),
-            "默认" to setOf("通常", "默认装扮"),
-            "默认装扮" to setOf("通常", "默认")
-        )
-        
-        return equivalentNames[name1]?.contains(name2) == true || equivalentNames[name2]?.contains(name1) == true
     }
 
     private fun parseBlockToVoice(element: Element, skinName: String, baseScene: String, list: MutableList<VoiceLine>) {

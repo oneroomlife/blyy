@@ -84,7 +84,6 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -103,6 +102,7 @@ import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.StableOutlinedTextField
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.ChatColors
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.findActivityViewModelStoreOwner
 import com.azurlane.blyy.viewmodel.ConnectionTestState
@@ -176,7 +176,7 @@ fun JiuxinConfigScreen(
     // 暗色模式判断：用于适配硬编码颜色，确保 WCAG AA 对比度
     val isDark = LocalIsDark.current
     // 连接成功状态色：暗色模式下使用更亮的绿色，确保在深色面板背景上对比度 ≥ 4.5:1
-    val successColor = if (isDark) Color(0xFF7FE09B) else Color(0xFF2E7D32)
+    val successColor = if (isDark) ChatColors.SuccessDark else ChatColors.SuccessLight
 
     LaunchedEffect(Unit) {
         viewModel.fetchModels()
@@ -1690,9 +1690,8 @@ private fun ApiConfigCard(
                     ) {
                         Text(
                             "当前",
-                            style = AppTypography.LabelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 10.sp
+                            style = AppTypography.CardLabel,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                 }
@@ -1809,9 +1808,8 @@ private fun PersonaConfigCard(
                     ) {
                         Text(
                             "当前",
-                            style = AppTypography.LabelSmall,
-                            color = MaterialTheme.colorScheme.secondary,
-                            fontSize = 10.sp
+                            style = AppTypography.CardLabel,
+                            color = MaterialTheme.colorScheme.secondary
                         )
                     }
                 }

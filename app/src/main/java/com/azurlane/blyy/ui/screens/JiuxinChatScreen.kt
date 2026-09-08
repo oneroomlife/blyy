@@ -171,9 +171,9 @@ private object JuusColors {
     val AiBubble = JuusPalette.BubbleIncoming      // #FFFFFF
     val AiBubbleBorder = JuusPalette.Border        // #E4E8EC
     val AiName = JuusPalette.Primary               // #5BA4E6
-    val VoiceBubble = Color(0xFFFFF5F8)            // 语音气泡粉底（保留）
-    val VoiceBorder = Color(0xFFF9D5E5)            // 语音边框粉（保留）
-    val VoiceAccent = Color(0xFFFF69B4)            // 语音强调粉（保留）
+    val VoiceBubble = JuusPalette.VoiceBubble      // 语音气泡粉底
+    val VoiceBorder = JuusPalette.VoiceBorder      // 语音边框粉
+    val VoiceAccent = JuusPalette.VoiceAccent      // 语音强调粉
     val FooterBg = JuusPalette.Glass85             // 毛玻璃 85% 白
     val FooterBorder = JuusPalette.Divider         // #EDEFF2
     val InputBg = JuusPalette.Bg                   // #F0F4F8
@@ -189,8 +189,8 @@ private object JuusColors {
     val SystemText = JuusPalette.TextTertiary      // #8899AA
     val AvatarBorder = JuusPalette.BorderLight     // #EFF2F5
     val TypingDot = JuusPalette.Primary            // #5BA4E6
-    val ErrorBg = Color(0xFFFFF0F0)                // 错误背景（保留）
-    val ErrorText = Color(0xFFFF4949)              // 错误文字（保留）
+    val ErrorBg = JuusPalette.ErrorBg              // 错误背景
+    val ErrorText = JuusPalette.ErrorText          // 错误文字
 
     // 深色模式
     object Dark {
@@ -199,9 +199,9 @@ private object JuusColors {
         val AiBubble = JuusPalette.Dark.BubbleIncoming
         val AiBubbleBorder = JuusPalette.Dark.Border
         val AiName = JuusPalette.Dark.Primary
-        val VoiceBubble = Color(0xFF2A1A28)
-        val VoiceBorder = Color(0xFF4A2A44)
-        val VoiceAccent = Color(0xFFFF69B4)
+        val VoiceBubble = JuusPalette.Dark.VoiceBubble
+        val VoiceBorder = JuusPalette.Dark.VoiceBorder
+        val VoiceAccent = JuusPalette.Dark.VoiceAccent
         val FooterBg = JuusPalette.Dark.Glass85
         val FooterBorder = JuusPalette.Dark.Divider
         val InputBg = JuusPalette.Dark.Bg
@@ -217,8 +217,8 @@ private object JuusColors {
         val SystemText = JuusPalette.Dark.TextTertiary
         val AvatarBorder = JuusPalette.Dark.Border
         val TypingDot = JuusPalette.Dark.Primary
-        val ErrorBg = Color(0xFF2A1A1A)
-        val ErrorText = Color(0xFFFF6B6B)
+        val ErrorBg = JuusPalette.Dark.ErrorBg
+        val ErrorText = JuusPalette.Dark.ErrorText
     }
 }
 
@@ -526,33 +526,36 @@ fun JiuxinChatScreen(
                         GroupPosition.SINGLE, GroupPosition.FIRST -> 12.dp
                         else -> 4.dp
                     }
-                    MessageBubble(
-                        message = message,
-                        jiuxinName = jiuxinName,
-                        jiuxinAvatarUrl = avatarUrl,
-                        userName = userName,
-                        userAvatarUrl = userAvatarUrl,
-                        isDark = isDark,
-                        isPlaying = currentlyPlayingId == message.id,
-                        maxWidth = messageMaxWidth,
-                        groupPosition = groupPos,
-                        topPadding = topPadding,
-                        isGroup = isGroupSession,
-                        onVoiceClick = remember(message.id, message.voiceUrl) {
-                            {
-                                if (message.voiceUrl.isNotBlank()) {
-                                    viewModel.toggleVoicePlayback(message.id, message.voiceUrl)
+                    // animateItem：新消息淡入 + 历史消息增删/重排平滑过渡
+                    Box(modifier = Modifier.animateItem()) {
+                        MessageBubble(
+                            message = message,
+                            jiuxinName = jiuxinName,
+                            jiuxinAvatarUrl = avatarUrl,
+                            userName = userName,
+                            userAvatarUrl = userAvatarUrl,
+                            isDark = isDark,
+                            isPlaying = currentlyPlayingId == message.id,
+                            maxWidth = messageMaxWidth,
+                            groupPosition = groupPos,
+                            topPadding = topPadding,
+                            isGroup = isGroupSession,
+                            onVoiceClick = remember(message.id, message.voiceUrl) {
+                                {
+                                    if (message.voiceUrl.isNotBlank()) {
+                                        viewModel.toggleVoicePlayback(message.id, message.voiceUrl)
+                                    }
+                                }
+                            },
+                            onStickerClick = EmptyCallback,
+                            onMessageLongClick = remember(message.id, message.type) {
+                                {
+                                    val isUser = message.type == ChatMessageType.USER.name
+                                    messageActionTarget = Pair(message.id, isUser)
                                 }
                             }
-                        },
-                        onStickerClick = EmptyCallback,
-                        onMessageLongClick = remember(message.id, message.type) {
-                            {
-                                val isUser = message.type == ChatMessageType.USER.name
-                                messageActionTarget = Pair(message.id, isUser)
-                            }
-                        }
-                    )
+                        )
+                    }
                 }
 
                 // 打字动画指示器
@@ -923,13 +926,12 @@ private fun EmptyChatState(
             )
             Text(
                 text = "暂无对话",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
+                style = AppTypography.TitleMedium,
                 color = titleColor
             )
             Text(
                 text = "返回列表新建对话",
-                fontSize = 13.sp,
+                style = AppTypography.BodyMedium,
                 color = hintColor
             )
             Box(
@@ -942,9 +944,8 @@ private fun EmptyChatState(
             ) {
                 Text(
                     text = "返回列表",
-                    fontSize = 13.sp,
-                    color = Color.White,
-                    fontWeight = FontWeight.Medium
+                    style = AppTypography.BodyMediumMedium,
+                    color = Color.White
                 )
             }
         }
@@ -999,7 +1000,7 @@ private fun JuusChatTopBar(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
                     text = title,
-                    style = AppTypography.TitleMediumBold.copy(fontSize = 16.sp),
+                    style = AppTypography.TitleMediumBold,
                     color = contentColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1008,7 +1009,7 @@ private fun JuusChatTopBar(
             if (subtitle != null) {
                 Text(
                     text = subtitle,
-                    style = AppTypography.LabelSmall.copy(fontSize = 11.sp),
+                    style = AppTypography.LabelSmall,
                     color = subColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -1269,16 +1270,13 @@ private fun GroupMemberPanel(
                                 value = editingName,
                                 onValueChange = { if (it.length <= 24) editingName = it },
                                 singleLine = true,
-                                textStyle = androidx.compose.ui.text.TextStyle(
-                                    fontSize = 15.sp,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                ),
+                                textStyle = AppTypography.BodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
                                 cursorBrush = androidx.compose.ui.graphics.SolidColor(primaryColor),
                                 modifier = Modifier.weight(1f).padding(vertical = 10.dp)
                             )
                             if (editingName.trim() != session.name && editingName.trim().isNotBlank()) {
                                 TextButton(onClick = { onRename(editingName.trim()) }) {
-                                    Text("保存", color = primaryColor, fontSize = 13.sp)
+                                    Text("保存", style = AppTypography.LabelLarge, color = primaryColor)
                                 }
                             }
                         }
@@ -1424,17 +1422,14 @@ private fun MessageBubble(
                     ) {
                         Text(
                             text = message.content,
-                            style = AppTypography.BodyMedium.copy(
-                                color = JuusColors.TextOnPrimary,
-                                fontSize = 14.sp,
-                                lineHeight = 19.sp
-                            )
+                            style = AppTypography.BubbleText,
+                            color = JuusColors.TextOnPrimary
                         )
                     }
                     if (showTimestamp) {
                         Text(
                             text = formatTime(message.timestamp),
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            style = AppTypography.LabelMedium,
                             color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                             modifier = Modifier.padding(end = 4.dp, top = 2.dp)
                         )
@@ -1481,7 +1476,7 @@ private fun MessageBubble(
                     if (isGroup && showAvatar && displaySenderName.isNotBlank()) {
                         Text(
                             text = displaySenderName,
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            style = AppTypography.LabelMediumSemiBold,
                             color = nameColor,
                             modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
                         )
@@ -1499,13 +1494,14 @@ private fun MessageBubble(
                     ) {
                         Text(
                             text = message.content,
-                            style = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp, lineHeight = 19.sp)
+                            style = AppTypography.BubbleText,
+                                color = textColor
                         )
                     }
                     if (showTimestamp) {
                         Text(
                             text = formatTime(message.timestamp),
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            style = AppTypography.LabelMedium,
                             color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                             modifier = Modifier.padding(start = 2.dp, top = 2.dp)
                         )
@@ -1549,7 +1545,7 @@ private fun MessageBubble(
                     if (isGroup && showAvatar && voiceSenderName.isNotBlank()) {
                         Text(
                             text = voiceSenderName,
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            style = AppTypography.LabelMediumSemiBold,
                             color = nameColor,
                             modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
                         )
@@ -1574,14 +1570,15 @@ private fun MessageBubble(
                             )
                             Text(
                                 text = message.dialogue.ifBlank { "语音消息" },
-                                style = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp, lineHeight = 19.sp)
+                                style = AppTypography.BubbleText,
+                                color = textColor
                             )
                         }
                     }
                     if (showTimestamp) {
                         Text(
                             text = formatTime(message.timestamp),
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            style = AppTypography.LabelMedium,
                             color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                             modifier = Modifier.padding(start = 2.dp, top = 2.dp)
                         )
@@ -1621,7 +1618,7 @@ private fun MessageBubble(
                     if (isGroup && showAvatar && stickerSenderName.isNotBlank()) {
                         Text(
                             text = stickerSenderName,
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                            style = AppTypography.LabelMediumSemiBold,
                             color = nameColor,
                             modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
                         )
@@ -1680,7 +1677,7 @@ private fun MessageBubble(
                     if (showTimestamp) {
                         Text(
                             text = formatTime(message.timestamp),
-                            style = AppTypography.LabelSmall.copy(fontSize = 12.sp),
+                            style = AppTypography.LabelMedium,
                             color = if (isDark) JuusColors.Dark.TextTime else JuusColors.TextTime,
                             modifier = Modifier.padding(start = 2.dp, top = 2.dp)
                         )
@@ -1694,10 +1691,8 @@ private fun MessageBubble(
             Box(modifier = Modifier.fillMaxWidth().padding(top = topPadding, bottom = 6.dp), contentAlignment = Alignment.Center) {
                 Text(
                     text = message.content,
-                    style = AppTypography.LabelSmall.copy(
-                        color = if (isDark) JuusColors.Dark.SystemText else JuusColors.SystemText,
-                        fontSize = 12.sp
-                    ),
+                    style = AppTypography.LabelMedium,
+                    color = if (isDark) JuusColors.Dark.SystemText else JuusColors.SystemText,
                     textAlign = TextAlign.Center
                 )
             }
@@ -1806,7 +1801,7 @@ private fun ChatInputBar(
                 .clip(fieldShape)
                 .background(inputBg)
                 .padding(horizontal = 14.dp, vertical = 8.dp),
-            textStyle = AppTypography.BodyMedium.copy(color = textColor, fontSize = 14.sp),
+            textStyle = AppTypography.BodyMedium.copy(color = textColor),
             // 单行输入：固定高度，避免多行高度变化导致布局抖动
             maxLines = 1,
             cursorBrush = androidx.compose.ui.graphics.SolidColor(if (isDark) JuusPalette.Dark.Primary else JuusPalette.Primary),
@@ -1828,7 +1823,8 @@ private fun ChatInputBar(
                     if (inputText.isEmpty()) {
                         Text(
                             "输入消息...",
-                            style = AppTypography.BodyMedium.copy(color = hintColor, fontSize = 14.sp)
+                            style = AppTypography.BodyMedium,
+                            color = hintColor
                         )
                     }
                     innerTextField()
@@ -1905,7 +1901,7 @@ fun AvatarPickerSheet(viewModel: JiuxinViewModel, currentAvatarUrl: String, onDi
                                     onAvatarSelected(reliablePath)
                                 }
                             }, contentAlignment = Alignment.Center) { RobustAvatar(url = effectiveAvatar, modifier = Modifier.size(52.dp).clip(CircleShape), fallbackContent = { Icon(Icons.Rounded.Person, null, modifier = Modifier.size(20.dp), tint = (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary).copy(alpha = 0.5f)) }) }
-                            Text(text = ship.name, style = AppTypography.LabelSmall.copy(fontSize = 10.sp), maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp))
+                            Text(text = ship.name, style = AppTypography.CardLabel, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (isSelected) (if (isDark) JuusColors.Dark.AiName else JuusColors.Primary) else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(52.dp))
                         }
                     }
                 }
@@ -2077,7 +2073,7 @@ private fun BackgroundPickerSheet(
             ) {
                 Icon(Icons.Rounded.AddPhotoAlternate, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                Text(text = "从图库选择背景", color = Color.White, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Text(text = "从图库选择背景", style = AppTypography.LabelLarge, color = Color.White)
             }
 
             Spacer(modifier = Modifier.height(AppSpacing.Sm))
@@ -2100,7 +2096,7 @@ private fun BackgroundPickerSheet(
                 ) {
                     Icon(Icons.Rounded.Edit, contentDescription = null, tint = accentColor, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                    Text(text = "设为全部聊天背景", color = accentColor, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                    Text(text = "设为全部聊天背景", style = AppTypography.LabelLarge, color = accentColor)
                 }
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
             }
@@ -2131,9 +2127,8 @@ private fun BackgroundPickerSheet(
                     Spacer(modifier = Modifier.width(AppSpacing.Sm))
                     Text(
                         text = if (sessionBackgroundUrl.isNotBlank()) "清除当前会话背景" else "恢复默认背景",
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 14.sp
+                        style = AppTypography.LabelLarge,
+                        color = MaterialTheme.colorScheme.error
                     )
                 }
             }
@@ -2160,10 +2155,10 @@ private fun MessageActionSheet(
 ) {
     val primaryColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
     val errorColor = if (isDark) JuusColors.Dark.ErrorText else JuusColors.ErrorText
-    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
+    val cardBg = if (isDark) JuusPalette.Dark.DialogSurface else JuusPalette.DialogSurface
     val textPrimary = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
     val textSecondary = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
-    val dividerColor = if (isDark) Color(0x1AFFFFFF) else Color(0x0D000000)
+    val dividerColor = if (isDark) JuusPalette.Dark.DialogDivider else JuusPalette.DialogDivider
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -2312,11 +2307,11 @@ private fun MessageEditSheet(
 ) {
     var editContent by remember(originalContent) { mutableStateOf(originalContent) }
     val primaryColor = if (isDark) JuusColors.Dark.AiName else JuusColors.Primary
-    val cardBg = if (isDark) Color(0xFF1E293B) else Color.White
+    val cardBg = if (isDark) JuusPalette.Dark.DialogSurface else JuusPalette.DialogSurface
     val textPrimary = if (isDark) JuusColors.Dark.TextPrimary else JuusColors.TextPrimary
     val textSecondary = if (isDark) JuusColors.Dark.TextSecondary else JuusColors.TextSecondary
-    val dividerColor = if (isDark) Color(0x1AFFFFFF) else Color(0x0D000000)
-    val warningBg = if (isDark) Color(0x1A5BA4E6) else Color(0x0D5BA4E6)
+    val dividerColor = if (isDark) JuusPalette.Dark.DialogDivider else JuusPalette.DialogDivider
+    val warningBg = if (isDark) JuusPalette.Dark.DialogWarningBg else JuusPalette.DialogWarningBg
 
     Dialog(onDismissRequest = onDismiss) {
         Column(

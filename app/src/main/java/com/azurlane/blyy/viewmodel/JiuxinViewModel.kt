@@ -122,9 +122,6 @@ class JiuxinViewModel @Inject constructor(
         /** 语音触发关键词默认值 — 与 PlayerSettingsDataStore 默认保持一致 */
         private const val DEFAULT_VOICE_KEYWORDS = "你好;早安;晚安;加油;辛苦了"
 
-        /** 默认皮肤名集合（用于语音随机池优先匹配）— 统一定义，避免多处硬编码不一致 */
-        private val DEFAULT_SKIN_NAMES = setOf("默认装扮", "默认", "通常", "原装")
-
         /** 容错 JSON 实例：忽略未知字段，避免模型升级后反序列化崩溃 */
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     }
@@ -367,151 +364,87 @@ class JiuxinViewModel @Inject constructor(
         else -> "default"
     }
 
-    // ── 语音标签映射优化 (日常口语对应专业台词标签) ──
-    private val defaultVoiceTagMappings = listOf(
-        // 1. 登录界面 & 登录台词 (映射: 登录台词, 登录界面)
-        VoiceTagMapping("你好", listOf("主界面", "登录台词", "登录界面"), priority = 5),
-        VoiceTagMapping("早安", listOf("主界面", "登录台词"), priority = 5),
-        VoiceTagMapping("午安", listOf("主界面", "登录台词"), priority = 5),
-        VoiceTagMapping("晚安", listOf("主界面", "登录台词"), priority = 5),
-        VoiceTagMapping("进游戏", listOf("登录界面", "登录台词"), priority = 7),
-        VoiceTagMapping("启动", listOf("登录界面", "登录台词"), priority = 6),
-        VoiceTagMapping("开服", listOf("登录界面"), priority = 8),
-        VoiceTagMapping("登录台词", listOf("登录台词", "登录界面"), priority = 9),
-        VoiceTagMapping("登录界面", listOf("登录界面", "登录台词"), priority = 9),
+    // ── 会话配置快照（统一构造，消除 6 处重复的 13 字段复制） ──
 
-        // 2. 舰船型号 & 自我介绍 (映射: 舰船型号, 自我介绍)
-        VoiceTagMapping("自我介绍", listOf("自我介绍", "舰船型号"), priority = 9),
-        VoiceTagMapping("你是谁", listOf("自我介绍", "舰船型号"), priority = 7),
-        VoiceTagMapping("叫什么名字", listOf("自我介绍", "舰船型号"), priority = 7),
-        VoiceTagMapping("介绍一下", listOf("自我介绍", "舰船型号"), priority = 8),
-        VoiceTagMapping("舰船型号", listOf("舰船型号", "自我介绍"), priority = 9),
-        VoiceTagMapping("什么船", listOf("舰船型号"), priority = 7),
-        VoiceTagMapping("什么舰种", listOf("舰船型号"), priority = 7),
-
-        // 3. 获取台词 & 查看详情 (映射: 获取台词, 查看详情)
-        VoiceTagMapping("获取台词", listOf("获取台词", "获得"), priority = 9),
-        VoiceTagMapping("出了", listOf("获取台词", "获得"), priority = 7),
-        VoiceTagMapping("捞到了", listOf("获取台词", "获得"), priority = 8),
-        VoiceTagMapping("查看详情", listOf("查看详情", "获取台词"), priority = 9),
-        VoiceTagMapping("详情", listOf("查看详情", "获取台词"), priority = 6),
-        VoiceTagMapping("资料", listOf("查看详情", "获取台词"), priority = 7),
-        VoiceTagMapping("属性", listOf("查看详情"), priority = 7),
-
-        // 4. 主界面 (映射: 主界面)
-        VoiceTagMapping("主界面", listOf("主界面"), priority = 9),
-        VoiceTagMapping("主页", listOf("主界面"), priority = 7),
-        VoiceTagMapping("看板娘", listOf("主界面"), priority = 8),
-        VoiceTagMapping("在干嘛", listOf("主界面"), priority = 6),
-
-        // 5. 触摸、特殊触摸、摸头 (映射: 触摸台词, 特殊触摸, 摸头台词)
-        VoiceTagMapping("触摸台词", listOf("触摸台词"), priority = 9),
-        VoiceTagMapping("碰你", listOf("触摸台词"), priority = 6),
-        VoiceTagMapping("特殊触摸", listOf("特殊触摸"), priority = 9),
-        VoiceTagMapping("别碰那里", listOf("特殊触摸"), priority = 8),
-        VoiceTagMapping("色狼", listOf("特殊触摸"), priority = 8),
-        VoiceTagMapping("变态", listOf("特殊触摸"), priority = 8),
-        VoiceTagMapping("摸头台词", listOf("摸头台词", "触摸台词"), priority = 9),
-        VoiceTagMapping("摸摸头", listOf("摸头台词", "触摸台词"), priority = 8),
-        VoiceTagMapping("乖", listOf("摸头台词", "触摸台词"), priority = 7),
-
-        // 6. 任务与邮件 (映射: 任务提醒, 任务完成, 鄌件提酲)
-        VoiceTagMapping("任务提醒", listOf("任务提醒", "任务完成"), priority = 9),
-        VoiceTagMapping("任务", listOf("任务提醒", "任务完成"), priority = 6),
-        VoiceTagMapping("有任务吗", listOf("任务提醒"), priority = 7),
-        VoiceTagMapping("任务完成", listOf("任务完成", "任务提醒"), priority = 9),
-        VoiceTagMapping("做完了", listOf("任务完成", "任务提醒"), priority = 8),
-        VoiceTagMapping("领奖励", listOf("任务完成", "任务提醒"), priority = 7),
-        VoiceTagMapping("报酬", listOf("任务完成"), priority = 7),
-        VoiceTagMapping("鄌件提酲", listOf("鄌件提酲", "邮件提醒"), priority = 9), // 兼容 typo 标签
-        VoiceTagMapping("邮件提醒", listOf("邮件提醒", "鄌件提酲"), priority = 9),
-        VoiceTagMapping("有信吗", listOf("邮件提醒", "鄌件提酲"), priority = 7),
-        VoiceTagMapping("收邮件", listOf("邮件提醒", "鄌件提酲"), priority = 8),
-
-        // 7. 回港 (映射: 回港台词)
-        VoiceTagMapping("回港台词", listOf("回港台词", "登录台词"), priority = 9),
-        VoiceTagMapping("我回来了", listOf("回港台词", "登录台词"), priority = 8),
-        VoiceTagMapping("到家了", listOf("回港台词", "登录台词"), priority = 8),
-        VoiceTagMapping("辛苦了", listOf("回港台词", "主界面"), priority = 7),
-
-        // 8. 好感度与誓约 (映射: 好感度-友好, 好感度-喜欢, 好感度-爱, 誓约台词)
-        VoiceTagMapping("好感度-友好", listOf("好感度-友好", "主界面"), priority = 9),
-        VoiceTagMapping("友好", listOf("好感度-友好"), priority = 7),
-        VoiceTagMapping("朋友", listOf("好感度-友好"), priority = 6),
-        VoiceTagMapping("好感度-喜欢", listOf("好感度-喜欢", "好感度-爱"), priority = 9),
-        VoiceTagMapping("喜欢", listOf("好感度-喜欢", "好感度-爱"), priority = 6),
-        VoiceTagMapping("好感度-爱", listOf("好感度-爱", "誓约台词"), priority = 9, preferredSkinName = "誓约"),
-        VoiceTagMapping("爱", listOf("好感度-爱", "誓约台词"), priority = 5, preferredSkinName = "誓约"),
-        VoiceTagMapping("最喜欢了", listOf("好感度-爱", "誓约台词"), priority = 8, preferredSkinName = "誓约"),
-        VoiceTagMapping("誓约台词", listOf("誓约台词", "好感度-爱"), priority = 9, preferredSkinName = "誓约"),
-        VoiceTagMapping("结婚", listOf("誓约台词", "好感度-爱"), priority = 8, preferredSkinName = "誓约"),
-        VoiceTagMapping("戒指", listOf("誓约台词", "好感度-爱"), priority = 8, preferredSkinName = "誓约"),
-        VoiceTagMapping("嫁给我", listOf("誓约台词", "好感度-爱"), priority = 8, preferredSkinName = "誓约"),
-
-        // 9. 强化与改造 (映射: 强化成功, 改造完成)
-        VoiceTagMapping("强化", listOf("强化成功", "主界面"), priority = 8),
-        VoiceTagMapping("升级", listOf("强化成功", "主界面"), priority = 7),
-        VoiceTagMapping("改造", listOf("改造完成", "强化成功"), priority = 9),
-        VoiceTagMapping("变强了", listOf("强化成功", "改造完成"), priority = 7),
-
-        // 10. 战斗相关 (映射: 战斗台词, 技能触发, 胜利台词, 失败台词, 低血量)
-        VoiceTagMapping("出击", listOf("战斗台词", "主界面"), priority = 9),
-        VoiceTagMapping("开火", listOf("战斗台词", "技能触发"), priority = 7),
-        VoiceTagMapping("技能", listOf("技能触发", "战斗台词"), priority = 9),
-        VoiceTagMapping("胜利", listOf("胜利台词", "回港台词"), priority = 9),
-        VoiceTagMapping("赢了", listOf("胜利台词", "回港台词"), priority = 8),
-        VoiceTagMapping("失败", listOf("失败台词", "回港台词"), priority = 9),
-        VoiceTagMapping("没血了", listOf("低血量", "主界面"), priority = 8),
-        VoiceTagMapping("快不行了", listOf("低血量"), priority = 8),
-
-        // 11. 委派与建造 (映射: 委派完成, 建造完成)
-        VoiceTagMapping("委派", listOf("委派完成", "任务完成"), priority = 8),
-        VoiceTagMapping("远征", listOf("委派完成", "任务完成"), priority = 8),
-        VoiceTagMapping("建造", listOf("建造完成", "获取台词"), priority = 8),
-        VoiceTagMapping("造好了", listOf("建造完成"), priority = 8),
-
-        // 12. 状态与好感度保底 (映射: 旗舰台词, 失望, 陌生)
-        VoiceTagMapping("旗舰", listOf("旗舰台词", "主界面"), priority = 8),
-        VoiceTagMapping("失望", listOf("好感度-失望"), priority = 9),
-        VoiceTagMapping("讨厌你", listOf("好感度-失望"), priority = 8),
-        VoiceTagMapping("不认识", listOf("好感度-陌生"), priority = 8)
+    /**
+     * 会话级配置快照的 13 个可继承字段（不含 name/presetId/群聊元数据）。
+     *
+     * 新增配置字段时只需在此、[flowsConfig]、[config] 扩展与 [buildSession]
+     * 各补一处，替代原先散落在 6 个构造点的重复复制（漏抄任意一处即产生隔离 bug）。
+     */
+    private data class SessionConfig(
+        val avatarUrl: String,
+        val jiuxinName: String,
+        val apiUrl: String,
+        val apiKey: String,
+        val model: String,
+        val systemPrompt: String,
+        val voiceShipName: String,
+        val voiceShipAvatar: String,
+        val voiceEnabled: Boolean,
+        val voiceRandomChance: Float,
+        val voiceKeywords: String,
+        val stickersEnabled: Boolean,
+        val stickerChance: Float
     )
 
-    /**
-     * 默认语音标签映射的关键词索引（O(1) 查找）。
-     *
-     * 用于 [buildVoiceTagMappings] 中判断用户自定义关键词是否已存在默认映射，
-     * 替代原先 `defaultVoiceTagMappings.find { it.keyword == kw }` 的 O(n) 线性扫描。
-     */
-    private val defaultVoiceTagByKeyword: Map<String, VoiceTagMapping> by lazy {
-        defaultVoiceTagMappings.associateBy { it.keyword }
-    }
+    /** 当前全局 StateFlow 值构成的配置快照（新建会话的默认值模板） */
+    private fun flowsConfig() = SessionConfig(
+        avatarUrl = avatarUrl.value,
+        jiuxinName = jiuxinName.value,
+        apiUrl = apiUrl.value,
+        apiKey = apiKey.value,
+        model = selectedModel.value,
+        systemPrompt = systemPrompt.value,
+        voiceShipName = voiceShipName.value,
+        voiceShipAvatar = voiceShipAvatar.value,
+        voiceEnabled = voiceEnabled.value,
+        voiceRandomChance = voiceRandomChance.value,
+        voiceKeywords = voiceKeywords.value,
+        stickersEnabled = stickersEnabled.value,
+        stickerChance = stickerChance.value
+    )
 
-    /**
-     * 根据语音触发关键词列表构建完整的 voice tag mappings（去重 + 按优先级降序）。
-     *
-     * 消除三处重复代码（init / switchToSession / sendMessage），统一构建逻辑：
-     * - 默认映射全部保留
-     * - 用户自定义关键词若与默认重名则跳过（默认优先级更高，避免 distinctBy 后丢失默认映射）
-     * - 用户自定义关键词若无对应默认映射，创建 fallback 映射：sceneTags=["主界面"]，priority=1
-     *   （"主界面"是最通用的语音类别，确保用户自定义关键词能触发有意义的语音，
-     *   而非 [findBestVoice] 的保底随机池；priority=1 确保默认关键词优先匹配）
-     * - 按 priority 降序排列，确保 [findBestTagMatch] 在长度相同时优先取高优先级
-     *
-     * @param keywords 已分词的关键词列表（不含空串）
-     */
-    private fun buildVoiceTagMappings(keywords: List<String>): List<VoiceTagMapping> {
-        val userMappings = keywords.mapNotNull { kw ->
-            if (defaultVoiceTagByKeyword.containsKey(kw)) null
-            else VoiceTagMapping(keyword = kw, sceneTags = listOf("主界面"), priority = 1)
-        }
-        return (defaultVoiceTagMappings + userMappings)
-            .distinctBy { it.keyword }
-            .sortedByDescending { it.priority }
-    }
+    /** 从已有会话提取配置快照 */
+    private fun ChatSession.config() = SessionConfig(
+        avatarUrl = avatarUrl, jiuxinName = jiuxinName, apiUrl = apiUrl, apiKey = apiKey,
+        model = model, systemPrompt = systemPrompt, voiceShipName = voiceShipName,
+        voiceShipAvatar = voiceShipAvatar, voiceEnabled = voiceEnabled,
+        voiceRandomChance = voiceRandomChance, voiceKeywords = voiceKeywords,
+        stickersEnabled = stickersEnabled, stickerChance = stickerChance
+    )
 
+    /** 从预设提取配置快照 */
+    private fun JiuxinPreset.config() = SessionConfig(
+        avatarUrl = avatarUrl, jiuxinName = jiuxinName, apiUrl = apiUrl, apiKey = apiKey,
+        model = model, systemPrompt = systemPrompt, voiceShipName = voiceShipName,
+        voiceShipAvatar = voiceShipAvatar, voiceEnabled = voiceEnabled,
+        voiceRandomChance = voiceRandomChance, voiceKeywords = voiceKeywords,
+        stickersEnabled = stickersEnabled, stickerChance = stickerChance
+    )
 
+    /** 用配置快照构造新私聊会话（群聊/背景等字段走默认值，由调用方按需 copy） */
+    private fun buildSession(name: String, presetId: String, config: SessionConfig) = ChatSession(
+        name = name,
+        presetId = presetId,
+        avatarUrl = config.avatarUrl,
+        jiuxinName = config.jiuxinName,
+        apiUrl = config.apiUrl,
+        apiKey = config.apiKey,
+        model = config.model,
+        systemPrompt = config.systemPrompt,
+        voiceShipName = config.voiceShipName,
+        voiceShipAvatar = config.voiceShipAvatar,
+        voiceEnabled = config.voiceEnabled,
+        voiceRandomChance = config.voiceRandomChance,
+        voiceKeywords = config.voiceKeywords,
+        stickersEnabled = config.stickersEnabled,
+        stickerChance = config.stickerChance
+    )
 
+    // ── 语音标签匹配（数据与算法已提取到 [JiuxinVoiceTagEngine]，此处仅保留委托） ──
+    private fun buildVoiceTagMappings(keywords: List<String>): List<VoiceTagMapping> =
+        JiuxinVoiceTagEngine.buildVoiceTagMappings(keywords)
 
     init {
         // 加载会话列表
@@ -771,13 +704,10 @@ class JiuxinViewModel @Inject constructor(
      * 将用户输入的 Base URL 自动补全为完整的 Chat Completions 请求地址
      * 例如: https://api.example.com/v1 → https://api.example.com/v1/chat/completions
      * 如果已经包含 /chat/completions 则不再重复添加
+     *
+     * 实现委托 [JiuxinApiRepository.buildFullApiUrl]，消除两处重复定义。
      */
-    fun buildFullApiUrl(baseUrl: String): String {
-        val trimmed = baseUrl.trim().trimEnd('/')
-        if (trimmed.isBlank()) return ""
-        if (trimmed.endsWith("/chat/completions", ignoreCase = true)) return trimmed
-        return "$trimmed/chat/completions"
-    }
+    fun buildFullApiUrl(baseUrl: String): String = apiRepository.buildFullApiUrl(baseUrl)
 
     /**
      * 构建 POST JSON 请求（统一 Authorization + Content-Type + Accept 头）。
@@ -860,22 +790,10 @@ class JiuxinViewModel @Inject constructor(
                 preset?.name?.ifBlank { generateDefaultName() } ?: generateDefaultName()
             }
             // 保存完整配置快照到会话（用于会话级配置隔离和列表去重）
-            val session = ChatSession(
+            val session = buildSession(
                 name = effectiveName,
                 presetId = effectivePresetId,
-                avatarUrl = preset?.avatarUrl ?: avatarUrl.value,
-                jiuxinName = preset?.jiuxinName ?: jiuxinName.value,
-                apiUrl = preset?.apiUrl ?: apiUrl.value,
-                apiKey = preset?.apiKey ?: apiKey.value,
-                model = preset?.model ?: selectedModel.value,
-                systemPrompt = preset?.systemPrompt ?: systemPrompt.value,
-                voiceShipName = preset?.voiceShipName ?: voiceShipName.value,
-                voiceShipAvatar = preset?.voiceShipAvatar ?: voiceShipAvatar.value,
-                voiceEnabled = preset?.voiceEnabled ?: voiceEnabled.value,
-                voiceRandomChance = preset?.voiceRandomChance ?: voiceRandomChance.value,
-                voiceKeywords = preset?.voiceKeywords ?: voiceKeywords.value,
-                stickersEnabled = preset?.stickersEnabled ?: stickersEnabled.value,
-                stickerChance = preset?.stickerChance ?: stickerChance.value
+                config = preset?.config() ?: flowsConfig()
             )
             persistAndActivateSession(session)
             Log.d(TAG, "Created new session: ${session.id} - ${session.name} (preset=$presetId)")
@@ -941,22 +859,10 @@ class JiuxinViewModel @Inject constructor(
         // 无预设但有当前会话：继承当前会话的完整配置快照
         _chatGeneration.incrementAndGet()
         viewModelScope.launch {
-            val session = ChatSession(
+            val session = buildSession(
                 name = generateDefaultName(),
                 presetId = "", // 无预设
-                avatarUrl = currentSession.avatarUrl,
-                jiuxinName = currentSession.jiuxinName,
-                apiUrl = currentSession.apiUrl,
-                apiKey = currentSession.apiKey,
-                model = currentSession.model,
-                systemPrompt = currentSession.systemPrompt,
-                voiceShipName = currentSession.voiceShipName,
-                voiceShipAvatar = currentSession.voiceShipAvatar,
-                voiceEnabled = currentSession.voiceEnabled,
-                voiceRandomChance = currentSession.voiceRandomChance,
-                voiceKeywords = currentSession.voiceKeywords,
-                stickersEnabled = currentSession.stickersEnabled,
-                stickerChance = currentSession.stickerChance
+                config = currentSession.config()
             )
             persistAndActivateSession(session)
             Log.d(TAG, "Created new session for current ship: ${session.id} - ${session.name} (ship=${currentSession.jiuxinName})")
@@ -1389,21 +1295,24 @@ class JiuxinViewModel @Inject constructor(
                 persona?.name?.ifBlank { resolvedJiuxinName.ifBlank { generateDefaultName() } }
                     ?: resolvedJiuxinName.ifBlank { generateDefaultName() }
             }
-            val session = ChatSession(
+            val session = buildSession(
                 name = effectiveName,
-                avatarUrl = resolvedAvatarUrl,
-                jiuxinName = resolvedJiuxinName,
-                apiUrl = resolvedApiUrl,
-                apiKey = resolvedApiKey,
-                model = resolvedModel,
-                systemPrompt = resolvedSystemPrompt,
-                voiceShipName = resolvedVoiceShipName,
-                voiceShipAvatar = resolvedVoiceShipAvatar,
-                voiceEnabled = resolvedVoiceEnabled,
-                voiceRandomChance = resolvedVoiceRandomChance,
-                voiceKeywords = resolvedVoiceKeywords,
-                stickersEnabled = resolvedStickersEnabled,
-                stickerChance = resolvedStickerChance
+                presetId = "",
+                config = SessionConfig(
+                    avatarUrl = resolvedAvatarUrl,
+                    jiuxinName = resolvedJiuxinName,
+                    apiUrl = resolvedApiUrl,
+                    apiKey = resolvedApiKey,
+                    model = resolvedModel,
+                    systemPrompt = resolvedSystemPrompt,
+                    voiceShipName = resolvedVoiceShipName,
+                    voiceShipAvatar = resolvedVoiceShipAvatar,
+                    voiceEnabled = resolvedVoiceEnabled,
+                    voiceRandomChance = resolvedVoiceRandomChance,
+                    voiceKeywords = resolvedVoiceKeywords,
+                    stickersEnabled = resolvedStickersEnabled,
+                    stickerChance = resolvedStickerChance
+                )
             )
             persistAndActivateSession(session)
             Log.d(TAG, "Started chat with api=${api?.name ?: "current"}, persona=${persona?.name ?: "current"}")
@@ -1645,28 +1554,12 @@ class JiuxinViewModel @Inject constructor(
             // 不应导致整个群聊从会话列表中消失。与私聊"策略2"保持一致，
             // 同组会话全部被删除后自动创建继承群聊名+成员配置的空会话。
             if (deletedSession.isGroup) {
-                val newGroupSession = ChatSession(
-                    name = deletedSession.name,
-                    presetId = deletedSession.presetId,
-                    avatarUrl = deletedSession.avatarUrl,
-                    jiuxinName = deletedSession.jiuxinName,
-                    apiUrl = deletedSession.apiUrl,
-                    apiKey = deletedSession.apiKey,
-                    model = deletedSession.model,
-                    systemPrompt = deletedSession.systemPrompt,
-                    voiceShipName = deletedSession.voiceShipName,
-                    voiceShipAvatar = deletedSession.voiceShipAvatar,
-                    voiceEnabled = deletedSession.voiceEnabled,
-                    voiceRandomChance = deletedSession.voiceRandomChance,
-                    voiceKeywords = deletedSession.voiceKeywords,
-                    stickersEnabled = deletedSession.stickersEnabled,
-                    stickerChance = deletedSession.stickerChance,
-                    sessionType = deletedSession.sessionType,
-                    groupMembers = deletedSession.groupMembers,
-                    // P2 修复：继承稳定群聊标识，重命名后新建会话仍归属同一群聊
-                    groupId = deletedSession.groupId,
-                    // P2 修复：继承会话级聊天背景，避免删除历史对话后背景丢失
-                    backgroundUrl = deletedSession.backgroundUrl
+                // 继承被删群聊的全部字段（含稳定 groupId 与会话级背景），仅换新 id 与时间戳。
+                // 与原先逐字段复制的 16 字段构造完全等价，且天然不会漏抄新增字段。
+                val newGroupSession = deletedSession.copy(
+                    id = UUID.randomUUID().toString(),
+                    createdAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis()
                 )
                 val newList = listOf(newGroupSession) + currentList
                 settings.setAiChatSessions(newList)
@@ -1682,22 +1575,12 @@ class JiuxinViewModel @Inject constructor(
             // 策略 2：同舰娘无其他会话 → 自动创建新会话继承原舰娘标识和配置
             // 无论是否有其他舰娘的会话，都为原舰娘保留一个空会话，避免舰娘从列表中"消失"
             // 这与"只有一个舰娘时删除所有会话"的行为一致
-            val newSession = ChatSession(
+            // 注：与群聊分支对齐，同样继承会话级背景（修复私聊删除后背景丢失的不一致）
+            val newSession = deletedSession.copy(
+                id = UUID.randomUUID().toString(),
                 name = generateDefaultName(),
-                presetId = deletedSession.presetId,
-                avatarUrl = deletedSession.avatarUrl,
-                jiuxinName = deletedSession.jiuxinName,
-                apiUrl = deletedSession.apiUrl,
-                apiKey = deletedSession.apiKey,
-                model = deletedSession.model,
-                systemPrompt = deletedSession.systemPrompt,
-                voiceShipName = deletedSession.voiceShipName,
-                voiceShipAvatar = deletedSession.voiceShipAvatar,
-                voiceEnabled = deletedSession.voiceEnabled,
-                voiceRandomChance = deletedSession.voiceRandomChance,
-                voiceKeywords = deletedSession.voiceKeywords,
-                stickersEnabled = deletedSession.stickersEnabled,
-                stickerChance = deletedSession.stickerChance
+                createdAt = System.currentTimeMillis(),
+                updatedAt = System.currentTimeMillis()
             )
             // 新会话插入到列表头部，使其在会话列表中优先显示
             val newList = listOf(newSession) + currentList
@@ -2185,21 +2068,10 @@ class JiuxinViewModel @Inject constructor(
         val current = _currentSessionId.value
         if (current.isNotBlank()) return current
 
-        val session = ChatSession(
+        val session = buildSession(
             name = generateDefaultName(),
-            avatarUrl = avatarUrl.value,
-            jiuxinName = jiuxinName.value,
-            apiUrl = apiUrl.value,
-            apiKey = apiKey.value,
-            model = selectedModel.value,
-            systemPrompt = systemPrompt.value,
-            voiceShipName = voiceShipName.value,
-            voiceShipAvatar = voiceShipAvatar.value,
-            voiceEnabled = voiceEnabled.value,
-            voiceRandomChance = voiceRandomChance.value,
-            voiceKeywords = voiceKeywords.value,
-            stickersEnabled = stickersEnabled.value,
-            stickerChance = stickerChance.value
+            presetId = "",
+            config = flowsConfig()
         )
         // 复用统一的会话激活逻辑（包含 MAX_SESSIONS 裁剪，修复原先 ensureCurrentSession 不裁剪的 bug）
         persistAndActivateSession(session)
@@ -2591,7 +2463,7 @@ class JiuxinViewModel @Inject constructor(
             try {
                 val (voices, _, _) = getVoicesUseCase(voiceShipName)
                 if (voices.isNotEmpty()) {
-                    val defaultVoices = voices.filter { it.skinName in DEFAULT_SKIN_NAMES }
+                    val defaultVoices = voices.filter { it.skinName in JiuxinVoiceTagEngine.DEFAULT_SKIN_NAMES }
                     val voice = if (defaultVoices.isNotEmpty()) defaultVoices.random() else voices.random()
                     val audioUrl = voice.getActiveAudioUrl(VoiceLanguage.CN)
                     sendVoiceMessage(memberName, audioUrl, voice.dialogue, memberAvatar)
@@ -2754,17 +2626,11 @@ class JiuxinViewModel @Inject constructor(
         }
     }
 
-    // ── 智能语音标签匹配 ──
+    // ── 智能语音标签匹配（委托 JiuxinVoiceTagEngine） ──
 
-    /**
-     * 在用户文本中查找最佳匹配的语音标签映射
-     * 优先匹配更长的关键词（避免"爱"误匹配"可爱"等），
-     * 长度相同时取优先级更高的
-     */
+    /** 在用户文本中查找最佳匹配的语音标签映射（长关键词优先，同长度取高优先级） */
     private fun findBestTagMatch(text: String, mappings: List<VoiceTagMapping>): VoiceTagMapping? =
-        mappings
-            .filter { text.contains(it.keyword, ignoreCase = true) }
-            .maxWithOrNull(compareBy({ it.keyword.length }, { it.priority }))
+        JiuxinVoiceTagEngine.findBestTagMatch(text, mappings)
 
     private fun triggerVoiceByTags(shipName: String, shipAvatar: String, sceneTags: List<String>, preferredSkinName: String = "") {
         viewModelScope.launch {
@@ -2781,55 +2647,20 @@ class JiuxinViewModel @Inject constructor(
         }
     }
 
-    /**
-     * 根据场景标签和偏好皮肤查找最佳语音
-     * 解决“同一关键词可对应触发不同皮肤的同一标签语音”问题。
-     */
+    /** 根据场景标签和偏好皮肤查找最佳语音 */
     private fun findBestVoice(
         voices: List<com.azurlane.blyy.data.model.VoiceLine>,
         sceneTags: List<String>,
         preferredSkinName: String = ""
-    ): com.azurlane.blyy.data.model.VoiceLine {
-        // 1. 策略：如果指定了偏好皮肤（如：好感度-爱强制要求“誓约”皮肤台词）
-        if (preferredSkinName.isNotBlank()) {
-            sceneTags.firstNotNullOfOrNull { tag ->
-                voices.filter {
-                    it.skinName.contains(preferredSkinName, ignoreCase = true) &&
-                    it.scene.contains(tag, ignoreCase = true)
-                }.randomOrNull() // 随机抽取该皮肤下的对应标签台词
-            }?.let { return it }
-        }
-
-        // 2. 策略：跨皮肤随机池
-        // 依次检查场景标签，收集所有皮肤中匹配该标签的台词，实现“同一标签、不同皮肤”的惊喜感
-        sceneTags.forEach { tag ->
-            val pool = voices.filter { it.scene.contains(tag, ignoreCase = true) }
-            if (pool.isNotEmpty()) {
-                // 优先考虑：默认皮肤或无皮肤台词（权重稍大），但包含所有其他换装皮肤
-                val defaultPool = pool.filter { it.skinName in DEFAULT_SKIN_NAMES || it.skinName.isEmpty() }
-                // 80% 概率触发默认/通常语音，20% 概率触发已拥有的其他皮肤语音
-                return if (defaultPool.isNotEmpty() && kotlin.random.Random.nextFloat() < 0.8f) {
-                    defaultPool.random()
-                } else {
-                    pool.random()
-                }
-            }
-        }
-
-        // 3. 保底：优先从默认皮肤中随机选一条
-        val defaultVoice = voices.filter { it.skinName in DEFAULT_SKIN_NAMES }.randomOrNull()
-        return defaultVoice ?: voices.random()
-    }
-
-
-
+    ): com.azurlane.blyy.data.model.VoiceLine =
+        JiuxinVoiceTagEngine.findBestVoice(voices, sceneTags, preferredSkinName)
 
     private fun triggerVoiceRandom(shipName: String, shipAvatar: String) {
         viewModelScope.launch {
             try {
                 val (voices, _, _) = getVoicesUseCase(shipName)
                 if (voices.isNotEmpty()) {
-                    val defaultVoices = voices.filter { it.skinName in DEFAULT_SKIN_NAMES }
+                    val defaultVoices = voices.filter { it.skinName in JiuxinVoiceTagEngine.DEFAULT_SKIN_NAMES }
                     val voice = if (defaultVoices.isNotEmpty()) defaultVoices.random() else voices.random()
                     val audioUrl = voice.getActiveAudioUrl(VoiceLanguage.CN)
                     sendVoiceMessage(shipName, audioUrl, voice.dialogue, shipAvatar)
