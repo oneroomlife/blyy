@@ -16,6 +16,15 @@
         android:maxSdkVersion="32" />
     <!-- Android 11+ 不再请求 MANAGE_EXTERNAL_STORAGE，改用 SAF + 应用专属目录（免权限） -->
 
+    <!-- 水印相机：改用系统相机（ACTION_IMAGE_CAPTURE + FileProvider），无需 CAMERA 权限；
+         声明了但未授予的 CAMERA 权限反而在部分设备上导致系统相机拒拍。
+         相机为可选功能（无相机设备仍可从图库选图） -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <!-- 水印相机：仅 Android 9 及以下写公共 Pictures 目录需要（Android 10+ 经 MediaStore 免权限） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:ignore="ScopedStorage" />
+
     <!-- 支持手表等小屏设备 -->
     <supports-screens
         android:smallScreens="true"
@@ -62,6 +71,17 @@
                 <action android:name="androidx.media3.session.MediaSessionService"/>
             </intent-filter>
         </service>
+
+        <!-- 水印相机：系统相机拍照输出到 cache 临时文件的 content Uri 提供者 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- 注册悬浮窗服务 -->
         <service

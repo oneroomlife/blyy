@@ -15,7 +15,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "2.3.4"
+        versionName = "2.4.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -174,6 +174,11 @@ dependencies {
 
     /** ---------------- UI 扩展 ---------------- */
     implementation(libs.compose.shimmer)
+
+    /** ---------------- 水印相机 ----------------
+     *  拍照走系统相机（ACTION_IMAGE_CAPTURE + FileProvider），无需 CameraX 依赖。
+     *  ExifInterface：API 24-27 无 ImageDecoder 时手动处理图片 EXIF 旋转。 */
+    implementation(libs.androidx.exifinterface)
 
     /** ---------------- 拼音转换（SD 资源中文名→拼音目录名匹配） ----------------
      *  pinyin4j 用于将舰娘中文名（如"博格"）转换为无声调拼音（如"boge"），

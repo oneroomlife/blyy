@@ -29,6 +29,9 @@ mockitoKotlin = "5.4.0"
 turbine = "1.2.0"
 kotlinxCoroutinesTest = "1.10.2"
 zstdJni = "1.5.7-6"
+# 水印相机：CameraX 生命周期感知相机 + ExifInterface 图片方向处理
+camerax = "1.6.1"
+exifinterface = "1.4.1"
 # Spine 3.8.99 骨骼动画（碧蓝航线 SD 小人） + libgdx 后端
 # 注意：碧蓝航线 sd/ 资源是 Spine 3.8.99 二进制格式，必须用 3.8 runtime，4.x 不兼容
 spineLibgdx = "3.8.99.1"
@@ -87,6 +90,11 @@ zstd-jni = { group = "com.github.luben", name = "zstd-jni", version.ref = "zstdJ
 spine-libgdx = { group = "com.esotericsoftware.spine", name = "spine-libgdx", version.ref = "spineLibgdx" }
 libgdx-core = { group = "com.badlogicgames.gdx", name = "gdx", version.ref = "libgdx" }
 libgdx-backend-android = { group = "com.badlogicgames.gdx", name = "gdx-backend-android", version.ref = "libgdx" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camerax" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camerax" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
+androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

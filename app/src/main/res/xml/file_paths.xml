@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 路径声明：仅暴露拍照临时目录（cache/watermark_camera），
+     系统相机通过授予的 content Uri 写入拍摄结果。 -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path
+        name="watermark_camera"
+        path="watermark_camera/" />
+</paths>

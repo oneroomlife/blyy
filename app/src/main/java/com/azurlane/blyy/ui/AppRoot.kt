@@ -59,6 +59,7 @@ import androidx.compose.material.icons.rounded.Leaderboard
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Star
@@ -143,6 +144,8 @@ import com.azurlane.blyy.ui.screens.SettingsScreen
 import com.azurlane.blyy.ui.screens.ShipGalleryScreen
 import com.azurlane.blyy.ui.screens.StudentGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
+import com.azurlane.blyy.ui.screens.WatermarkCameraScreen
+import com.azurlane.blyy.ui.screens.WatermarkEditorScreen
 import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
@@ -223,7 +226,9 @@ fun AppContent() {
             currentDestination?.route != "jiuxin_conversation_list" &&
             currentDestination?.route != "app_icon_settings" &&
             currentDestination?.route != "sd_resource_gallery" &&
-            currentDestination?.route?.startsWith("image_cropper") != true
+            currentDestination?.route?.startsWith("image_cropper") != true &&
+            currentDestination?.route != "watermark_camera" &&
+            currentDestination?.route?.startsWith("watermark_editor") != true
 
     val drawerState = remember { DrawerState(initialValue = DrawerValue.Closed) }
 
@@ -621,6 +626,44 @@ fun AppContent() {
                             onBack = { navController.popBackStack() },
                             onLeaderboard = { navController.navigate("leaderboard") },
                             onNavigateToAssistantConfig = { navController.navigate("assistant_config") }
+                        )
+                    }
+                    composable("watermark_camera") {
+                        WatermarkCameraScreen(
+                            onBack = { navController.popBackStack() },
+                            onEditImage = { imageUri, watermarkId ->
+                                // URI 必须编码，避免 content:// 中的特殊字符破坏 query 参数
+                                val encodedUri = Uri.encode(imageUri.toString())
+                                val encodedWid = watermarkId?.let { Uri.encode(it) } ?: ""
+                                navController.navigate("watermark_editor?uri=$encodedUri&wid=$encodedWid")
+                            }
+                        )
+                    }
+                    composable(
+                        route = "watermark_editor?uri={uri}&wid={wid}",
+                        arguments = listOf(
+                            navArgument("uri") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            },
+                            navArgument("wid") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            }
+                        )
+                    ) { entry ->
+                        val uriStr = entry.arguments?.getString("uri").orEmpty()
+                        val widStr = entry.arguments?.getString("wid").orEmpty()
+                        WatermarkEditorScreen(
+                            imageUri = uriStr.takeIf { it.isNotBlank() }?.let(Uri::parse),
+                            initialWatermarkId = widStr.takeIf { it.isNotBlank() },
+                            onBack = { navController.popBackStack() },
+                            onRetake = {
+                                // 返回相机页重拍；相机页不在栈中时兜底导航
+                                if (!navController.popBackStack("watermark_camera", false)) {
+                                    navController.navigate("watermark_camera") { launchSingleTop = true }
+                                }
+                            }
                         )
                     }
                     composable("leaderboard") {
@@ -1202,6 +1245,14 @@ private fun ModernDrawerSheet(
             icon = Icons.Rounded.SmartToy,
             description = "与AI舰娘对话",
             color = MaterialTheme.colorScheme.primary,
+            group = "工具"
+        ),
+        DrawerMenuItem(
+            route = "watermark_camera",
+            label = "水印相机",
+            icon = Icons.Rounded.PhotoCamera,
+            description = "拍照或选图添加舰娘水印",
+            color = MaterialTheme.colorScheme.secondary,
             group = "工具"
         ),
         DrawerMenuItem(
