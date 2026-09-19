@@ -45,6 +45,14 @@ android {
         baseline = file("lint-baseline.xml")
     }
 
+    testOptions {
+        unitTests {
+            // android.util.Log 等 android.jar stub 方法在本机单元测试中返回默认值
+            // 而非抛 "not mocked" 异常——VoiceViewModel 装配回调里有调试 Log
+            isReturnDefaultValues = true
+        }
+    }
+
     // 把 extractGdxNatives 任务生成的 libgdx.so 目录加入 jniLibs 源集，
     // AGP 会把这里的 .so 打入 APK 的 lib/<abi>/ 下。
     // ⚠️ AGP 9.x 默认禁止在 srcDir() 中传 Provider，已在 gradle.properties 中
