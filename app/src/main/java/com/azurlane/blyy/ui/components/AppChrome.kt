@@ -471,9 +471,9 @@ internal fun ModernDrawerSheet(
         ),
         DrawerMenuItem(
             route = "live2d",
-            label = "查看Live2D",
+            label = "Live2D 皮肤",
             icon = Icons.Rounded.ViewInAr,
-            description = "浏览Live2D模型库",
+            description = "导入并查看本地 Live2D 模型",
             color = MaterialTheme.colorScheme.tertiary,
             group = "娱乐"
         ),

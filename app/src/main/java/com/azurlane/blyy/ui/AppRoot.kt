@@ -132,6 +132,8 @@ import com.azurlane.blyy.ui.screens.JiuxinChatScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
 import com.azurlane.blyy.ui.screens.LeaderboardScreen
+import com.azurlane.blyy.ui.screens.live2d.Live2dLibraryScreen
+import com.azurlane.blyy.ui.screens.live2d.Live2dViewerScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
@@ -220,7 +222,7 @@ fun AppContent() {
             currentDestination?.route != Screen.About.route &&
             currentDestination?.route?.startsWith("secretary") != true &&
             currentDestination?.route != "settings" &&
-            currentDestination?.route != "live2d" &&
+            currentDestination?.route?.startsWith("live2d") != true &&
             currentDestination?.route != "assistant" &&
             currentDestination?.route != "assistant_config" &&
             currentDestination?.route != "jiuxin_config" &&
@@ -334,23 +336,10 @@ fun AppContent() {
                     currentRoute = currentDestination?.route,
                     onNavigate = { route ->
                         haptic(BlyyHaptic.Tick)
-                        // Live2D 改为直接跳转浏览器查看，避免应用内 WebView 的 WAF 拦截等问题
-                        if (route == "live2d") {
-                            scope.launch { drawerState.close() }
-                            try {
-                                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://l2d.su/cn/"))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                context.startActivity(browserIntent)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "No browser available to open Live2D", e)
-                                Toast.makeText(context, "未找到可用的浏览器应用", Toast.LENGTH_SHORT).show()
-                            }
-                        } else {
-                            // 先关闭抽屉，等待关闭动画完成后再导航，避免菜单与页面切换动画冲突
-                            scope.launch {
-                                drawerState.close()
-                                navController.navigate(route) { launchSingleTop = true }
-                            }
+                        // 先关闭抽屉，等待关闭动画完成后再导航，避免菜单与页面切换动画冲突
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate(route) { launchSingleTop = true }
                         }
                     },
                     onClose = {
@@ -810,6 +799,31 @@ fun AppContent() {
                             onSelectResource = { resourceId ->
                                 secretaryViewModel.onIntent(SecretaryShipIntent.SetSdResourceId(resourceId))
                             },
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("live2d") {
+                        Live2dLibraryScreen(
+                            onBack = { navController.popBackStack() },
+                            onOpenViewer = { modelId, displayName ->
+                                // id 与显示名都编码，避免特殊字符破坏路由
+                                navController.navigate(
+                                    "live2d/view/${Uri.encode(modelId)}?name=${Uri.encode(displayName)}"
+                                )
+                            }
+                        )
+                    }
+                    composable(
+                        route = "live2d/view/{modelId}?name={name}",
+                        arguments = listOf(
+                            navArgument("modelId") { type = NavType.StringType },
+                            navArgument("name") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            }
+                        )
+                    ) {
+                        Live2dViewerScreen(
                             onBack = { navController.popBackStack() }
                         )
                     }
