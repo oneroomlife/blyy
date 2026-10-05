@@ -74,6 +74,9 @@ class PlayerSettingsDataStore @Inject constructor(
         private val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
         private val HIDE_STATUS_BAR_KEY = booleanPreferencesKey("hide_status_bar")
 
+        // Live2D 查看器互动语音开关
+        private val LIVE2D_VOICE_ENABLED_KEY = booleanPreferencesKey("live2d_voice_enabled")
+
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
@@ -251,6 +254,9 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 沉浸式：隐藏状态栏，默认开启。用户可从屏幕顶部下滑临时呼出（sticky immersive） */
     val hideStatusBar: Flow<Boolean> = safeData.map { it[HIDE_STATUS_BAR_KEY] ?: true }
 
+    /** Live2D 查看器：点击皮肤互动时播放对应语音，默认开启 */
+    val live2dVoiceEnabled: Flow<Boolean> = safeData.map { it[LIVE2D_VOICE_ENABLED_KEY] ?: true }
+
     /** 自动检测更新开关，默认开启 */
     val autoCheckUpdateEnabled: Flow<Boolean> = safeData.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
 
@@ -352,6 +358,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setHideStatusBar(hide: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[HIDE_STATUS_BAR_KEY] = hide
+        }
+    }
+
+    suspend fun setLive2dVoiceEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[LIVE2D_VOICE_ENABLED_KEY] = enabled
         }
     }
 

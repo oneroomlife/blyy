@@ -39,6 +39,8 @@ import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Mood
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -148,6 +150,8 @@ private sealed class BridgeMessage {
     data object MotionFinish : BridgeMessage()
     data class Thumb(val data: String) : BridgeMessage()
     data class Log(val message: String) : BridgeMessage()
+    /** 用户点击模型互动（group = 渲染端随机选中的触摸系动作组） */
+    data class Tap(val group: String) : BridgeMessage()
 }
 
 private val bridgeJson = Json { ignoreUnknownKeys = true }
@@ -160,6 +164,7 @@ private fun parseBridgeMessage(json: String): BridgeMessage? = runCatching {
         "error" -> BridgeMessage.Error(obj["message"]?.jsonPrimitive?.content ?: "未知错误")
         "motionStart" -> BridgeMessage.MotionStart(obj["group"]?.jsonPrimitive?.content ?: "")
         "motionFinish" -> BridgeMessage.MotionFinish
+        "tap" -> BridgeMessage.Tap(obj["group"]?.jsonPrimitive?.content ?: "")
         "thumb" -> BridgeMessage.Thumb(obj["data"]?.jsonPrimitive?.content ?: "")
         "log" -> BridgeMessage.Log(obj["message"]?.jsonPrimitive?.content ?: "")
         else -> null
@@ -190,7 +195,6 @@ fun Live2dViewerScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isDark = LocalIsDark.current
     val haptic = rememberBlyyHaptics()
-
     // 渲染桥状态
     var phase by remember { mutableStateOf(ViewerPhase.LOADING) }
     var bridgeError by remember { mutableStateOf<String?>(null) }
@@ -225,6 +229,7 @@ fun Live2dViewerScreen(
                 }
                 is BridgeMessage.MotionStart -> activeMotion = msg.group
                 is BridgeMessage.MotionFinish -> activeMotion = null
+                is BridgeMessage.Tap -> viewModel.playInteractionVoice(msg.group)
                 is BridgeMessage.Thumb -> {
                     runCatching {
                         val b64 = msg.data.substringAfter("base64,")
@@ -411,6 +416,17 @@ fun Live2dViewerScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 互动语音开关（图标式，随开关切换 音量开/静音 图标）
+                    ViewerControlPill(
+                        icon = if (state.voiceEnabled) Icons.Rounded.VolumeUp else Icons.Rounded.VolumeOff,
+                        label = null,
+                        contentDescription = if (state.voiceEnabled) "关闭互动语音" else "开启互动语音",
+                        onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            controlsTick++
+                            viewModel.setVoiceEnabled(!state.voiceEnabled)
+                        }
+                    )
                     ViewerControlPill(
                         icon = Icons.Rounded.Animation,
                         label = "动作",
@@ -607,6 +623,8 @@ fun Live2dViewerScreen(
                                 } else 0
                                 motionIndexByGroup = motionIndexByGroup + (group to idx)
                                 callViewer("playMotion('$group', $idx)")
+                                // 手动播放动作同样联动对应场景语音（待机等无映射组静默跳过）
+                                viewModel.playInteractionVoice(group)
                                 showMotionSheet = false
                             },
                             label = {
@@ -664,12 +682,13 @@ fun Live2dViewerScreen(
     }
 }
 
-/** 底部控制条的胶囊按钮 */
+/** 底部控制条的胶囊按钮（label = null 时渲染为纯图标模式） */
 @Composable
 private fun ViewerControlPill(
     icon: ImageVector,
-    label: String,
+    label: String?,
     showPulse: Boolean = false,
+    contentDescription: String? = null,
     onClick: () -> Unit
 ) {
     val pulse = rememberInfiniteTransition(label = "motionPulse")
@@ -683,23 +702,25 @@ private fun ViewerControlPill(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .padding(horizontal = if (label != null) 10.dp else 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = null,
+            contentDescription = contentDescription,
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier
                 .size(18.dp)
                 .alpha(if (showPulse) pulseAlpha else 1f)
         )
-        Text(
-            text = label,
-            style = AppTypography.LabelMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
+        if (label != null) {
+            Text(
+                text = label,
+                style = AppTypography.LabelMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 }
 

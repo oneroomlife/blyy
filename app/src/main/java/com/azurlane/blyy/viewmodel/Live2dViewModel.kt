@@ -3,11 +3,10 @@ package com.azurlane.blyy.viewmodel
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dLibrary
 import com.azurlane.blyy.util.Live2dModelInfo
-import com.azurlane.blyy.util.PinyinHelper
+import com.azurlane.blyy.util.Live2dNameResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,15 +43,13 @@ sealed class Live2dIntent {
 /**
  * Live2D 皮肤库状态与业务编排。
  *
- * 显示名策略：模型目录普遍为拼音命名（aierdeliqi_4），扫描后用
- * 舰船数据库（Room）做拼音反查还原中文舰名（如"埃尔德里奇 · 换装4"）；
- * 查不到时保留原目录名，绝不猜测造假。
+ * 显示名策略见 [Live2dNameResolver]：拼音目录经舰船数据库反查还原中文舰名。
  */
 @HiltViewModel
 class Live2dViewModel @Inject constructor(
     private val library: Live2dLibrary,
     private val importer: Live2dImporter,
-    shipDao: ShipDao
+    private val nameResolver: Live2dNameResolver
 ) : ViewModel() {
 
     data class State(
@@ -69,18 +66,9 @@ class Live2dViewModel @Inject constructor(
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
-    /** 拼音 → 中文舰名（来自 Room 舰船库，随数据库刷新自动重建） */
-    private var pinyinToName: Map<String, String> = emptyMap()
-
     private var importJob: Job? = null
 
     init {
-        // 舰船库变化时重建反查表（扫描结果在重组时通过 displayNameFor 即时生效）
-        viewModelScope.launch {
-            shipDao.getAllShips().collect { ships ->
-                pinyinToName = ships.associate { PinyinHelper.toPinyin(it.name) to it.name }
-            }
-        }
         refresh()
     }
 
@@ -116,23 +104,8 @@ class Live2dViewModel @Inject constructor(
         }
     }
 
-    /**
-     * 模型显示名：`aierdeliqi_4` → "埃尔德里奇 · 换装4"。
-     * 先精确匹配全拼，再限定前缀长度做前缀匹配（覆盖"阿达尔伯特亲王"→adaerbote
-     * 这类"目录只取舰名前半"的情况），都查不到时保留原目录名。
-     */
-    fun displayNameFor(id: String): String {
-        val skinIndex = id.substringAfterLast('_').toIntOrNull()
-        val base = if (skinIndex != null) id.substringBeforeLast('_') else id
-        val pinyin = base.lowercase()
-        val chinese = pinyinToName[pinyin]
-            ?: pinyinToName.entries
-                .filter { it.key.startsWith(pinyin) && pinyin.length >= 4 }
-                .minByOrNull { it.key.length }
-                ?.value
-        val name = chinese ?: base
-        return if (skinIndex != null && skinIndex >= 2) "$name · 换装$skinIndex" else name
-    }
+    /** 模型显示名（拼音反查中文舰名，详见 [Live2dNameResolver.displayNameFor]） */
+    fun displayNameFor(id: String): String = nameResolver.displayNameFor(id)
 
     private fun refresh() {
         viewModelScope.launch {

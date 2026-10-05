@@ -174,8 +174,10 @@
                         animateReset();
                     } else {
                         lastTapAt = now;
-                        // 单击：随机播放一个触摸系动作（无 HitAreas，自行挑组）
+                        // 单击：随机播放一个触摸系动作（无 HitAreas，自行挑组），
+                        // 并上报宿主以触发对应互动语音
                         var g = TOUCH_GROUPS[Math.floor(Math.random() * TOUCH_GROUPS.length)];
+                        post({ t: 'tap', group: g });
                         playMotion(g, 0);
                     }
                 }
