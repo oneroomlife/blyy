@@ -34,6 +34,8 @@ import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.CenterFocusWeak
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Mood
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
@@ -73,11 +75,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.LocalActivity
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -192,6 +201,10 @@ fun Live2dViewerScreen(
     var showExpressionSheet by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableIntStateOf(0) }
 
+    // 底部控制条可见性 + 交互计数（任意控件交互重置自动收起计时）
+    var controlsVisible by rememberSaveable { mutableStateOf(true) }
+    var controlsTick by remember { mutableIntStateOf(0) }
+
     // AndroidView factory 与控制回调之间共享 WebView 引用
     val webViewHolder = remember { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
 
@@ -260,6 +273,14 @@ fun Live2dViewerScreen(
     // 库层错误（模型不存在等）同步进错误态
     LaunchedEffect(state.error) {
         if (state.error != null) phase = ViewerPhase.ERROR
+    }
+
+    // 控制条 5 秒无操作自动收起为迷你浮标，保持观看沉浸性；controlsTick 变化即重置计时
+    LaunchedEffect(controlsVisible, controlsTick) {
+        if (controlsVisible) {
+            kotlinx.coroutines.delay(5000)
+            controlsVisible = false
+        }
     }
 
     Box(
@@ -360,25 +381,21 @@ fun Live2dViewerScreen(
                     )
                 }
             }
-            IconButton(onClick = {
-                haptic(BlyyHaptic.Tick)
-                bgMode = bgMode.next()
-            }) {
-                Icon(
-                    imageVector = Icons.Rounded.Palette,
-                    contentDescription = "切换背景（当前：${bgMode.label}）",
-                    tint = if (isDark) Color.White.copy(alpha = 0.85f) else Color(0xFF1B2735)
-                )
-            }
         }
 
-        // ── 底部控制条 ──
+        // ── 底部控制条（可收起：手动收起 / 5 秒无操作自动收起，仅剩迷你浮标） ──
         val info = state.info
-        if (phase == ViewerPhase.READY && info != null) {
+        val controlsGate = phase == ViewerPhase.READY && info != null
+        AnimatedVisibility(
+            visible = controlsGate && controlsVisible,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 28.dp),
+            enter = slideInVertically(initialOffsetY = { it / 2 }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it / 2 }) + fadeOut()
+        ) {
             Surface(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 28.dp)
                     .clip(RoundedCornerShape(28.dp))
                     .border(
                         width = AppSpacing.Border.Thin,
@@ -400,15 +417,17 @@ fun Live2dViewerScreen(
                         showPulse = activeMotion != null,
                         onClick = {
                             haptic(BlyyHaptic.Tick)
+                            controlsTick++
                             showMotionSheet = true
                         }
                     )
-                    if (info.hasExpressions) {
+                    if (info?.hasExpressions == true) {
                         ViewerControlPill(
                             icon = Icons.Rounded.Mood,
                             label = "表情",
                             onClick = {
                                 haptic(BlyyHaptic.Tick)
+                                controlsTick++
                                 showExpressionSheet = true
                             }
                         )
@@ -418,6 +437,7 @@ fun Live2dViewerScreen(
                         label = bgMode.label,
                         onClick = {
                             haptic(BlyyHaptic.Tick)
+                            controlsTick++
                             bgMode = bgMode.next()
                         }
                     )
@@ -426,8 +446,54 @@ fun Live2dViewerScreen(
                         label = "复位",
                         onClick = {
                             haptic(BlyyHaptic.Tick)
+                            controlsTick++
                             callViewer("resetView()")
                         }
+                    )
+                    ViewerControlPill(
+                        icon = Icons.Rounded.KeyboardArrowDown,
+                        label = "收起",
+                        onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            controlsVisible = false
+                        }
+                    )
+                }
+            }
+        }
+
+        // ── 收起后的迷你浮标（半透明，点击恢复控制条） ──
+        AnimatedVisibility(
+            visible = controlsGate && !controlsVisible,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 20.dp),
+            enter = fadeIn() + scaleIn(initialScale = 0.6f),
+            exit = fadeOut() + scaleOut(targetScale = 0.6f)
+        ) {
+            Surface(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(AppSpacing.Corner.Full))
+                    .clickable {
+                        haptic(BlyyHaptic.Tick)
+                        controlsVisible = true
+                        controlsTick++
+                    },
+                shape = RoundedCornerShape(AppSpacing.Corner.Full),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f),
+                tonalElevation = AppElevation.Level1,
+                border = androidx.compose.foundation.BorderStroke(
+                    width = AppSpacing.Border.Thin,
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                )
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.KeyboardArrowUp,
+                        contentDescription = "展开控制条",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
