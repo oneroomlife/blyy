@@ -331,6 +331,9 @@ fun AppContent() {
 
         ModalNavigationDrawer(
             drawerState = drawerState,
+            // Live2D 查看器内横向拖动用于平移模型：关闭抽屉边缘手势，
+            // 否则从左边缘起手的拖动会被抽屉抢走并弹出菜单栏
+            gesturesEnabled = currentDestination?.route?.startsWith("live2d/view") != true,
             drawerContent = {
                 ModernDrawerSheet(
                     currentRoute = currentDestination?.route,
