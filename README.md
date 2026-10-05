@@ -208,12 +208,12 @@
 | [kotlinx.serialization](https://github.com/Kotlin/kotlinx.serialization) | 1.10.0 | JSON 序列化 |
 | [Jsoup](https://jsoup.org/) | 1.18.1 | wiki HTML 解析 |
 | [Spine + libgdx](https://esotericsoftware.com/spine-runtimes) | 3.8.99.1 / 1.13.5 | SD 小人骨骼动画运行时 |
+| [pixi.js + pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) | 6.5.10 / 0.4.0 | Live2D 模型 Web 渲染运行时（内置 assets） |
 | [CameraX](https://developer.android.com/media/camera/camerax) | 1.6.1 | 水印相机 |
 | [pinyin4j](https://github.com/belerweb/pinyin4j) | 2.5.1 | 中文转拼音（头像/SD 资源匹配） |
-| [zstd-jni](https://github.com/luben/zstd-jni) | 1.5.7 | SD 资源压缩包解析 |
 | [compose-shimmer](https://github.com/valentinilk/compose-shimmer) | 1.3.3 | 骨架屏动画 |
 
-完整依赖与许可证信息见 [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)，架构设计详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+完整依赖清单以 [`gradle/libs.versions.toml`](gradle/libs.versions.toml) 为准，架构设计详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 <a id="project-structure"></a>
 
@@ -260,7 +260,6 @@ blyy/
 │           └── resources/                      # wiki 全量舰名 + 资产快照
 ├── docs/                               # 项目文档
 │   ├── ARCHITECTURE.md                 # 架构与 API 文档
-│   ├── DEPENDENCIES.md                 # 依赖清单与许可证
 │   ├── UI_TOKEN_GUIDE.md               # 设计 Token 速查表
 │   ├── USAGE.md                        # 使用说明
 │   └── screenshots/                    # 截图

@@ -3,7 +3,7 @@
 > 版本：v1.0（2026-10-04）
 > 范围：`ui/` 目录全部 35,030 行 Compose 代码（26 屏 + 20 组件文件 + 11 主题文件）+ 18 个 ViewModel 的状态暴露面
 > 方法：4 组并行深度阅读（图鉴/首页、语音/识舰娘、啾信/助手、秘书舰/系统/组件库）+ 令牌层与导航壳逐行精读，关键缺陷均经源码二次实证
-> 关联文档：[ARCHITECTURE.md](ARCHITECTURE.md)（分层架构）、[UI_TOKEN_GUIDE.md](UI_TOKEN_GUIDE.md)（令牌速查）、[UI_REFACTOR_REPORT.md](UI_REFACTOR_REPORT.md)（2026-06 一二期重构报告）
+> 关联文档：[ARCHITECTURE.md](ARCHITECTURE.md)（分层架构）、[UI_TOKEN_GUIDE.md](UI_TOKEN_GUIDE.md)（令牌速查）；2026-06 一二期重构报告已归档于 git 历史（513b906 之前）
 
 ---
 
