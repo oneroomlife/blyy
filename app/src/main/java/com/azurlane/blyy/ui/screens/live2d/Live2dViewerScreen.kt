@@ -462,12 +462,12 @@ fun Live2dViewerScreen(
             }
         }
 
-        // ── 收起后的迷你浮标（半透明，点击恢复控制条） ──
+        // ── 收起后的迷你浮标（右下角半透明，点击恢复控制条） ──
         AnimatedVisibility(
             visible = controlsGate && !controlsVisible,
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 20.dp),
+                .align(Alignment.BottomEnd)
+                .padding(bottom = 24.dp, end = 20.dp),
             enter = fadeIn() + scaleIn(initialScale = 0.6f),
             exit = fadeOut() + scaleOut(targetScale = 0.6f)
         ) {
