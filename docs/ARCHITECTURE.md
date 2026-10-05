@@ -93,7 +93,9 @@ app/src/main/java/com/azurlane/blyy/
 │   │   ├── AssistantConfigScreen.kt
 │   │   ├── JiuxinChatScreen.kt
 │   │   ├── JiuxinConfigScreen.kt
-│   │   ├── Live2DScreen.kt
+│   │   ├── live2d/              # Live2D 皮肤库（模型库 + 查看器）
+│   │   │   ├── Live2dLibraryScreen.kt
+│   │   │   └── Live2dViewerScreen.kt
 │   │   ├── GalleryScreen.kt
 │   │   ├── GuessByImageScreen.kt
 │   │   └── GuessByVoiceScreen.kt
@@ -111,7 +113,7 @@ app/src/main/java/com/azurlane/blyy/
 └── viewmodel/                # ViewModel 层
     ├── PlayerViewModel.kt
     ├── VoiceViewModel.kt
-    ├── Live2DViewModel.kt
+    ├── Live2dViewModel.kt      # Live2D 皮肤库（Live2dViewerViewModel 为查看器）
     └── JiuxinViewModel.kt
 ```
 

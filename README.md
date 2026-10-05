@@ -87,7 +87,7 @@
 
 ### 🎨 更多功能
 - **SD 资源图鉴**：浏览 Spine 骨骼动画 SD 小人资源，支持本地导入整理（zstd 压缩解析）
-- **Live2D 浏览**：WebView 嵌入 l2d.su 模型平台，浮窗互动
+- **Live2D 皮肤库**：导入本地 Cubism 3/4 模型（文件夹/zip 免权限导入），内置 pixi-live2d-display 渲染，支持动作/表情/手势交互与真实缩略图
 - **水印相机**：CameraX 拍照 + 可定制水印排版（相框/标题/署名），支持截图编辑
 - **应用图标设置**：多种启动器图标风格任选
 
@@ -161,7 +161,7 @@
 ### 导航结构
 
 - **底部三个主页面**：后宅 / 船坞（舰船⇆成员档案切换）/ 关于
-- **侧拉菜单**：语音播放、秘书舰、啾信、碧蓝航线助手、猜舰娘、SD 资源图鉴、Live2D、水印相机、设置
+- **侧拉菜单**：语音播放、秘书舰、啾信、碧蓝航线助手、猜舰娘、SD 资源图鉴、Live2D 皮肤、水印相机、设置
 
 ### 碧蓝航线助手
 
@@ -381,7 +381,7 @@ GitHub Actions（[android.yml](.github/workflows/android.yml)）在 push / PR �
 
 ### 数据与资源来源
 - 📚 [碧蓝航线 Wiki](https://wiki.biligame.com/blhx/) - 舰娘数据与立绘来源
-- 🎭 [**l2d.su**](https://l2d.su/) - **Live2D 模型资源平台**。感谢 [l2d.su](https://l2d.su/) 提供高质量的 Live2D 模型浏览服务，BLYY 的 Live2D 模块正是基于该网站构建
+- 🎞️ [pixi-live2d-display](https://github.com/guansss/pixi-live2d-display) & [Live2D Cubism SDK](https://www.live2d.com/) - Live2D 模型 Web 渲染运行时
 - 🦴 [Spine Runtime](https://esotericsoftware.com/spine-runtimes) - SD 小人骨骼动画运行时
 - 🎨 [Material Design](https://material.io/) - 设计语言与组件规范
 - 🛠️ [Jetpack Compose](https://developer.android.com/jetpack/compose) - 现代化的 Android UI 工具包
