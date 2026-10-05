@@ -1,0 +1,42 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    /* 背景透明：由 Compose 层绘制主题渐变，画布只负责模型 */
+    background: transparent;
+}
+
+#stage {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    touch-action: none; /* 手势全部由 viewer.js 接管，禁用浏览器默认缩放/滚动 */
+    outline: none;
+}
+
+/* 首次进入的操作提示，8 秒后自动淡出 */
+#hint {
+    position: fixed;
+    left: 50%;
+    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    padding: 8px 18px;
+    border-radius: 999px;
+    background: rgba(15, 24, 38, 0.55);
+    color: rgba(255, 255, 255, 0.85);
+    font: 13px/1.4 sans-serif;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity 1.2s ease;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+#hint.hide {
+    opacity: 0;
+}

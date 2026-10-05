@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <!-- viewport-fit=cover：配合沉浸式状态栏，画布全屏铺满 -->
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+    <title>Live2D Viewer</title>
+    <link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="hint">拖动移动 &nbsp;·&nbsp; 双指缩放 &nbsp;·&nbsp; 双击复位 &nbsp;·&nbsp; 点击有惊喜</div>
+<!-- 加载顺序固定：Cubism Core → PIXI → pixi-live2d-display → 渲染逻辑 -->
+<script src="js/live2dcubismcore.min.js"></script>
+<script src="js/pixi.min.js"></script>
+<script src="js/cubism4.min.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>
