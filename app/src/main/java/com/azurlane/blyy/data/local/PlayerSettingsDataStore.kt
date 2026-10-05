@@ -74,9 +74,6 @@ class PlayerSettingsDataStore @Inject constructor(
         private val DYNAMIC_COLOR_KEY = booleanPreferencesKey("dynamic_color_enabled")
         private val HIDE_STATUS_BAR_KEY = booleanPreferencesKey("hide_status_bar")
 
-        // Live2D 证书信任（仅限 l2d.su 域名）
-        private val LIVE2D_SSL_TRUSTED_KEY = booleanPreferencesKey("live2d_ssl_trusted")
-
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
@@ -254,9 +251,6 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 沉浸式：隐藏状态栏，默认开启。用户可从屏幕顶部下滑临时呼出（sticky immersive） */
     val hideStatusBar: Flow<Boolean> = safeData.map { it[HIDE_STATUS_BAR_KEY] ?: true }
 
-    /** Live2D 域名证书信任标记，仅对 l2d.su 生效 */
-    val live2dSslTrusted: Flow<Boolean> = safeData.map { it[LIVE2D_SSL_TRUSTED_KEY] ?: false }
-
     /** 自动检测更新开关，默认开启 */
     val autoCheckUpdateEnabled: Flow<Boolean> = safeData.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
 
@@ -358,12 +352,6 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setHideStatusBar(hide: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[HIDE_STATUS_BAR_KEY] = hide
-        }
-    }
-
-    suspend fun setLive2dSslTrusted(trusted: Boolean) {
-        context.dataStore.edit { prefs ->
-            prefs[LIVE2D_SSL_TRUSTED_KEY] = trusted
         }
     }
 

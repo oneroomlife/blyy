@@ -13,11 +13,4 @@
         <domain includeSubdomains="false">127.0.0.1</domain>
     </domain-config>
 
-    <!-- Live2D 域名专用配置：信任系统预装证书，移除 user CA 信任防止恶意应用 MITM -->
-    <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="true">l2d.su</domain>
-        <trust-anchors>
-            <certificates src="system" />
-        </trust-anchors>
-    </domain-config>
 </network-security-config>
