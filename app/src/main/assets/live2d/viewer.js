@@ -43,7 +43,8 @@
     var fitScale = 1;
     var userScale = 1, userX = 0, userY = 0;
     var MIN_SCALE = 0.25, MAX_SCALE = 8;
-    var resetAnim = null;
+    var transformAnim = null;   // 统一的变换动画（复位/旋转重适配共用）
+    var appliedW = 0, appliedH = 0; // 已应用的画布尺寸（修正旋转竞态用）
     var thumbSent = false;
 
     /** 点击模型时的候选动作组（碧蓝航线触摸系动作） */
@@ -63,29 +64,93 @@
     function computeFit() {
         if (!model) return;
         var W = window.innerWidth, H = window.innerHeight;
-        fitScale = Math.min((W * 0.92) / model.width, (H * 0.86) / model.height);
+        // ⚠️ 必须用 internalModel 的原始尺寸：model.width 是含当前 scale 的
+        // 实时宽度，用它重算适配会在每次 resize 时复利放大（旋转比例失真根因）
+        var mw = (model.internalModel && model.internalModel.width) || model.width;
+        var mh = (model.internalModel && model.internalModel.height) || model.height;
+        fitScale = Math.min((W * 0.92) / mw, (H * 0.86) / mh);
         fitScale = Math.min(fitScale, 4); // 防止贴图极小的模型被放大过头
     }
 
-    function animateReset() {
+    function cancelTransformAnim() {
+        if (transformAnim) {
+            cancelAnimationFrame(transformAnim.raf);
+            transformAnim = null;
+        }
+    }
+
+    /**
+     * 把模型的缩放/位置平滑过渡到目标值（easeOutCubic）。
+     * 复位与旋转重适配共用，动画期间手势会取消它。
+     */
+    function animateTransformTo(targetScale, tx, ty, duration) {
         if (!model) return;
+        cancelTransformAnim();
+        var from = { s: model.scale.x, x: model.x, y: model.y };
         var t0 = performance.now();
-        var from = { s: userScale, x: userX, y: userY };
-        if (resetAnim) cancelAnimationFrame(resetAnim.raf);
         function step(now) {
-            var p = clamp((now - t0) / 260, 0, 1);
+            if (!model) return;
+            var p = clamp((now - t0) / duration, 0, 1);
             var ease = 1 - Math.pow(1 - p, 3);
-            userScale = from.s + (1 - from.s) * ease;
-            userX = from.x - from.x * ease;
-            userY = from.y - from.y * ease;
-            applyTransform();
+            model.scale.set(from.s + (targetScale - from.s) * ease);
+            model.position.set(
+                from.x + (tx - from.x) * ease,
+                from.y + (ty - from.y) * ease
+            );
             if (p < 1) {
-                resetAnim.raf = requestAnimationFrame(step);
+                transformAnim.raf = requestAnimationFrame(step);
             } else {
-                resetAnim = null;
+                transformAnim = null;
             }
         }
-        resetAnim = { raf: requestAnimationFrame(step) };
+        transformAnim = { raf: requestAnimationFrame(step) };
+    }
+
+    /** 按当前 user* 参数平滑滑向适配布局 */
+    function animateToCurrentFit(duration) {
+        animateTransformTo(
+            fitScale * userScale,
+            window.innerWidth / 2 + userX,
+            window.innerHeight * 0.52 + userY,
+            duration
+        );
+    }
+
+    /** 双击复位：回正缩放与平移，平滑过渡 */
+    function animateReset() {
+        if (!model) return;
+        userScale = 1;
+        userX = 0;
+        userY = 0;
+        animateToCurrentFit(280);
+    }
+
+    /**
+     * 视口尺寸确定后的重布局：
+     *  - 手动兜底 renderer.resize（修正 PIXI resizeTo 在旋转过程中的竞态，
+     *    旋转中 resizeTo 可能拿到中间尺寸，画布比例随之失真）
+     *  - 旧方向下的平移量已无意义，回正 user 变换
+     *  - 以动画滑向新方向的居中适配，避免跳变
+     */
+    function layoutForSize(animate) {
+        var W = window.innerWidth, H = window.innerHeight;
+        if (W <= 0 || H <= 0 || !app) return;
+        if (W !== appliedW || H !== appliedH) {
+            appliedW = W;
+            appliedH = H;
+            app.renderer.resize(W, H);
+        }
+        if (!model) return;
+        computeFit();
+        userScale = 1;
+        userX = 0;
+        userY = 0;
+        if (animate) {
+            animateToCurrentFit(340);
+        } else {
+            cancelTransformAnim();
+            applyTransform();
+        }
     }
 
     function playMotion(group, index) {
@@ -147,7 +212,7 @@
                 if (drag.moved) {
                     userX += dx;
                     userY += dy;
-                    if (resetAnim) { cancelAnimationFrame(resetAnim.raf); resetAnim = null; }
+                    cancelTransformAnim();
                     applyTransform();
                 }
             } else if (pointers.size === 2 && pinchDist > 0) {
@@ -155,6 +220,7 @@
                 var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
                 if (dist > 0 && pinchDist > 0) {
                     userScale = clamp(userScale * (dist / pinchDist), MIN_SCALE, MAX_SCALE);
+                    cancelTransformAnim();
                     applyTransform();
                 }
                 pinchDist = dist;
@@ -241,6 +307,8 @@
             resolution: Math.min(window.devicePixelRatio || 1, 2),
             autoDensity: true
         });
+        appliedW = window.innerWidth;
+        appliedH = window.innerHeight;
         bindGestures(canvas);
         document.addEventListener('visibilitychange', function () {
             if (!app) return;
@@ -250,9 +318,37 @@
                 app.ticker.start();
             }
         });
-        window.addEventListener('resize', function () {
-            if (model) { computeFit(); applyTransform(); }
-        });
+        // 视口尺寸变化（旋转横竖屏等）：等尺寸稳定后再重布局，
+        // Android WebView 旋转过程中 innerWidth/innerHeight 会分多帧变化，
+        // 直接用单次 resize 回调会拿到中间尺寸导致画布比例错误。
+        function onViewportChanged() {
+            var lastW = window.innerWidth, lastH = window.innerHeight;
+            var stableFrames = 0;
+            function check() {
+                var W = window.innerWidth, H = window.innerHeight;
+                if (W === lastW && H === lastH) {
+                    stableFrames++;
+                    if (stableFrames >= 3) {
+                        layoutForSize(true);
+                        return;
+                    }
+                } else {
+                    lastW = W;
+                    lastH = H;
+                    stableFrames = 0;
+                }
+                requestAnimationFrame(check);
+            }
+            requestAnimationFrame(check);
+        }
+        window.addEventListener('resize', onViewportChanged);
+        window.addEventListener('orientationchange', onViewportChanged);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', onViewportChanged);
+        }
+        if (window.screen && screen.orientation && screen.orientation.addEventListener) {
+            screen.orientation.addEventListener('change', onViewportChanged);
+        }
     }
 
     function loadModel() {
