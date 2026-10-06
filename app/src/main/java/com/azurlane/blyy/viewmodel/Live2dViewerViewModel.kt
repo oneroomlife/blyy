@@ -18,6 +18,7 @@ import com.azurlane.blyy.util.Live2dLibrary
 import com.azurlane.blyy.util.Live2dModelInfo
 import com.azurlane.blyy.util.Live2dNameResolver
 import com.azurlane.blyy.util.Live2dWebViewClient
+import com.azurlane.blyy.util.SkinVoiceIndex
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -72,14 +73,11 @@ class Live2dViewerViewModel @Inject constructor(
     /** 模型皮肤序号（目录尾部 _N；null = 默认装扮） */
     private val skinIndex: Int? = modelId.substringAfterLast('_').toIntOrNull()
 
-    /** 台词按皮肤名的分组（键为 wiki 表名，保持出现顺序） */
+    /** 台词按皮肤名的分组（键为 wiki 表名） */
     private var linesBySkin: Map<String, List<VoiceLine>> = emptyMap()
 
-    /**
-     * 皮肤名序列（按 wiki 表顺序，剔除誓约/改造表）：
-     * 约定 [默认装扮, _2 对应皮肤, _3 对应皮肤, ...]，与资源目录 _N 编号对齐
-     */
-    private var skinSequence: List<String> = emptyList()
+    /** 皮肤表分类（默认/换装序列/誓约/改造），规则见 [SkinVoiceIndex] */
+    private var skinTables: SkinVoiceIndex.SkinTables = SkinVoiceIndex.classify(emptyList())
 
     init {
         load()
@@ -171,13 +169,11 @@ class Live2dViewerViewModel @Inject constructor(
                     voices
                 }
             }.onFailure { Log.w(TAG, "加载 $ship 语音失败：${it.message}") }.getOrDefault(emptyList())
-            // 按皮肤分组并提取皮肤名序列（wiki 表序 = 皮肤序：默认、_2、_3…；
-            // 誓约表【誓约】xxx 与改造表 xxx.改 不占用皮肤序号位）
+            // 按皮肤分组 + 分类：首表/未命名表 = 默认装扮，换装N = 第 N 张实名表，
+            // 誓约/改造表各自单独对应（规则详见 SkinVoiceIndex）
             linesBySkin = lines.groupBy { it.skinName }
-            skinSequence = lines.map { it.skinName }.distinct().filter { name ->
-                !name.startsWith("【誓约】") && !name.endsWith(".改")
-            }
-            Log.d(TAG, "语音台词就绪: $ship, ${lines.size} 条, 皮肤表: $skinSequence (目标序号: $skinIndex)")
+            skinTables = SkinVoiceIndex.classify(lines.map { it.skinName })
+            Log.d(TAG, "语音台词就绪: $ship, ${lines.size} 条, 换装序列: ${skinTables.skinSequence} (目标序号: $skinIndex)")
             _state.update {
                 it.copy(voiceLoading = false, voiceLoaded = true, voiceLines = lines)
             }
@@ -209,23 +205,25 @@ class Live2dViewerViewModel @Inject constructor(
 
     /**
      * 皮肤 × 场景双维选台词：
-     * 优先级 = 目标皮肤(精确关键词) → 默认皮肤(精确关键词) → 全部(精确关键词)
-     * → 目标皮肤(触摸系兜底) → 默认皮肤(兜底) → 全部(兜底)。
-     * 目标皮肤 = 模型目录 _N 对应皮肤序列第 N-1 位；誓约动作优先走【誓约】表。
+     * 优先级 = 目标皮肤(精确关键词) → 默认装扮(精确关键词) → 全部(精确关键词)
+     * → 目标皮肤(触摸系兜底) → 默认装扮(兜底) → 全部(兜底)。
+     * 目标皮肤 = 模型目录 _N 对应换装序列第 N 位；誓约动作优先走【誓约】表。
      */
     private fun pickVoice(lines: List<VoiceLine>, group: String?): VoiceLine? {
         if (lines.isEmpty()) return null
         val keywords = group?.let { GROUP_SCENE_KEYWORDS[it] } ?: return null
-        val targetSkin = skinIndex?.let { idx -> skinSequence.getOrNull(idx - 1) }
-        val defaultSkin = skinSequence.firstOrNull()
+        // 资源目录 _N：_1=通常，_2 起对应换装1、换装2…（换装k = 换装序列第 k-1 位）
+        val targetSkin = skinIndex?.let { idx ->
+            if (idx >= 2) skinTables.skinSequence.getOrNull(idx - 2) else null
+        }
         val oathSkin = if (group == "wedding") {
-            lines.map { it.skinName }.firstOrNull { it.startsWith("【誓约】") }
+            skinTables.oathNames.firstOrNull()
         } else null
 
         val pools = buildList {
             oathSkin?.let { add(linesBySkin[it].orEmpty()) }
             targetSkin?.let { add(linesBySkin[it].orEmpty()) }
-            defaultSkin?.let { add(linesBySkin[defaultSkin].orEmpty()) }
+            add(lines.filter { it.skinName in skinTables.defaultNames })
             add(lines)
         }
         for (pool in pools) {

@@ -11,6 +11,7 @@ import com.azurlane.blyy.data.model.StudentGallery
 import com.azurlane.blyy.data.model.StudentGalleryImage
 import com.azurlane.blyy.data.model.StudentGalleryTab
 import com.azurlane.blyy.data.model.StudentGalleryVideo
+import com.azurlane.blyy.util.SkinVoiceIndex
 import com.azurlane.blyy.data.model.StudentFilterData
 import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.util.NetworkHelper
@@ -432,19 +433,17 @@ class ShipRepository @Inject constructor(
                 Log.d(TAG, "fetchShipGallery END: Found ${uniqueIllustrations.size} portraits and mapped ${finalFigures.size} chibis")
 
                 // 立绘 tab 若是 wiki 的通用"换装N"标签，替换为真实皮肤名。
-                // 真实名来自同页语音表 data-title：表序与换装序一致
-                // （默认装扮=通常，第 idx 个换装 = 皮肤序列第 idx 位；誓约/改造表不占位）
+                // 真实名来自同页语音表：首表/未命名表 = 默认装扮，换装N = 第 N 张
+                // 实名表（【誓约】/xxx.改 表单独对应誓约/改造，不占换装序号）
                 val voiceSkinTitles = doc.select(".table-ShipWordsTable").map { t ->
                     var name = t.attr("data-title")
-                    if (name.isEmpty() || name == "舰船台词") name = "默认装扮"
+                    if (name.isEmpty() || name == "舰船台词") name = SkinVoiceIndex.DEFAULT_NAME
                     name
                 }
-                val skinSequence = voiceSkinTitles.filter { name ->
-                    !name.startsWith("【誓约】") && !name.endsWith(".改")
-                }
+                val skinTables = SkinVoiceIndex.classify(voiceSkinTitles)
                 val skinRenameMap = mutableMapOf<String, String>()
-                skinSequence.forEachIndexed { idx, name ->
-                    if (idx > 0) skinRenameMap["换装$idx"] = name
+                skinTables.skinSequence.forEachIndexed { idx, name ->
+                    skinRenameMap["换装${idx + 1}"] = name
                 }
                 if (skinRenameMap.isNotEmpty()) {
                     Log.d(TAG, "皮肤名映射: $skinRenameMap")
