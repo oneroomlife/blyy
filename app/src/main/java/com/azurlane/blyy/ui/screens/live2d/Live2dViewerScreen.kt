@@ -1,5 +1,6 @@
 package com.azurlane.blyy.ui.screens.live2d
 
+import android.content.pm.ActivityInfo
 import android.util.Base64
 import android.util.Log
 import android.view.View
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -39,6 +41,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Mood
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.ScreenRotation
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.AssistChip
@@ -209,6 +212,9 @@ fun Live2dViewerScreen(
     var controlsVisible by rememberSaveable { mutableStateOf(true) }
     var controlsTick by remember { mutableIntStateOf(0) }
 
+    // 横屏查看模式：强制横屏，退出查看器时恢复系统方向
+    var landscapeMode by rememberSaveable { mutableStateOf(false) }
+
     // AndroidView factory 与控制回调之间共享 WebView 引用
     val webViewHolder = remember { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
 
@@ -242,12 +248,13 @@ fun Live2dViewerScreen(
         }
     }
 
-    // 屏幕常亮：查看模型时不熄屏
+    // 屏幕常亮：查看模型时不熄屏；离开查看器时恢复系统方向设置
     val activity = LocalActivity.current
     DisposableEffect(Unit) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
 
@@ -412,7 +419,9 @@ fun Live2dViewerScreen(
                 tonalElevation = AppElevation.Level2
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -464,6 +473,20 @@ fun Live2dViewerScreen(
                             haptic(BlyyHaptic.Tick)
                             controlsTick++
                             callViewer("resetView()")
+                        }
+                    )
+                    ViewerControlPill(
+                        icon = Icons.Rounded.ScreenRotation,
+                        label = if (landscapeMode) "竖屏" else "横屏",
+                        onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            controlsTick++
+                            landscapeMode = !landscapeMode
+                            activity?.requestedOrientation = if (landscapeMode) {
+                                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            } else {
+                                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                            }
                         }
                     )
                     ViewerControlPill(

@@ -1,8 +1,6 @@
 package com.azurlane.blyy.ui.screens.live2d
 
-import android.content.ClipData
 import android.content.Intent
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -29,7 +27,6 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
@@ -87,7 +84,6 @@ import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dModelInfo
 import com.azurlane.blyy.viewmodel.Live2dIntent
 import com.azurlane.blyy.viewmodel.Live2dViewModel
-import java.io.File
 import java.util.Locale
 
 /**
@@ -95,7 +91,7 @@ import java.util.Locale
  *
  * 导入流程设计（人性化原则）：
  *  - 空态即引导：三行说明 + 醒目导入按钮，不让用户猜文件该放哪
- *  - 导入面板提供两种来源（文件夹/压缩包）+ 免导入的直拷路径（一键复制）
+ *  - 导入面板提供两种来源：文件夹（SAF 目录树）与 zip 压缩包，自动识别嵌套目录
  *  - 导入全程进度可见（阶段/当前模型/文件计数），可随时取消
  *  - 结果汇总横幅（新增/更新/失败明细），失败不静默
  */
@@ -157,11 +153,6 @@ fun Live2dLibraryScreen(
             it.id.contains(searchQuery, ignoreCase = true) ||
                 viewModel.displayNameFor(it.id).contains(searchQuery, ignoreCase = true)
         }
-    }
-
-    val storageHintPath = remember {
-        val base = context.getExternalFilesDir(null) ?: context.filesDir
-        File(base, "live2d").absolutePath
     }
 
     AdaptiveScreenBackground {
@@ -286,13 +277,6 @@ fun Live2dLibraryScreen(
                             actionLabel = "导入模型",
                             onAction = { showImportSheet = true }
                         )
-                        Spacer(Modifier.height(AppSpacing.Lg))
-                        StorageHintRow(
-                            hintPath = storageHintPath,
-                            onCopy = {
-                                copyToClipboard(context, storageHintPath)
-                            }
-                        )
                     }
                 }
 
@@ -369,25 +353,6 @@ fun Live2dLibraryScreen(
                         showImportSheet = false
                         zipLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
                     }
-                )
-
-                Box(
-                    Modifier
-                        .padding(vertical = AppSpacing.Lg)
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                )
-
-                Text(
-                    "免导入方式（电脑 USB / adb）",
-                    style = AppTypography.LabelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                StorageHintRow(
-                    hintPath = storageHintPath,
-                    onCopy = { copyToClipboard(context, storageHintPath) },
-                    modifier = Modifier.padding(top = AppSpacing.Sm)
                 )
             }
         }
@@ -749,41 +714,6 @@ private fun ImportOptionCard(
     }
 }
 
-@Composable
-private fun StorageHintRow(
-    hintPath: String,
-    onCopy: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = hintPath,
-                style = AppTypography.CaptionSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            IconButton(onClick = onCopy, modifier = Modifier.size(32.dp)) {
-                Icon(
-                    Icons.Rounded.ContentCopy,
-                    contentDescription = "复制路径",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
-    }
-}
-
 // ---------- 详情面板 ----------
 
 @Composable
@@ -874,10 +804,4 @@ private fun formatSize(bytes: Long): String = when {
     bytes >= 1 shl 20 -> String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
     bytes >= 1 shl 10 -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
     else -> "$bytes B"
-}
-
-private fun copyToClipboard(context: android.content.Context, text: String) {
-    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
-    clipboard?.setPrimaryClip(ClipData.newPlainText("path", text))
-    Toast.makeText(context, "路径已复制", Toast.LENGTH_SHORT).show()
 }
