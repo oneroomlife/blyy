@@ -69,6 +69,18 @@ class Live2dViewerViewModel @Inject constructor(
     /** 上一条已播放台词，随机时避免连续重复 */
     private var lastPlayedLine: VoiceLine? = null
 
+    /** 模型皮肤序号（目录尾部 _N；null = 默认装扮） */
+    private val skinIndex: Int? = modelId.substringAfterLast('_').toIntOrNull()
+
+    /** 台词按皮肤名的分组（键为 wiki 表名，保持出现顺序） */
+    private var linesBySkin: Map<String, List<VoiceLine>> = emptyMap()
+
+    /**
+     * 皮肤名序列（按 wiki 表顺序，剔除誓约/改造表）：
+     * 约定 [默认装扮, _2 对应皮肤, _3 对应皮肤, ...]，与资源目录 _N 编号对齐
+     */
+    private var skinSequence: List<String> = emptyList()
+
     init {
         load()
         viewModelScope.launch {
@@ -159,7 +171,13 @@ class Live2dViewerViewModel @Inject constructor(
                     voices
                 }
             }.onFailure { Log.w(TAG, "加载 $ship 语音失败：${it.message}") }.getOrDefault(emptyList())
-            Log.d(TAG, "语音台词就绪: $ship, ${lines.size} 条")
+            // 按皮肤分组并提取皮肤名序列（wiki 表序 = 皮肤序：默认、_2、_3…；
+            // 誓约表【誓约】xxx 与改造表 xxx.改 不占用皮肤序号位）
+            linesBySkin = lines.groupBy { it.skinName }
+            skinSequence = lines.map { it.skinName }.distinct().filter { name ->
+                !name.startsWith("【誓约】") && !name.endsWith(".改")
+            }
+            Log.d(TAG, "语音台词就绪: $ship, ${lines.size} 条, 皮肤表: $skinSequence (目标序号: $skinIndex)")
             _state.update {
                 it.copy(voiceLoading = false, voiceLoaded = true, voiceLines = lines)
             }
@@ -189,21 +207,45 @@ class Live2dViewerViewModel @Inject constructor(
 
     private val FALLBACK_KEYWORDS = listOf("普通触摸", "触摸")
 
+    /**
+     * 皮肤 × 场景双维选台词：
+     * 优先级 = 目标皮肤(精确关键词) → 默认皮肤(精确关键词) → 全部(精确关键词)
+     * → 目标皮肤(触摸系兜底) → 默认皮肤(兜底) → 全部(兜底)。
+     * 目标皮肤 = 模型目录 _N 对应皮肤序列第 N-1 位；誓约动作优先走【誓约】表。
+     */
     private fun pickVoice(lines: List<VoiceLine>, group: String?): VoiceLine? {
         if (lines.isEmpty()) return null
         val keywords = group?.let { GROUP_SCENE_KEYWORDS[it] } ?: return null
-        // 依次尝试关键词（"特殊触摸"先于"触摸"，避免子串误匹配）；无效 URL 的台词剔除
-        val matched = keywords.firstNotNullOfOrNull { k ->
-            lines.filter { it.scene.contains(k) && it.audioUrl.isNotBlank() }
-                .takeIf { it.isNotEmpty() }
-        }.orEmpty()
-        val pool = matched.ifEmpty {
-            lines.filter { l -> FALLBACK_KEYWORDS.any { it in l.scene } && l.audioUrl.isNotBlank() }
+        val targetSkin = skinIndex?.let { idx -> skinSequence.getOrNull(idx - 1) }
+        val defaultSkin = skinSequence.firstOrNull()
+        val oathSkin = if (group == "wedding") {
+            lines.map { it.skinName }.firstOrNull { it.startsWith("【誓约】") }
+        } else null
+
+        val pools = buildList {
+            oathSkin?.let { add(linesBySkin[it].orEmpty()) }
+            targetSkin?.let { add(linesBySkin[it].orEmpty()) }
+            defaultSkin?.let { add(linesBySkin[defaultSkin].orEmpty()) }
+            add(lines)
         }
-        if (pool.isEmpty()) return null
-        val candidate = pool.random()
-        val picked = if (candidate == lastPlayedLine && pool.size > 1) {
-            pool.filter { it != candidate }.random()
+        for (pool in pools) {
+            pickByKeywords(pool, keywords)?.let { return it }
+        }
+        for (pool in pools) {
+            pickByKeywords(pool, FALLBACK_KEYWORDS)?.let { return it }
+        }
+        return null
+    }
+
+    private fun pickByKeywords(pool: List<VoiceLine>, keywords: List<String>): VoiceLine? {
+        val valid = pool.filter { it.audioUrl.isNotBlank() }
+        if (valid.isEmpty()) return null
+        val matched = keywords.firstNotNullOfOrNull { k ->
+            valid.filter { it.scene.contains(k) }.takeIf { it.isNotEmpty() }
+        } ?: return null
+        val candidate = matched.random()
+        val picked = if (candidate == lastPlayedLine && matched.size > 1) {
+            matched.filter { it != candidate }.random()
         } else {
             candidate
         }
