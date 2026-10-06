@@ -431,10 +431,36 @@ class ShipRepository @Inject constructor(
 
                 Log.d(TAG, "fetchShipGallery END: Found ${uniqueIllustrations.size} portraits and mapped ${finalFigures.size} chibis")
 
+                // 立绘 tab 若是 wiki 的通用"换装N"标签，替换为真实皮肤名。
+                // 真实名来自同页语音表 data-title：表序与换装序一致
+                // （默认装扮=通常，第 idx 个换装 = 皮肤序列第 idx 位；誓约/改造表不占位）
+                val voiceSkinTitles = doc.select(".table-ShipWordsTable").map { t ->
+                    var name = t.attr("data-title")
+                    if (name.isEmpty() || name == "舰船台词") name = "默认装扮"
+                    name
+                }
+                val skinSequence = voiceSkinTitles.filter { name ->
+                    !name.startsWith("【誓约】") && !name.endsWith(".改")
+                }
+                val skinRenameMap = mutableMapOf<String, String>()
+                skinSequence.forEachIndexed { idx, name ->
+                    if (idx > 0) skinRenameMap["换装$idx"] = name
+                }
+                if (skinRenameMap.isNotEmpty()) {
+                    Log.d(TAG, "皮肤名映射: $skinRenameMap")
+                }
+                val renameSkin: (String) -> String = { skinRenameMap[it] ?: it }
+                val renamedIllustrations = uniqueIllustrations.map { (name, url) ->
+                    renameSkin(name) to url
+                }
+                val renamedFigures = finalFigures.map { (name, url) ->
+                    renameSkin(name) to url
+                }
+
                 ShipGallery(
                     shipName = shipName,
-                    illustrations = uniqueIllustrations, // 将去重后的大图传入
-                    figures = finalFigures               // 将精准匹配的小人传入
+                    illustrations = renamedIllustrations,
+                    figures = renamedFigures
                 )
             },
             onFailure = { e ->
