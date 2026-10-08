@@ -23,13 +23,13 @@ class Live2dNameResolver @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 拼音 → 中文舰名（随舰船库刷新自动重建） */
-    private val pinyinToName = MutableStateFlow(emptyMap<String, String>())
+    /** 拼音 → 中文舰名（随舰船库刷新自动重建）；界面层可订阅其就绪时机 */
+    val pinyinMap = MutableStateFlow(emptyMap<String, String>())
 
     init {
         scope.launch {
             shipDao.getAllShips().collect { ships ->
-                pinyinToName.value = ships.associate { PinyinHelper.toPinyin(it.name) to it.name }
+                pinyinMap.value = ships.associate { PinyinHelper.toPinyin(it.name) to it.name }
             }
         }
     }
@@ -50,8 +50,8 @@ class Live2dNameResolver @Inject constructor(
         val skinIndex = id.substringAfterLast('_').toIntOrNull()
         val base = if (skinIndex != null) id.substringBeforeLast('_') else id
         val pinyin = base.lowercase()
-        return pinyinToName.value[pinyin]
-            ?: pinyinToName.value.entries
+        return pinyinMap.value[pinyin]
+            ?: pinyinMap.value.entries
                 .filter { it.key.startsWith(pinyin) && pinyin.length >= 4 }
                 .minByOrNull { it.key.length }
                 ?.value

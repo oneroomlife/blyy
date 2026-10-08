@@ -7,11 +7,15 @@ import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dLibrary
 import com.azurlane.blyy.util.Live2dModelInfo
 import com.azurlane.blyy.util.Live2dNameResolver
+import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -49,7 +53,8 @@ sealed class Live2dIntent {
 class Live2dViewModel @Inject constructor(
     private val library: Live2dLibrary,
     private val importer: Live2dImporter,
-    private val nameResolver: Live2dNameResolver
+    private val nameResolver: Live2dNameResolver,
+    private val skinNameRegistry: Live2dSkinNameRegistry
 ) : ViewModel() {
 
     data class State(
@@ -70,6 +75,15 @@ class Live2dViewModel @Inject constructor(
 
     init {
         refresh()
+        // 舰名反查就绪后为所有模型请求真实皮肤名（幂等去重；反查未就绪时不发无效请求）
+        viewModelScope.launch {
+            combine(nameResolver.pinyinMap, skinNameRegistry.skinSequences) { _, _ -> }
+                .collect {
+                    _state.value.models.forEach { model ->
+                        nameResolver.baseShipName(model.id)?.let { skinNameRegistry.request(it) }
+                    }
+                }
+        }
     }
 
     fun onIntent(intent: Live2dIntent) {
@@ -104,8 +118,32 @@ class Live2dViewModel @Inject constructor(
         }
     }
 
-    /** 模型显示名（拼音反查中文舰名，详见 [Live2dNameResolver.displayNameFor]） */
-    fun displayNameFor(id: String): String = nameResolver.displayNameFor(id)
+    /**
+     * 模型显示名（StateFlow）：舰名反查就绪或皮肤名注册表更新时自动重算，
+     * 「换装N」升级为真实皮肤名（如 aierdeliqi_4 → 埃尔德里奇 · 正月的牵手）。
+     */
+    val displayNames: StateFlow<Map<String, String>> = combine(
+        _state,
+        skinNameRegistry.skinSequences,
+        nameResolver.pinyinMap
+    ) { s, _, _ -> s.models.associate { it.id to displayNameFor(it.id) } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
+    /**
+     * 模型显示名：拼音反查中文舰名 + 皮肤名注册表把「换装N」替换为真实皮肤名。
+     * 注意：舰名反查就绪前会回退拼音原文，调用方需订阅 [displayNames] 获得升级。
+     */
+    fun displayNameFor(id: String): String {
+        val skinIndex = id.substringAfterLast('_').toIntOrNull()
+        val base = nameResolver.baseShipName(id)
+            ?: (if (skinIndex != null) id.substringBeforeLast('_') else id)
+        val realSkin = skinIndex?.takeIf { it >= 2 }?.let { skinNameRegistry.skinNameFor(base, it) }
+        return when {
+            skinIndex == null || skinIndex < 2 -> base
+            realSkin != null -> "$base · $realSkin"
+            else -> "$base · 换装$skinIndex"
+        }
+    }
 
     private fun refresh() {
         viewModelScope.launch {

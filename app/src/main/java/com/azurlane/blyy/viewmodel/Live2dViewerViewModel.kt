@@ -17,6 +17,7 @@ import com.azurlane.blyy.util.CacheNamespaces
 import com.azurlane.blyy.util.Live2dLibrary
 import com.azurlane.blyy.util.Live2dModelInfo
 import com.azurlane.blyy.util.Live2dNameResolver
+import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import com.azurlane.blyy.util.Live2dWebViewClient
 import com.azurlane.blyy.util.SkinVoiceIndex
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -39,6 +40,7 @@ class Live2dViewerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val library: Live2dLibrary,
     private val nameResolver: Live2dNameResolver,
+    private val skinNameRegistry: Live2dSkinNameRegistry,
     private val getVoicesUseCase: GetVoicesUseCase,
     private val playbackServiceConnection: PlaybackServiceConnection,
     private val settingsDataStore: PlayerSettingsDataStore
@@ -46,8 +48,15 @@ class Live2dViewerViewModel @Inject constructor(
 
     val modelId: String = savedStateHandle.get<String>("modelId").orEmpty()
 
-    /** 库界面解析好的中文显示名（导航参数，仅展示用） */
+    /** 库界面解析好的中文显示名（导航参数，仅作初始回退） */
     val modelName: String = savedStateHandle.get<String>("name").orEmpty()
+
+    /**
+     * 实时显示名：皮肤名注册表就绪后把「换装N」升级为真实皮肤名
+     * （如 埃尔德里奇 · 换装4 → 埃尔德里奇 · 正月的牵手）
+     */
+    private val _displayName = MutableStateFlow(modelName.ifBlank { modelId })
+    val displayName: StateFlow<String> = _displayName.asStateFlow()
 
     data class State(
         val loading: Boolean = true,
@@ -86,6 +95,37 @@ class Live2dViewerViewModel @Inject constructor(
                 _state.update { it.copy(voiceEnabled = enabled) }
                 if (enabled) ensureVoicesLoaded()
             }
+        }
+        // 舰名反查就绪后补拉台词（查台词用的舰名此时才可解析）
+        viewModelScope.launch {
+            nameResolver.pinyinMap.collect {
+                ensureVoicesLoaded()
+            }
+        }
+        // 标题不依赖语音开关：注册表就绪后即把「换装N」升级为真实皮肤名
+        viewModelScope.launch {
+            skinNameRegistry.skinSequences.collect {
+                _displayName.value = computeDisplayName()
+            }
+        }
+        // 首次进入也拉一次（幂等，走 SHIP_VOICES 缓存），保证标题能升级
+        viewModelScope.launch {
+            _displayName.value = computeDisplayName()
+        }
+    }
+
+    /** 标题显示名：基础舰名 + 真实皮肤名（换装序列第 N-1 位） */
+    private fun computeDisplayName(): String {
+        val skinIndex = modelId.substringAfterLast('_').toIntOrNull()
+        val base = currentShipName().ifBlank {
+            modelName.substringBefore(" · ").ifBlank { modelId }
+        }
+        skinNameRegistry.request(base)
+        val realSkin = skinIndex?.takeIf { it >= 2 }?.let { skinNameRegistry.skinNameFor(base, it) }
+        return when {
+            skinIndex == null || skinIndex < 2 -> base
+            realSkin != null -> "$base · $realSkin"
+            else -> "$base · 换装$skinIndex"
         }
     }
 

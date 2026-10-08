@@ -196,6 +196,7 @@ fun Live2dViewerScreen(
 ) {
     val viewModel: Live2dViewerViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val displayName by viewModel.displayName.collectAsStateWithLifecycle()
     val isDark = LocalIsDark.current
     val haptic = rememberBlyyHaptics()
     // 渲染桥状态
@@ -365,7 +366,7 @@ fun Live2dViewerScreen(
             Spacer(Modifier.width(AppSpacing.Xs))
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = viewModel.modelName.ifBlank { viewModel.modelId },
+                    text = displayName,
                     style = AppTypography.LabelLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = if (isDark) Color.White else Color(0xFF1B2735),

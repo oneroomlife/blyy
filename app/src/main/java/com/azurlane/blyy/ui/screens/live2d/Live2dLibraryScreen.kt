@@ -106,6 +106,9 @@ fun Live2dLibraryScreen(
 ) {
     val context = LocalContext.current
     val viewModel: Live2dViewModel = hiltViewModel()
+    // 皮肤名注册表更新时（换装N → 真实皮肤名）触发卡片/详情自动刷新
+    val displayNames by viewModel.displayNames.collectAsStateWithLifecycle()
+    val displayNameOf: (String) -> String = { id -> displayNames[id] ?: viewModel.displayNameFor(id) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val haptic = rememberBlyyHaptics()
 
@@ -151,7 +154,7 @@ fun Live2dLibraryScreen(
         if (searchQuery.isBlank()) state.models
         else state.models.filter {
             it.id.contains(searchQuery, ignoreCase = true) ||
-                viewModel.displayNameFor(it.id).contains(searchQuery, ignoreCase = true)
+                displayNameOf(it.id).contains(searchQuery, ignoreCase = true)
         }
     }
 
@@ -295,10 +298,10 @@ fun Live2dLibraryScreen(
                         items(filteredModels, key = { it.id }) { model ->
                             Live2dModelCard(
                                 model = model,
-                                displayName = viewModel.displayNameFor(model.id),
+                                displayName = displayNameOf(model.id),
                                 onClick = {
                                     haptic(BlyyHaptic.Tick)
-                                    onOpenViewer(model.id, viewModel.displayNameFor(model.id))
+                                    onOpenViewer(model.id, displayNameOf(model.id))
                                 },
                                 onLongClick = {
                                     haptic(BlyyHaptic.LongPress)
@@ -363,10 +366,10 @@ fun Live2dLibraryScreen(
         ModalBottomSheet(onDismissRequest = { detailModel = null }) {
             ModelDetailSheet(
                 model = model,
-                displayName = viewModel.displayNameFor(model.id),
+                displayName = displayNameOf(model.id),
                 onPlay = {
                     detailModel = null
-                    onOpenViewer(model.id, viewModel.displayNameFor(model.id))
+                    onOpenViewer(model.id, displayNameOf(model.id))
                 },
                 onRename = {
                     renameTarget = model
@@ -389,7 +392,7 @@ fun Live2dLibraryScreen(
             title = { Text("删除模型？") },
             text = {
                 Text(
-                    "「${viewModel.displayNameFor(model.id)}」（${formatSize(model.sizeBytes)}）将被永久删除，此操作不可恢复。",
+                    "「${displayNameOf(model.id)}」（${formatSize(model.sizeBytes)}）将被永久删除，此操作不可恢复。",
                     style = AppTypography.BodyMedium
                 )
             },
