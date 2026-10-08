@@ -15,12 +15,17 @@ import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.viewmodel.PlayMode
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.isActive
 import java.io.IOException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -67,6 +72,10 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_OVERLAY_ENABLED_KEY = booleanPreferencesKey("secretary_overlay_enabled")
         // 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互）
         private val SECRETARY_OVERLAY_TOUCH_PASSTHROUGH_KEY = booleanPreferencesKey("secretary_overlay_touch_passthrough")
+        // 悬浮窗主窗口位置（px，屏幕绝对坐标）。服务启动时恢复，拖动/缩放结束时写回，
+        // 使小人"停留"在用户上次摆放的位置（不再每次重启都回到默认 100,300）
+        private val SECRETARY_OVERLAY_POS_X_KEY = intPreferencesKey("secretary_overlay_pos_x")
+        private val SECRETARY_OVERLAY_POS_Y_KEY = intPreferencesKey("secretary_overlay_pos_y")
 
         // 外观设置
         private val UI_STYLE_KEY = stringPreferencesKey("ui_style")
@@ -165,24 +174,32 @@ class PlayerSettingsDataStore @Inject constructor(
      *
      * 注意：仅捕获读取异常；写入异常（edit {} 内）仍由调用方的 try-catch 处理。
      *
-     * 重试层：Flow 抛出异常后上游即终止，catch 兜底发射 emptyPreferences 后整条数据流
-     * **永久完成**——所有派生 Flow（含 aiPersonaConfigs 等配置列表）冻结在空值，
-     * 后续任何"读快照 → 全量覆盖写"都会基于空列表清掉已存数据，且 UI 不再收到更新。
-     * 因此对瞬时 IO 异常（并发写冲突/低存储/ROM 抖动）先重试 3 次，仅重试耗尽后才兜底。
+     * 重试与自愈：Flow 抛出异常后上游即终止，catch 兜底发射 emptyPreferences 后整条数据流
+     * 会**正常完成**——若不重启收集，所有派生 Flow（含 Eagerly 的三张配置表）将永久冻结在
+     * 兜底空值，后续任何"读快照 → 全量覆盖写"都会基于空列表清掉已存数据，且 UI 不再收到
+     * 更新。因此对瞬时 IO 异常（并发写冲突/低存储/ROM 抖动）先重试 3 次；重试耗尽后兜底
+     * 发射一轮空值（保证本轮不崩溃），随后重启一轮上游收集——下次读取成功即自动恢复。
      */
-    private val safeData: Flow<Preferences> = context.dataStore.data
-        .retryWhen { cause, attempt ->
-            val shouldRetry = cause is IOException && attempt < 3
-            if (shouldRetry) {
-                Log.w(TAG, "DataStore read failed (attempt ${attempt + 1}), retrying", cause)
-                delay(100L * (attempt + 1))
-            }
-            shouldRetry
+    private val safeData: Flow<Preferences> = flow {
+        while (currentCoroutineContext().isActive) {
+            context.dataStore.data
+                .retryWhen { cause, attempt ->
+                    val shouldRetry = cause is IOException && attempt < 3
+                    if (shouldRetry) {
+                        Log.w(TAG, "DataStore read failed (attempt ${attempt + 1}), retrying", cause)
+                        delay(100L * (attempt + 1))
+                    }
+                    shouldRetry
+                }
+                .catch { e ->
+                    Log.e(TAG, "DataStore read failed, falling back to empty preferences", e)
+                    emit(androidx.datastore.preferences.core.emptyPreferences())
+                }
+                .collect { emit(it) }
+            // 走到这里说明本轮流已正常完成（重试耗尽后兜底），稍作退避后重启收集自愈
+            delay(1000L)
         }
-        .catch { e ->
-            Log.e(TAG, "DataStore read failed, falling back to empty preferences", e)
-            emit(androidx.datastore.preferences.core.emptyPreferences())
-        }
+    }
 
     val playMode: Flow<PlayMode> = safeData
         .map { preferences: Preferences ->
@@ -234,6 +251,10 @@ class PlayerSettingsDataStore @Inject constructor(
 
     // 悬浮窗触摸穿透
     val secretaryOverlayTouchPassthrough: Flow<Boolean> = safeData.map { it[SECRETARY_OVERLAY_TOUCH_PASSTHROUGH_KEY] ?: false }
+
+    // 悬浮窗主窗口位置（px；null=从未保存，服务用默认位置）
+    val secretaryOverlayPosX: Flow<Int?> = safeData.map { it[SECRETARY_OVERLAY_POS_X_KEY] }
+    val secretaryOverlayPosY: Flow<Int?> = safeData.map { it[SECRETARY_OVERLAY_POS_Y_KEY] }
 
     // 外观
     val uiStyle: Flow<UiStyle> = safeData.map { prefs ->
@@ -334,6 +355,14 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setSecretaryOverlayTouchPassthrough(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_OVERLAY_TOUCH_PASSTHROUGH_KEY] = enabled
+        }
+    }
+
+    /** 悬浮窗主窗口位置一次性原子写入（x/y 必须成对，避免读到一半新一半旧） */
+    suspend fun setSecretaryOverlayPosition(x: Int, y: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_OVERLAY_POS_X_KEY] = x
+            prefs[SECRETARY_OVERLAY_POS_Y_KEY] = y
         }
     }
 
@@ -526,7 +555,7 @@ class PlayerSettingsDataStore @Inject constructor(
     val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = safeData.map { prefs ->
         val json = prefs[AI_CHAT_SESSIONS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode chat sessions", e); emptyList() }
-    }
+    }.flowOn(Dispatchers.Default)
 
     /** 当前会话 ID */
     val aiCurrentSessionId: Flow<String> = safeData.map { it[AI_CURRENT_SESSION_ID_KEY] ?: "" }
@@ -544,7 +573,7 @@ class PlayerSettingsDataStore @Inject constructor(
         val key = stringPreferencesKey("ai_session_msgs_$sessionId")
         val json = prefs[key] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatMessage>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode session messages for $sessionId", e); emptyList() }
-    }
+    }.flowOn(Dispatchers.Default)
 
     /** 保存指定会话的消息 */
     suspend fun setAiSessionMessages(sessionId: String, messages: List<com.azurlane.blyy.data.model.ChatMessage>) {
@@ -562,12 +591,7 @@ class PlayerSettingsDataStore @Inject constructor(
     val aiJiuxinPresets: Flow<List<com.azurlane.blyy.data.model.JiuxinPreset>> = safeData.map { prefs ->
         val json = prefs[AI_JIUXIN_PRESETS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode presets", e); emptyList() }
-    }
-
-    /** 保存预设列表（覆盖） */
-    suspend fun setAiJiuxinPresets(presets: List<com.azurlane.blyy.data.model.JiuxinPreset>) {
-        context.dataStore.edit { it[AI_JIUXIN_PRESETS_KEY] = lenientJson.encodeToString(presets) }
-    }
+    }.flowOn(Dispatchers.Default)
 
     /**
      * 预设列表原子更新：在 edit 事务内"读取当前落盘值 → 变换 → 写回"。
@@ -614,12 +638,7 @@ class PlayerSettingsDataStore @Inject constructor(
     val aiApiConfigs: Flow<List<com.azurlane.blyy.data.model.ApiConfig>> = safeData.map { prefs ->
         val json = prefs[AI_API_CONFIGS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode API configs", e); emptyList() }
-    }
-
-    /** 保存 API 配置列表（覆盖） */
-    suspend fun setAiApiConfigs(configs: List<com.azurlane.blyy.data.model.ApiConfig>) {
-        context.dataStore.edit { it[AI_API_CONFIGS_KEY] = lenientJson.encodeToString(configs) }
-    }
+    }.flowOn(Dispatchers.Default)
 
     /** API 配置列表原子更新，机制见 [updateAiJiuxinPresets] */
     suspend fun updateAiApiConfigs(transform: (List<com.azurlane.blyy.data.model.ApiConfig>) -> List<com.azurlane.blyy.data.model.ApiConfig>) {
@@ -641,12 +660,7 @@ class PlayerSettingsDataStore @Inject constructor(
     val aiPersonaConfigs: Flow<List<com.azurlane.blyy.data.model.PersonaConfig>> = safeData.map { prefs ->
         val json = prefs[AI_PERSONA_CONFIGS_KEY] ?: "[]"
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.PersonaConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode persona configs", e); emptyList() }
-    }
-
-    /** 保存舰娘人格配置列表（覆盖） */
-    suspend fun setAiPersonaConfigs(configs: List<com.azurlane.blyy.data.model.PersonaConfig>) {
-        context.dataStore.edit { it[AI_PERSONA_CONFIGS_KEY] = lenientJson.encodeToString(configs) }
-    }
+    }.flowOn(Dispatchers.Default)
 
     /**
      * 舰娘人格配置列表原子更新，机制见 [updateAiJiuxinPresets]。
@@ -679,7 +693,7 @@ class PlayerSettingsDataStore @Inject constructor(
             Log.w(TAG, "Failed to decode persona memories", e)
             emptyMap()
         }
-    }
+    }.flowOn(Dispatchers.Default)
 
     /**
      * 长期记忆原子更新，机制见 [updateAiJiuxinPresets]。

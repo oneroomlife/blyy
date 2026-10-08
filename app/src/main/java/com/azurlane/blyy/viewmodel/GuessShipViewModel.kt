@@ -134,7 +134,16 @@ class GuessShipViewModel @Inject constructor(
     private var allShipsCache: List<Ship> = emptyList()
     private val usedShipIndices = mutableSetOf<Int>()
     private var isRefreshingShips = false
-    private val playedVoiceKeys = mutableSetOf<String>()
+
+    /**
+     * 出题代际令牌：每次 [loadNextQuestion] 递增。
+     *
+     * 题目生成是异步协程（需网络拉取立绘/语音后才写状态），期间任何第二次出题触发
+     * （双击"下一题"、Room 数据补载）都会再启动一个出题协程——若不设防，两个协程
+     * 先后写入状态就会造成"点一次下一题连跳两题"。协程落地前校验代际，只有仍是
+     * 最新一代才允许写入状态，旧一代的结果全部作废。
+     */
+    private var questionGeneration = 0L
 
     /** 当前游戏会话 ID（每局唯一，防止重复录入历史记录） */
     private var gameSessionId: String = UUID.randomUUID().toString()
@@ -153,7 +162,12 @@ class GuessShipViewModel @Inject constructor(
                 val state = _uiState.value
                 if (ships.isNotEmpty() && state.isActive && state.currentShip == null && !state.showSettlement) {
                     delay(250)
-                    loadNextQuestion()
+                    // delay 期间用户可能已手动出题、或上一个出题协程已落地——二次检查，
+                    // 避免补载与进行中的出题并发（两个出题协程竞争 = 连跳两题）
+                    val latest = _uiState.value
+                    if (latest.isActive && latest.currentShip == null && !latest.showSettlement) {
+                        loadNextQuestion()
+                    }
                 }
             }
         }
@@ -230,6 +244,10 @@ class GuessShipViewModel @Inject constructor(
     }
 
     fun loadNextQuestion() {
+        // 代际递增：使仍在飞行中的旧出题协程作废（见 questionGeneration 注释）
+        questionGeneration++
+        val generation = questionGeneration
+
         val ships = allShipsCache
         if (ships.isEmpty()) {
             if (!isRefreshingShips) {
@@ -265,23 +283,34 @@ class GuessShipViewModel @Inject constructor(
             return
         }
 
-        val availableIndices = ships.indices.filter { it !in usedShipIndices }
-        if (availableIndices.isEmpty()) {
-            usedShipIndices.clear()
-            loadNextQuestionInternal(ships, attempt = 0)
-        } else {
-            val randomIndex = availableIndices.random()
-            usedShipIndices.add(randomIndex)
-            val ship = ships[randomIndex]
-            when (_uiState.value.mode) {
-                GuessMode.IMAGE -> prepareImageQuestion(ship, ships, 0)
-                GuessMode.VOICE -> prepareVoiceQuestion(ship, ships, 0)
-            }
+        val ship = pickUnusedShip(ships)
+        when (_uiState.value.mode) {
+            GuessMode.IMAGE -> prepareImageQuestion(ship, ships, 0, generation)
+            GuessMode.VOICE -> prepareVoiceQuestion(ship, ships, 0, generation)
         }
     }
 
-    private fun loadNextQuestionInternal(ships: List<Ship>, attempt: Int) {
+    /**
+     * 从尚未出过题的舰娘中随机选一艘并标记；全部用过则重置使用记录后重选。
+     * 主出题路径与失败重试路径共用，保证重试选中的船同样被标记，
+     * 不会在下一题再次抽到已知无立绘/无语音的舰娘。
+     */
+    private fun pickUnusedShip(ships: List<Ship>): Ship {
+        val availableIndices = ships.indices.filter { it !in usedShipIndices }
+        val index = if (availableIndices.isEmpty()) {
+            usedShipIndices.clear()
+            ships.indices.random()
+        } else {
+            availableIndices.random()
+        }
+        usedShipIndices.add(index)
+        return ships[index]
+    }
+
+    private fun loadNextQuestionInternal(ships: List<Ship>, generation: Long, attempt: Int) {
         if (attempt >= 5) {
+            // 代际已过期说明新一轮出题已接管，旧一代的重试不得再清空/覆盖状态
+            if (generation != questionGeneration) return
             _uiState.update {
                 it.copy(
                     errorMessage = "未能生成有效题目，请稍后再试。",
@@ -299,21 +328,24 @@ class GuessShipViewModel @Inject constructor(
             return
         }
 
-        val ship = ships.random()
+        val ship = pickUnusedShip(ships)
         when (_uiState.value.mode) {
-            GuessMode.IMAGE -> prepareImageQuestion(ship, ships, attempt)
-            GuessMode.VOICE -> prepareVoiceQuestion(ship, ships, attempt)
+            GuessMode.IMAGE -> prepareImageQuestion(ship, ships, attempt, generation)
+            GuessMode.VOICE -> prepareVoiceQuestion(ship, ships, attempt, generation)
         }
     }
 
-    private fun prepareImageQuestion(ship: Ship, ships: List<Ship>, attempt: Int) {
+    private fun prepareImageQuestion(ship: Ship, ships: List<Ship>, attempt: Int, generation: Long) {
         viewModelScope.launch {
             try {
                 val gallery = getGalleryForShip(ship)
+
                 val candidates = gallery.illustrations.filter { it.second.isNotBlank() }
 
                 if (candidates.isEmpty()) {
-                    loadNextQuestionInternal(ships, attempt + 1)
+                    if (generation == questionGeneration) {
+                        loadNextQuestionInternal(ships, generation, attempt + 1)
+                    }
                     return@launch
                 }
 
@@ -323,9 +355,13 @@ class GuessShipViewModel @Inject constructor(
                 } else {
                     null
                 }
-                
+
                 val questionScore = if (_uiState.value.difficulty == ImageDifficulty.HARD) 50 else 10
-                
+
+                // 网络等待期间代际可能已递增（用户连点/补载触发了新一轮出题），
+                // 旧一代的结果直接丢弃，避免两个出题协程先后写状态造成题目闪跳
+                if (generation != questionGeneration) return@launch
+
                 _uiState.update {
                     it.copy(
                         currentShip = ship,
@@ -346,7 +382,9 @@ class GuessShipViewModel @Inject constructor(
                     )
                 }
             } catch (e: Exception) {
-                loadNextQuestionInternal(ships, attempt + 1)
+                if (generation == questionGeneration) {
+                    loadNextQuestionInternal(ships, generation, attempt + 1)
+                }
             }
         }
     }
@@ -454,18 +492,24 @@ class GuessShipViewModel @Inject constructor(
         )
     }
 
-    private fun prepareVoiceQuestion(ship: Ship, ships: List<Ship>, attempt: Int) {
+    private fun prepareVoiceQuestion(ship: Ship, ships: List<Ship>, attempt: Int, generation: Long) {
         viewModelScope.launch {
             try {
                 val voices = getVoicesForShip(ship)
                 if (voices.isEmpty()) {
-                    loadNextQuestionInternal(ships, attempt + 1)
+                    if (generation == questionGeneration) {
+                        loadNextQuestionInternal(ships, generation, attempt + 1)
+                    }
                     return@launch
                 }
 
                 val voice = voices.random()
                 val questionScore = if (_uiState.value.voiceDifficulty == VoiceDifficulty.HARD) 50 else 10
                 val dialogueId = System.currentTimeMillis()
+
+                // 网络等待期间代际可能已递增（用户连点/补载触发了新一轮出题），
+                // 旧一代的结果直接丢弃，避免两个出题协程先后写状态造成题目闪跳
+                if (generation != questionGeneration) return@launch
 
                 _uiState.update {
                     it.copy(
@@ -491,7 +535,9 @@ class GuessShipViewModel @Inject constructor(
                 // 与 prepareImageQuestion 一致：单艘舰娘语音拉取失败（如 404）时换一艘重试，
                 // 由 loadNextQuestionInternal 在重试耗尽后给出统一友好文案，
                 // 避免把原始 HTTP 异常消息直接透给用户。
-                loadNextQuestionInternal(ships, attempt + 1)
+                if (generation == questionGeneration) {
+                    loadNextQuestionInternal(ships, generation, attempt + 1)
+                }
             }
         }
     }
@@ -557,9 +603,9 @@ class GuessShipViewModel @Inject constructor(
     fun showAnswer() {
         val state = _uiState.value
         val ship = state.currentShip ?: return
-        
+
         if (state.mode == GuessMode.VOICE) {
-            prepareRewardImage(ship)
+            prepareRewardImage(ship, questionGeneration)
         }
         
         _uiState.update {
@@ -606,9 +652,13 @@ class GuessShipViewModel @Inject constructor(
         val currentQScore = _uiState.value.currentQuestionScore
         val currentGameState = _uiState.value.score
 
+        // 奖励素材协程携带当前代际：若用户答对后立即点"下一题"，代际递增会使
+        // 迟到的奖励协程作废，避免旧舰娘的奖励语音/立绘覆盖新题状态
+        val generation = questionGeneration
+
         when (_uiState.value.mode) {
-            GuessMode.IMAGE -> prepareRewardVoice(ship)
-            GuessMode.VOICE -> prepareRewardImage(ship)
+            GuessMode.IMAGE -> prepareRewardVoice(ship, generation)
+            GuessMode.VOICE -> prepareRewardImage(ship, generation)
         }
 
         // 仅更新得分相关字段，totalQuestions 在 goToNextQuestion/showSettlement 中统一计数
@@ -767,12 +817,15 @@ class GuessShipViewModel @Inject constructor(
         return info
     }
 
-    private fun prepareRewardVoice(ship: Ship) {
+    private fun prepareRewardVoice(ship: Ship, generation: Long) {
         viewModelScope.launch {
             try {
                 val voices = getVoicesForShip(ship)
                 if (voices.isEmpty()) return@launch
                 val voice = voices.random()
+                // 迟到的奖励协程不得覆盖新题：currentVoice 被覆盖会导致听音界面
+                // 自动播放旧舰娘的语音，而题目已是新舰娘
+                if (generation != questionGeneration) return@launch
                 _uiState.update {
                     it.copy(
                         currentVoice = voice,
@@ -784,13 +837,15 @@ class GuessShipViewModel @Inject constructor(
         }
     }
 
-    private fun prepareRewardImage(ship: Ship) {
+    private fun prepareRewardImage(ship: Ship, generation: Long) {
         viewModelScope.launch {
             try {
                 val gallery = getGalleryForShip(ship)
                 val candidates = gallery.illustrations.filter { it.second.isNotBlank() }
                 if (candidates.isEmpty()) return@launch
                 val chosen = candidates.random()
+                // 迟到的奖励协程不得把旧舰娘立绘写进新一轮题目的状态
+                if (generation != questionGeneration) return@launch
                 _uiState.update {
                     it.copy(
                         rewardImageUrl = chosen.second,
@@ -802,31 +857,38 @@ class GuessShipViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 随机切换当前舰娘的另一条语音（"换一条语音"按钮）。
+     *
+     * 只排除当前正在播的这条语音本身（VoiceLine 是 data class，按整条相等比较），
+     * 同一场景（scene）下的其他条目也参与随机，随机池更大、更不容易重复；
+     * 该舰娘只有一条语音时回退为重播当前条。
+     *
+     * 选中后仅更新 [GuessGameUiState.currentVoice] 与 [GuessGameUiState.currentDialogueId]，
+     * 实际播放由界面监听 dialogueId 变化统一触发，避免回调+自动播双重播放。
+     */
     fun playRandomVoiceForCurrentShip(onVoiceSelected: (String, String) -> Unit) {
         val ship = _uiState.value.currentShip ?: return
-        val currentVoiceKey = _uiState.value.currentVoice?.let { "${ship.name}_${it.scene}" }
-        
+        val currentVoice = _uiState.value.currentVoice
+
         viewModelScope.launch {
             try {
                 val voices = getVoicesForShip(ship)
                 if (voices.isEmpty()) return@launch
-                
-                val availableVoices = voices.filter { voice ->
-                    val key = "${ship.name}_${voice.scene}"
-                    key != currentVoiceKey
-                }
-                
+
+                val availableVoices = voices.filter { it != currentVoice }
+
                 val candidates = if (availableVoices.isNotEmpty()) availableVoices else voices
                 val selectedVoice = candidates.random()
                 val newDialogueId = System.currentTimeMillis()
-                
+
                 _uiState.update {
                     it.copy(
                         currentVoice = selectedVoice,
                         currentDialogueId = newDialogueId
                     )
                 }
-                
+
                 if (selectedVoice.audioUrl.isNotBlank()) {
                     onVoiceSelected(selectedVoice.audioUrl, selectedVoice.dialogue)
                 }

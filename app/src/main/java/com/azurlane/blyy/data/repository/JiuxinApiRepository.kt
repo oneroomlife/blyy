@@ -1,7 +1,10 @@
 package com.azurlane.blyy.data.repository
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -13,12 +16,37 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import kotlin.coroutines.resumeWithException
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * OkHttp Call 的协程桥接：enqueue + 取消联动，替代阻塞式 execute()。
+ *
+ * 阻塞的 execute() 不响应协程取消——用户退出会话后请求仍会跑满 callTimeout（最长 120s），
+ * 群聊并行场景下会占满连接池配额。改走 enqueue 后，协程被取消时通过 [Call.cancel]
+ * 立即中断在途请求；取消后已到达的响应体会被关闭，避免连接泄漏。
+ */
+private suspend fun Call.awaitCancellable(): Response = suspendCancellableCoroutine { cont ->
+    enqueue(object : okhttp3.Callback {
+        override fun onResponse(call: Call, response: Response) {
+            // onCancellation 兜底：协程在恢复后被取消时关闭响应体，防止连接泄漏
+            cont.resume(response) { runCatching { response.close() } }
+        }
+
+        override fun onFailure(call: Call, e: java.io.IOException) {
+            // 取消场景下 OkHttp 也会回调 onFailure，此时交由 invokeOnCancellation 统一处理
+            if (cont.isActive) cont.resumeWithException(e)
+        }
+    })
+    cont.invokeOnCancellation { runCatching { cancel() } }
+}
 
 /**
  * 啾信 API 统一错误类型
@@ -214,28 +242,32 @@ class JiuxinApiRepository @Inject constructor(
     ): JiuxinApiResult<String> {
         return try {
             val requestTime = System.currentTimeMillis()
-            // OkHttp 的 execute() 是阻塞调用，必须在 IO 调度器内
-            val response = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                client.newCall(request).execute()
+            // 阻塞 I/O（含响应体下载）必须整体放在 IO 调度器内：execute()/await 只等响应头，
+            // body.string() 才是真正的下载与缓冲，此前写在外层导致大响应在调用方线程（主线程）读取
+            val (code, body) = withContext(Dispatchers.IO) {
+                client.newCall(request).awaitCancellable().use { r ->
+                    r.code to r.body?.string()
+                }
             }
-            val body = response.body?.string()
             val duration = System.currentTimeMillis() - requestTime
 
             if (body.isNullOrBlank()) {
-                Log.e(TAG, "$logTag Empty response body (code=${response.code}, ${duration}ms)")
-                response.close()
+                Log.e(TAG, "$logTag Empty response body (code=$code, ${duration}ms)")
                 return JiuxinApiResult.Failure(JiuxinApiError.EmptyBody())
             }
 
-            if (!response.isSuccessful) {
+            if (code !in 200..299) {
                 val errorDetail = JiuxinResponseParser.parseErrorMessage(body)
-                Log.e(TAG, "$logTag HTTP ${response.code} (${duration}ms, attempt=${attempt + 1}): $errorDetail")
-                return JiuxinApiResult.Failure(JiuxinApiError.HttpError(response.code, errorDetail))
+                Log.e(TAG, "$logTag HTTP $code (${duration}ms, attempt=${attempt + 1}): $errorDetail")
+                return JiuxinApiResult.Failure(JiuxinApiError.HttpError(code, errorDetail))
             }
 
-            Log.d(TAG, "$logTag HTTP ${response.code} success (${duration}ms, body=${body.length} chars, attempt=${attempt + 1})")
+            Log.d(TAG, "$logTag HTTP $code success (${duration}ms, body=${body.length} chars, attempt=${attempt + 1})")
 
             JiuxinResponseParser.parseChatCompletion(body)
+        } catch (e: CancellationException) {
+            // 协程取消不是请求错误，原样上抛；否则会被下面的兜底捕获当成 Unknown 进入重试判定
+            throw e
         } catch (e: java.net.UnknownHostException) {
             Log.w(TAG, "$logTag UnknownHost: ${e.message}")
             JiuxinApiResult.Failure(JiuxinApiError.Unreachable(request.url.host, e))
@@ -386,22 +418,23 @@ class JiuxinApiRepository @Inject constructor(
 
         return try {
             val requestTime = System.currentTimeMillis()
-            val response = withContext(kotlinx.coroutines.Dispatchers.IO) {
-                client.newCall(request).execute()
+            // 与 executeOnce 同理：响应体下载是阻塞读取，必须整体放在 IO 调度器内
+            val (code, body) = withContext(Dispatchers.IO) {
+                client.newCall(request).awaitCancellable().use { r ->
+                    r.code to r.body?.string()
+                }
             }
-            val body = response.body?.string()
             val duration = System.currentTimeMillis() - requestTime
 
             if (body.isNullOrBlank()) {
-                Log.w(TAG, "Empty body from $url (code=${response.code}, ${duration}ms)")
-                response.close()
+                Log.w(TAG, "Empty body from $url (code=$code, ${duration}ms)")
                 return JiuxinApiResult.Failure(JiuxinApiError.EmptyBody())
             }
 
-            if (!response.isSuccessful) {
+            if (code !in 200..299) {
                 val errorDetail = JiuxinResponseParser.parseErrorMessage(body)
-                Log.w(TAG, "HTTP ${response.code} from $url (${duration}ms): $errorDetail")
-                return JiuxinApiResult.Failure(JiuxinApiError.HttpError(response.code, errorDetail))
+                Log.w(TAG, "HTTP $code from $url (${duration}ms): $errorDetail")
+                return JiuxinApiResult.Failure(JiuxinApiError.HttpError(code, errorDetail))
             }
 
             val models = JiuxinModelListParser.parse(body)
@@ -412,6 +445,9 @@ class JiuxinApiRepository @Inject constructor(
             } else {
                 JiuxinApiResult.Success(models)
             }
+        } catch (e: CancellationException) {
+            // 协程取消不是请求错误，原样上抛（否则被兜底当成 Unknown）
+            throw e
         } catch (e: java.net.UnknownHostException) {
             Log.w(TAG, "UnknownHost from $url: ${e.message}")
             JiuxinApiResult.Failure(JiuxinApiError.Unreachable(request.url.host, e))

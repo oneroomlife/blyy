@@ -181,16 +181,11 @@ fun GuessByVoiceScreen(
             viewModel.goToNextQuestion()
         },
         onReplay = {
-            // B9 修复：按钮文案是"反复回放"，行为必须与之对齐——重播当前题目语音；
-            // 仅在当前题目无音频（异常态）时才回退为随机播放该舰娘的其他语音
-            val currentUrl = state.currentVoice?.audioUrl
-            if (!currentUrl.isNullOrBlank()) {
-                playerViewModel.playSingleVoice(currentUrl)
-            } else {
-                viewModel.playRandomVoiceForCurrentShip { url, _ ->
-                    playerViewModel.playSingleVoice(url)
-                }
-            }
+            // 每次点击随机播放该舰娘的另一条语音（唯一语音时回退重播当前条）。
+            // 选中后 VM 更新 currentVoice/currentDialogueId，由上方监听 dialogueId 的
+            // LaunchedEffect 统一触发播放——若在此回调里直接 playSingleVoice 会与
+            // 自动播放叠加成双重播放。EASY 模式台词卡随新语音同步切换。
+            viewModel.playRandomVoiceForCurrentShip { _, _ -> }
         },
         onRequestHint = viewModel::requestHint,
         onShowAnswer = viewModel::showAnswer,
@@ -374,7 +369,8 @@ private fun ModernGuessVoiceContent(
  * 要点：
  * - [isPlaying] 绑定 PlayerViewModel 的真实播放状态（旧版误绑 isLoadingHint，
  *   导致"播放中…"跟随提示加载而非播放）
- * - EASY 模式台词在卡内常驻展示（旧版用 Toast，转瞬即逝且每次回放重复弹出）
+ * - 播放键语义为"换一条语音"：每次点击随机播放该舰娘的另一条语音，
+ *   EASY 模式台词在卡内随新语音同步切换
  * - 播放中耳机图标以呼吸光晕反馈，静止时不跑动画
  */
 @Composable
@@ -449,7 +445,7 @@ private fun VoicePlayerCard(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        if (hasVoice) "可随时点击下方按钮反复回放" else "语音加载完成后即可播放",
+                        if (hasVoice) "每次点击随机播放该舰娘的不同语音" else "语音加载完成后即可播放",
                         style = AppTypography.BodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                     )
@@ -459,7 +455,7 @@ private fun VoicePlayerCard(
             BlyyPrimaryButton(
                 text = when {
                     isPlaying -> "播放中…"
-                    hasVoice -> "播放语音"
+                    hasVoice -> "换一条语音"
                     else -> "等待题目加载"
                 },
                 icon = if (isPlaying) Icons.Rounded.MusicNote else Icons.Rounded.PlayArrow,

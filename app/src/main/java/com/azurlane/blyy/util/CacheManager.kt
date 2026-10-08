@@ -1,7 +1,13 @@
 package com.azurlane.blyy.util
 
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import java.util.LinkedHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 object CacheManager {
     private const val TAG = "CacheManager"
@@ -35,6 +41,11 @@ object CacheManager {
 
     private val caches = mutableMapOf<String, LRUCache<String, CacheEntry<*>>>()
     private val lock = Any()
+
+    // 在途加载注册表：getOrPutSuspend 的 single-flight 支持。
+    // 独立作用域承载 loader，leader 协程被取消时加载结果仍可入库（缓存预热）。
+    private val inFlightScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val inFlight = ConcurrentHashMap<String, Deferred<*>>()
 
     private fun maxEntriesFor(namespace: String): Int =
         namespaceMaxSizes[namespace] ?: DEFAULT_MAX_SIZE
@@ -77,13 +88,37 @@ object CacheManager {
         }
     }
 
+    /**
+     * 缓存未命中时挂起加载并写入缓存（single-flight：同一 key 的并发加载共享同一次 loader）。
+     *
+     * 此前无在途去重：进入 Live2D 查看器时，语音加载与皮肤名注册会并发对同一舰娘
+     * 各发起一次 wiki 抓取+解析（网络与内存开销翻倍）。现在后来者直接 await 同一 Deferred。
+     * loader 抛出的异常会原样传播给所有等待者（与各自独立调用时的失败语义一致）。
+     */
+    @Suppress("UNCHECKED_CAST")
     suspend fun <T> getOrPutSuspend(namespace: String, key: String, expiresInMs: Long = DEFAULT_EXPIRE_TIME_MS, loader: suspend () -> T): T {
-        val cached = get<T>(namespace, key)
-        if (cached != null) return cached
+        val cacheKey = "$namespace/$key"
+        while (true) {
+            get<T>(namespace, key)?.let { return it }
 
-        val data = loader()
-        put(namespace, key, data, expiresInMs)
-        return data
+            val existing = inFlight[cacheKey] as? Deferred<T>
+            if (existing != null && existing.isActive) return existing.await()
+
+            val mine = inFlightScope.async { loader() }
+            val winner = inFlight.putIfAbsent(cacheKey, mine)
+            if (winner == null) {
+                try {
+                    val data = mine.await()
+                    put(namespace, key, data, expiresInMs)
+                    return data
+                } finally {
+                    inFlight.remove(cacheKey, mine)
+                }
+            }
+            // 输给了并发者：丢弃自己的加载，等待对方结果
+            mine.cancel()
+            (winner as? Deferred<T>)?.takeIf { it.isActive }?.let { return it.await() }
+        }
     }
 
     fun remove(namespace: String, key: String) {

@@ -281,16 +281,24 @@ class JiuxinViewModel @Inject constructor(
     }
 
     // ── 啾信预设配置 ──
+
+    /**
+     * 三张配置表（预设/API 配置/舰娘人格）都使用 [SharingStarted.Eagerly] 而非 WhileSubscribed：
+     * startChatWithPreset / createGroupSession / updateGroupMembers / startChatWithApiAndPersona
+     * 等业务路径在无 UI 订阅时也会通过 `.value` 即时读取（WhileSubscribed 会在无订阅者 5 秒后
+     * 冻结上游，读到过期快照甚至初始空列表，表现为"选了某套人格却没应用上"或群聊缺成员）。
+     * 机制与教训见下方 personaMemories 的同款注释。
+     */
     val presets: StateFlow<List<JiuxinPreset>> = settings.aiJiuxinPresets
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // ── 多套 API 配置（独立于舰娘人格，可复用） ──
     val apiConfigs: StateFlow<List<ApiConfig>> = settings.aiApiConfigs
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // ── 多套舰娘人格配置（独立于 API 配置，可组合） ──
     val personaConfigs: StateFlow<List<PersonaConfig>> = settings.aiPersonaConfigs
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // ── 舰娘长期记忆（跨会话，按舰娘身份 shipKey 存储） ──
 
@@ -570,14 +578,22 @@ class JiuxinViewModel @Inject constructor(
                 // 4. API 返回 addMessage(aiMessage) + finishLoading：finishLoading 已关闭 isLoading
                 //    DataStore 随后派发相同列表 → 相等 → 保留当前 false ✅
                 _chatState.update { state ->
-                    if (state.messages == messages && messages.isNotEmpty()) {
-                        // 消息未变化（DataStore 重新派发相同数据，如 addMessage 持久化回写）：
-                        // 保留当前 isLoading 状态，不干扰 sendMessage 的 TypingIndicator
-                        state
-                    } else {
-                        // 消息变化（会话切换加载）或空会话：更新 messages 并关闭 isLoading
-                        // 同时清空 typingMembers，防止上一会话的群聊打字指示器残留显示
-                        state.copy(messages = messages, isLoading = false, typingMembers = emptyList())
+                    when {
+                        state.messages == messages && messages.isNotEmpty() -> {
+                            // 消息未变化（DataStore 重新派发相同数据，如 addMessage 持久化回写）：
+                            // 保留当前 isLoading 状态，不干扰 sendMessage 的 TypingIndicator
+                            state
+                        }
+                        // 旧值回流（磁盘快照落后于内存）：群聊并发保存时，save1 写盘 [u1] 后
+                        // 内存已前进到 [u1,ai1,ai2]，save2 的 [u1,ai1] 随后回流。若按 id 逐位
+                        // 判断回流列表是内存列表的前缀，说明只是过期快照——接受会回退消息并
+                        // 误关 TypingIndicator（群聊时表现为闪烁）。以内存为准，忽略。
+                        messages.isNotEmpty() && isStalePrefix(messages, state.messages) -> state
+                        else -> {
+                            // 消息变化（会话切换加载）或空会话：更新 messages 并关闭 isLoading
+                            // 同时清空 typingMembers，防止上一会话的群聊打字指示器残留显示
+                            state.copy(messages = messages, isLoading = false, typingMembers = emptyList())
+                        }
                     }
                 }
             }
@@ -2114,15 +2130,16 @@ class JiuxinViewModel @Inject constructor(
         if (failedMsg.type != ChatMessageType.USER.name) return
         if (failedMsg.status != MessageStatus.FAILED.name) return
 
-        // 重置状态为 SUCCESS（用户消息本地存在），然后重新发送
-        _chatState.update { state ->
-            state.copy(
-                messages = state.messages.map { msg ->
-                    if (msg.id == messageId) msg.copy(status = MessageStatus.SUCCESS.name) else msg
-                }
-            )
+        // 在途请求期间拒绝重试：若先移除原消息再被 sendMessage 的防重入拦截，
+        // 失败消息会凭空消失且无法找回；保留原状态等本轮结束后可再次重试
+        if (_chatState.value.isLoading) {
+            Log.d(TAG, "retryMessage ignored: another request is in progress")
+            return
         }
-        // 重新发送消息内容
+
+        // 移除原失败消息后重发：此前仅把状态改回 SUCCESS 再 sendMessage 追加新消息，
+        // 列表会出现两条相同内容的用户消息，且两份都进入后续 API 上下文
+        deleteMessage(messageId)
         sendMessage(failedMsg.content)
     }
 
@@ -2900,6 +2917,19 @@ class JiuxinViewModel @Inject constructor(
         saveCurrentSessionMessages()
     }
 
+    /**
+     * 判断 [candidate] 是否按消息 id 逐位构成 [full] 的前缀。
+     * 用于消息回流过滤：DataStore 派发的旧快照必然是内存列表某次历史状态的前缀
+     * （消息只会追加/删除，已落盘的前缀 id 序列不变），据此识别过期回流。
+     */
+    private fun isStalePrefix(candidate: List<ChatMessage>, full: List<ChatMessage>): Boolean {
+        if (candidate.size > full.size) return false
+        for (i in candidate.indices) {
+            if (full[i].id != candidate[i].id) return false
+        }
+        return true
+    }
+
     private fun finishLoading() {
         _chatState.update { it.copy(isLoading = false) }
     }
@@ -2938,13 +2968,21 @@ class JiuxinViewModel @Inject constructor(
                 // 锁内重新读取最新消息快照：避免并发 save 之间相互覆盖
                 // 显式传入的快照优先（onCleared 场景已经同步捕获，不可能被并发更新）
                 val msgs = callerSnapshot ?: _chatState.value.messages
-                val sessionsSnapshot = _sessions.value
                 settings.setAiSessionMessages(sessionIdCopy, msgs)
                 if (updateTs) {
-                    val updated = sessionsSnapshot.map {
-                        if (it.id == sessionIdCopy) it.copy(updatedAt = System.currentTimeMillis()) else it
+                    // 同步更新内存 updatedAt：此前只写磁盘、不更新 _sessions，而 init collector
+                    // 因"会话 ID 列表相同"会拒绝磁盘回流 → 内存 updatedAt 永远停在创建时刻，
+                    // "最近聊天"排序在运行期失效；且后续任何基于内存快照的全量覆盖写
+                    // （改名/背景/群成员）都会把磁盘上刚写入的新 updatedAt 回滚
+                    val now = System.currentTimeMillis()
+                    _sessions.update { list ->
+                        list.map { if (it.id == sessionIdCopy) it.copy(updatedAt = now) else it }
                     }
-                    settings.setAiChatSessions(updated)
+                    settings.setAiChatSessions(
+                        _sessions.value.map {
+                            if (it.id == sessionIdCopy) it.copy(updatedAt = now) else it
+                        }
+                    )
                 }
             }
         }
