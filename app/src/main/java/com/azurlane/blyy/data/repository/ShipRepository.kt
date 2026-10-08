@@ -15,12 +15,15 @@ import com.azurlane.blyy.util.SkinVoiceIndex
 import com.azurlane.blyy.data.model.StudentFilterData
 import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.util.NetworkHelper
+import com.azurlane.blyy.util.VoiceBlockParser
 import com.azurlane.blyy.util.WebViewHtmlFetcher
 import com.azurlane.blyy.viewmodel.ArchiveType
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
@@ -84,6 +87,14 @@ class ShipRepository @Inject constructor(
     private val VOICE_CACHE_EXPIRY_MS = 60 * 60 * 1000L // 1 小时
 
     /**
+     * 语音拉取单飞锁（按 studentLink 一把）。
+     * 缓存未命中时两个并发请求（如快速重进语音页、上层重试）都会触发一次 6-8 秒的
+     * WebView 渲染；锁内二次检查缓存，保证同一链接同一时刻只有一次网络拉取。
+     * 容量受学生总数（~300）约束，无需淘汰。
+     */
+    private val voiceFetchLocks = ConcurrentHashMap<String, Mutex>()
+
+    /**
      * 获取学生语音（带内存缓存）
      *
      * 缓存策略：
@@ -94,28 +105,32 @@ class ShipRepository @Inject constructor(
      * @param forceRefresh 是否强制刷新（忽略缓存）
      */
     suspend fun fetchStudentVoicesCached(studentLink: String, forceRefresh: Boolean = false): Triple<List<VoiceLine>, String, Map<String, String>> {
-        // 检查内存缓存
         if (!forceRefresh) {
-            val cached = voiceCache[studentLink]
-            if (cached != null && System.currentTimeMillis() - cached.timestamp < VOICE_CACHE_EXPIRY_MS) {
-                Log.d(TAG, "Voice cache hit for $studentLink, age=${(System.currentTimeMillis() - cached.timestamp) / 1000}s")
-                return Triple(cached.voices, cached.avatarUrl, cached.skinFigureMap)
-            }
+            readFreshVoiceCache(studentLink)?.let { return it }
         }
+        return voiceFetchLocks.computeIfAbsent(studentLink) { Mutex() }.withLock {
+            // 锁内二次检查：等锁期间可能已被前一个请求拉取完成
+            if (!forceRefresh) {
+                readFreshVoiceCache(studentLink)?.let { return it }
+            }
+            val result = fetchStudentVoices(studentLink)
+            // 写入缓存
+            voiceCache[studentLink] = VoiceCacheEntry(
+                voices = result.first,
+                avatarUrl = result.second,
+                skinFigureMap = result.third,
+                timestamp = System.currentTimeMillis()
+            )
+            Log.d(TAG, "Voice cache updated for $studentLink, ${result.first.size} voices")
+            result
+        }
+    }
 
-        // 缓存未命中或强制刷新：从网络拉取
-        val result = fetchStudentVoices(studentLink)
-
-        // 写入缓存
-        voiceCache[studentLink] = VoiceCacheEntry(
-            voices = result.first,
-            avatarUrl = result.second,
-            skinFigureMap = result.third,
-            timestamp = System.currentTimeMillis()
-        )
-        Log.d(TAG, "Voice cache updated for $studentLink, ${result.first.size} voices")
-
-        return result
+    private fun readFreshVoiceCache(studentLink: String): Triple<List<VoiceLine>, String, Map<String, String>>? {
+        val cached = voiceCache[studentLink] ?: return null
+        if (System.currentTimeMillis() - cached.timestamp >= VOICE_CACHE_EXPIRY_MS) return null
+        Log.d(TAG, "Voice cache hit for $studentLink, age=${(System.currentTimeMillis() - cached.timestamp) / 1000}s")
+        return Triple(cached.voices, cached.avatarUrl, cached.skinFigureMap)
     }
 
     suspend fun refreshShipsFromWiki(archiveType: ArchiveType = ArchiveType.DOCK) = withContext(Dispatchers.IO) {
@@ -150,9 +165,15 @@ class ShipRepository @Inject constructor(
                         Ship(name, avatar, border, relativeLink, type, rarity, faction, extra, archiveType.name)
                     } catch (e: Exception) { null }
                 }
+                if (ships.isEmpty()) {
+                    // 条目存在但全部解析失败（wiki 结构变更/反爬半成功）：与 STUDENT 路径
+                    // 一致直接抛出。若继续用空列表走删除流程，Room 会生成 `NOT IN ()`
+                    // 非法 SQL 直接崩溃。
+                    throw IllegalStateException("舰船数据解析异常：${elements.size} 个条目全部解析失败，可能页面结构已变更。")
+                }
                 shipDao.upsertShips(ships)
                 // 删除本地已不存在的舰船，保持数据库整洁（限定 archiveType 避免误删学生记录）
-                shipDao.deleteOldShipsByArchiveType(archiveType.name, ships.map { it.name })
+                shipDao.deleteStaleShips(archiveType.name, ships.map { it.name })
                 Log.d(TAG, "Successfully refreshed ${ships.size} ships")
             },
             onFailure = { e ->
@@ -238,10 +259,10 @@ class ShipRepository @Inject constructor(
                             
                             if (blocks.isNotEmpty()) {
                                 blocks.forEach { block ->
-                                    parseBlockToVoice(block, skinName, baseScene, voices)
+                                    VoiceBlockParser.parse(block, skinName, baseScene, voices)
                                 }
                             } else {
-                                parseBlockToVoice(td, skinName, baseScene, voices)
+                                VoiceBlockParser.parse(td, skinName, baseScene, voices)
                             }
                         }
                     }
@@ -477,91 +498,6 @@ class ShipRepository @Inject constructor(
             .trim()
     }
 
-    private fun parseBlockToVoice(element: Element, skinName: String, baseScene: String, list: MutableList<VoiceLine>) {
-        val isOath = element.select("span[title*=誓约], span:contains(誓约)").isNotEmpty()
-        val finalScene = if (isOath) "$baseScene(誓约)" else baseScene
-
-        val mediaWraps = element.select(".ship_word_media_wrap")
-
-        if (mediaWraps.size >= 2) {
-            var cnText = ""
-            var jpText = ""
-            var cnAudio = ""
-            var jpAudio = ""
-
-            mediaWraps.forEach { wrap ->
-                val lang = wrap.select(".ship_word_line").attr("data-lang")
-                val text = wrap.select(".ship_word_line").text().trim()
-                var audio = wrap.select(".sm-audio-src a").attr("href")
-                if (audio.isEmpty()) {
-                    audio = wrap.select("a[href$=.mp3], a[href$=.ogg]").attr("href")
-                }
-                if (audio.startsWith("//")) audio = "https:$audio"
-                else if (audio.startsWith("/")) audio = "https://wiki.biligame.com$audio"
-
-                when (lang) {
-                    "zh" -> {
-                        cnText = text
-                        cnAudio = audio
-                    }
-                    "jp" -> {
-                        jpText = text
-                        jpAudio = audio
-                    }
-                    else -> {
-                        val isJp = detectJapaneseByText(text)
-                        if (isJp) {
-                            Log.d(TAG, "检测到未标记lang的日文文本: scene=$finalScene, text=$text")
-                            jpText = text
-                            jpAudio = audio
-                        } else if (cnAudio.isNotEmpty()) {
-                            Log.d(TAG, "检测到未标记lang的文本，已有中配，归为日配: scene=$finalScene")
-                            jpText = text
-                            jpAudio = audio
-                        } else if (jpAudio.isNotEmpty()) {
-                            Log.d(TAG, "检测到未标记lang的文本，已有日配，归为中配: scene=$finalScene")
-                            cnText = text
-                            cnAudio = audio
-                        } else {
-                            Log.w(TAG, "无法判断未标记lang的文本语言，默认归为中配: scene=$finalScene, text=$text")
-                            cnText = text
-                            cnAudio = audio
-                        }
-                    }
-                }
-            }
-
-            val dialogue = cnText.ifEmpty { jpText }
-            val cnUrl = cnAudio.ifEmpty { jpAudio }
-            val jpUrl = jpAudio.ifEmpty { cnAudio }
-
-            if (dialogue.isNotEmpty() && (cnUrl.isNotEmpty() || jpUrl.isNotEmpty())) {
-                list.add(VoiceLine(skinName, finalScene, dialogue, cnUrl, jpUrl))
-            }
-        } else {
-            val textElement = element.select(".ship_word_line").firstOrNull() ?: element
-            val rawText = textElement.text().trim()
-
-            var audio = element.select(".sm-audio-src a").attr("href")
-            if (audio.isEmpty()) {
-                audio = element.select("a[href$=.mp3], a[href$=.ogg]").attr("href")
-            }
-
-            if (rawText.isNotEmpty() && audio.isNotEmpty()) {
-                if (audio.startsWith("//")) audio = "https:$audio"
-                else if (audio.startsWith("/")) audio = "https://wiki.biligame.com$audio"
-
-                list.add(VoiceLine(skinName, finalScene, rawText, audio, audio))
-            }
-        }
-    }
-
-    private fun detectJapaneseByText(text: String): Boolean {
-        return text.any { c ->
-            c in '\u3040'..'\u309F' || c in '\u30A0'..'\u30FF'
-        }
-    }
-
     suspend fun toggleFav(name: String, archiveType: String, current: Boolean) {
         shipDao.updateFavorite(name, archiveType, !current)
     }
@@ -755,7 +691,7 @@ class ShipRepository @Inject constructor(
             val dbStart = System.currentTimeMillis()
             shipDao.upsertShips(students)
             // 仅删除指定档案类型中不在新列表的记录
-            shipDao.deleteOldShipsByArchiveType(ArchiveType.STUDENT.name, students.map { it.name })
+            shipDao.deleteStaleShips(ArchiveType.STUDENT.name, students.map { it.name })
             val dbDuration = System.currentTimeMillis() - dbStart
             Log.d(TAG, "DB upsert completed in ${dbDuration}ms, ${students.size} students")
 

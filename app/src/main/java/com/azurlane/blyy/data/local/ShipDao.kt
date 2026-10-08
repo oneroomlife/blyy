@@ -74,8 +74,25 @@ abstract class ShipDao {
         insertAll(shipsToUpsert)
     }
 
-    @Query("DELETE FROM ships WHERE archiveType = :archiveType AND name NOT IN (:names)")
-    abstract suspend fun deleteOldShipsByArchiveType(archiveType: String, names: List<String>)
+    @Query("SELECT name FROM ships WHERE archiveType = :archiveType")
+    abstract suspend fun getNamesByArchiveType(archiveType: String): List<String>
+
+    @Query("DELETE FROM ships WHERE archiveType = :archiveType AND name IN (:names)")
+    abstract suspend fun deleteShipsByArchiveTypeAndNames(archiveType: String, names: List<String>)
+
+    /**
+     * 删除指定档案类型中已不存在于 [keptNames] 的记录（单事务内完成）。
+     *
+     * 不使用 `NOT IN (:names)` 一次性传入全部保留名：舰船/学生数量（~850）已逼近
+     * SQLite 默认 999 个宿主参数上限，超限抛 "too many SQL variables"。
+     * 改为事务内取现有名单、内存差集后按 500 一批 `IN` 删除。
+     */
+    @Transaction
+    open suspend fun deleteStaleShips(archiveType: String, keptNames: List<String>) {
+        val kept = keptNames.toHashSet()
+        val stale = getNamesByArchiveType(archiveType).filterNot { it in kept }
+        stale.chunked(500).forEach { deleteShipsByArchiveTypeAndNames(archiveType, it) }
+    }
 
     @Query("UPDATE ships SET avatarUrl = :avatar, borderUrl = :border, link = :link, type = :type, rarity = :rarity, faction = :faction, extra = :extra WHERE name = :name AND archiveType = :archiveType")
     abstract suspend fun updateShipMetadata(
