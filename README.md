@@ -152,7 +152,7 @@
 
 ### 下载已发布版本
 
-前往 [Releases](https://github.com/oneroomlife/blyy/releases) 或应用内「关于 → 检查更新」下载最新 APK（当前版本 `2.4.1`，发布前请同步修改 `app/build.gradle.kts` 中的 `versionName`）。
+前往 [Releases](https://github.com/oneroomlife/blyy/releases) 或应用内「关于 → 检查更新」下载最新 APK
 
 <a id="usage"></a>
 
