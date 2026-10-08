@@ -335,23 +335,37 @@ fun VoiceScreenContent(
                             SkinHeader(skinName)
                         }
 
-                        itemsIndexed(skinVoices, key = { i, _ -> skinKeys[i] }) { _, voice ->
+                        itemsIndexed(
+                            skinVoices,
+                            key = { i, _ -> skinKeys[i] },
+                            contentType = { _, _ -> "VoiceItemRow" }
+                        ) { _, voice ->
                             val globalIndex = voiceIndexMap[voice] ?: -1
-                            val isCurrent = playerState.currentMediaItem?.mediaId == voice.audioUrlCn || 
+                            val isCurrent = playerState.currentMediaItem?.mediaId == voice.audioUrlCn ||
                             playerState.currentMediaItem?.mediaId == voice.audioUrlJp
                             val isPlaying = isCurrent && playerState.isPlaying
                             val isFavorite = voice.audioUrlCn in favorites || voice.audioUrlJp in favorites
+
+                            // 行级回调按 voice 记忆：播放进度每秒 tick 会引发本屏重组，
+                            // 未记忆时 5 个新 lambda 会导致所有可见行跟着重组（与 HomeScreen 行处理一致）
+                            val onAddToPlayLater = remember(voice) { { addToPlayLater(voice) } }
+                            val onDownloadClick = remember(voice) { { downloadVoice(voice) } }
+                            val onFavoriteClick = remember(voice) { { toggleFavorite(voice) } }
+                            val onShareClick = remember(voice) { { shareVoice(voice) } }
+                            val onRowClick = remember(voice, globalIndex, playerState.playMode) {
+                                { onVoiceIntent(VoiceIntent.PlayVoiceAtIndex(globalIndex, playerState.playMode)) }
+                            }
 
                             VoiceItemRow(
                                 voice = voice,
                                 isCurrent = isCurrent,
                                 isPlaying = isPlaying,
                                 isFavorite = isFavorite,
-                                onAddToPlayLater = { addToPlayLater(voice) },
-                                onClick = { onVoiceIntent(VoiceIntent.PlayVoiceAtIndex(globalIndex, playerState.playMode)) },
-                                onDownloadClick = { downloadVoice(voice) },
-                                onFavoriteClick = { toggleFavorite(voice) },
-                                onShareClick = { shareVoice(voice) }
+                                onAddToPlayLater = onAddToPlayLater,
+                                onClick = onRowClick,
+                                onDownloadClick = onDownloadClick,
+                                onFavoriteClick = onFavoriteClick,
+                                onShareClick = onShareClick
                             )
                         }
                     }
@@ -538,27 +552,30 @@ private fun AnimatedBackground(avatarUrl: String) {
                 )
                 
                 val surfaceContainer = MaterialTheme.colorScheme.surfaceContainer
+                // 渐变 Brush 提升为 remember：AGSL 着色器 Canvas 以 30fps 驱动重绘，
+                // drawBehind 内每帧新建 Brush + 4 个 Color copy 会造成持续 GC 压力
+                val overlayBrush = remember(isDark, surfaceContainer) {
+                    Brush.verticalGradient(
+                        colors = if (isDark) {
+                            listOf(
+                                Color.Black.copy(alpha = 0.2f),
+                                Color.Black.copy(alpha = 0.4f),
+                                surfaceContainer.copy(alpha = 0.7f)
+                            )
+                        } else {
+                            listOf(
+                                Color.White.copy(alpha = 0.1f),
+                                Color.White.copy(alpha = 0.3f),
+                                surfaceContainer.copy(alpha = 0.6f)
+                            )
+                        }
+                    )
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .drawBehind {
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    colors = if (isDark) {
-                                        listOf(
-                                            Color.Black.copy(alpha = 0.2f),
-                                            Color.Black.copy(alpha = 0.4f),
-                                            surfaceContainer.copy(alpha = 0.7f)
-                                        )
-                                    } else {
-                                        listOf(
-                                            Color.White.copy(alpha = 0.1f),
-                                            Color.White.copy(alpha = 0.3f),
-                                            surfaceContainer.copy(alpha = 0.6f)
-                                        )
-                                    }
-                                )
-                            )
+                            drawRect(brush = overlayBrush)
                         }
                 )
             }

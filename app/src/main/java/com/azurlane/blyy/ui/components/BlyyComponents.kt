@@ -397,6 +397,22 @@ fun BlyyPanel(
     val cornerLenPx = with(LocalDensity.current) { 14.dp.toPx() }
     val strokePx = with(LocalDensity.current) { 1.5.dp.toPx() }
     val topHighlightPx = with(LocalDensity.current) { 1.dp.toPx() }
+    val decorationStrokePx = with(LocalDensity.current) { 2.dp.toPx() }
+
+    // drawBehind 每次绘制都会执行的分配提前到组合期：
+    // BlyyPanel 是全局容器组件，滚动/动画驱动的重绘非常频繁，
+    // 每帧新建 2 个 Path + 渐变 Brush 会造成持续 GC 压力
+    val highlightBrush = remember(isDark) {
+        Brush.horizontalGradient(
+            colors = listOf(
+                Color.Transparent,
+                Color.White.copy(alpha = if (isDark) 0.08f else 0.18f),
+                Color.White.copy(alpha = if (isDark) 0.05f else 0.12f),
+                Color.Transparent
+            )
+        )
+    }
+    val pathCache = remember { BlyyPanelPathCache() }
 
     Box(
         modifier = modifier
@@ -420,41 +436,49 @@ fun BlyyPanel(
             )
             .drawBehind {
                 // 左上角 L 型装饰（原设计保留并增强）
-                val path = Path().apply {
-                    moveTo(0f, size.height * 0.3f)
-                    lineTo(0f, 0f)
-                    lineTo(size.width * 0.15f, 0f)
-                }
-                drawPath(path, accentColor.copy(alpha = 0.4f), style = Stroke(width = 2.dp.toPx()))
+                pathCache.ensure(size.width, size.height, cornerLenPx)
+                drawPath(pathCache.topLeftPath, accentColor.copy(alpha = 0.4f), style = Stroke(width = decorationStrokePx))
 
                 // 顶部内高光 — 1px 渐变线，模拟玻璃顶面反光
                 drawRect(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.White.copy(alpha = if (isDark) 0.08f else 0.18f),
-                            Color.White.copy(alpha = if (isDark) 0.05f else 0.12f),
-                            Color.Transparent
-                        )
-                    ),
+                    brush = highlightBrush,
                     topLeft = Offset(0f, 0f),
                     size = androidx.compose.ui.geometry.Size(size.width, topHighlightPx)
                 )
 
                 // 右下角 L 型装饰 — 与左上角呼应，对称构图
-                val cornerPath = Path().apply {
-                    moveTo(size.width, size.height - cornerLenPx)
-                    lineTo(size.width, size.height)
-                    lineTo(size.width - cornerLenPx, size.height)
-                }
                 drawPath(
-                    cornerPath,
+                    pathCache.cornerPath,
                     AppColors.Accent.Gold.copy(alpha = 0.35f),
                     style = Stroke(width = strokePx)
                 )
             }
     ) {
         content()
+    }
+}
+
+/** BlyyPanel 装饰线 Path 缓存：尺寸不变时跨重绘复用，避免每次 draw 重建 Path */
+private class BlyyPanelPathCache {
+    private var width = Float.NaN
+    private var height = Float.NaN
+    private var cornerLenPx = Float.NaN
+    val topLeftPath = Path()
+    val cornerPath = Path()
+
+    fun ensure(width: Float, height: Float, cornerLenPx: Float) {
+        if (this.width == width && this.height == height && this.cornerLenPx == cornerLenPx) return
+        this.width = width
+        this.height = height
+        this.cornerLenPx = cornerLenPx
+        topLeftPath.rewind()
+        topLeftPath.moveTo(0f, height * 0.3f)
+        topLeftPath.lineTo(0f, 0f)
+        topLeftPath.lineTo(width * 0.15f, 0f)
+        cornerPath.rewind()
+        cornerPath.moveTo(width, height - cornerLenPx)
+        cornerPath.lineTo(width, height)
+        cornerPath.lineTo(width - cornerLenPx, height)
     }
 }
 
@@ -981,6 +1005,12 @@ fun BlyyLoadingState(
 
 /**
  * 增强版设置行 — 带图标与动画开关
+ *
+ * 双模式：
+ * - [asCard] = true（默认）：行自带 [BlyyPanel] 外壳，作为**单独组件**与相邻行保持间距、
+ *   互不相连（配合 [BlyySectionPanel] 的 separateItems = true 使用）
+ * - [asCard] = false：扁平行，面板边框由外层 BlyySectionPanel 统一承载（用于行内混排
+ *   滑块/输入框等非卡片内容的分区）
  */
 @Composable
 fun BlyySettingsRow(
@@ -989,18 +1019,16 @@ fun BlyySettingsRow(
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    asCard: Boolean = true
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
     val accentColor = MaterialTheme.colorScheme.primary
     val isWatch = isWatchScreen()
 
-    // 注意：不要在此处再叠加 surfaceContainerHigh 背景，否则会与 BlyyPanel 自身的
+    // 注意：卡片模式下不要在行内再叠加 surfaceContainerHigh 背景，否则会与 BlyyPanel 自身的
     // surfaceVariant.copy(alpha=0.45f) 背景形成双层叠加，导致浅色主题下出现白色背景断层。
-    // 背景统一由 BlyyPanel 内部管理，保持单层渲染。
-    val containerModifier = modifier.fillMaxWidth()
-
-    BlyyPanel(modifier = containerModifier) {
+    val rowContent: @Composable () -> Unit = {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1077,6 +1105,12 @@ fun BlyySettingsRow(
             )
         }
     }
+
+    if (asCard) {
+        BlyyPanel(modifier = modifier.fillMaxWidth()) { rowContent() }
+    } else {
+        Row(modifier = modifier.fillMaxWidth()) { rowContent() }
+    }
 }
 
 /**
@@ -1092,6 +1126,8 @@ fun BlyySectionPanel(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     accentColor: Color = MaterialTheme.colorScheme.primary,
+    /** true = 内容各项为自带面板的独立卡片（单独组件、互不相连），section 只提供标题不包外壳面板 */
+    separateItems: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
@@ -1152,9 +1188,17 @@ fun BlyySectionPanel(
                 )
             }
         }
-        BlyyPanel(modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
+        if (separateItems) {
+            // 独立卡片模式：各项自带面板外壳，section 不再包外壳面板——
+            // 否则双重边框会在卡片之间形成"幽灵面板"细带
+            Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Md)) {
                 content()
+            }
+        } else {
+            BlyyPanel(modifier = Modifier.fillMaxWidth()) {
+                Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Sm)) {
+                    content()
+                }
             }
         }
     }

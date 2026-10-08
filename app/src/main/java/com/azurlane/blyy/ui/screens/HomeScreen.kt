@@ -406,6 +406,47 @@ private fun ClassicHomeTopBar(
 }
 
 /**
+ * 誓约光晕 Brush 缓存：三枚径向渐变的几何（center/radius）只依赖画布尺寸，
+ * 动画变化的 alpha 改由 drawRect(alpha=) 通道承载，尺寸不变时跨帧复用同一 Shader。
+ * colors 内的固定系数与原实现数学等价（drawRect alpha 与渐变各 stop alpha 相乘）。
+ */
+private class OathGlowBrushCache {
+    private var width = Float.NaN
+    private var height = Float.NaN
+    lateinit var mainBrush: Brush
+        private set
+    lateinit var warmBrush: Brush
+        private set
+    lateinit var goldBrush: Brush
+        private set
+
+    fun ensure(width: Float, height: Float) {
+        if (this.width == width && this.height == height) return
+        this.width = width
+        this.height = height
+        mainBrush = Brush.radialGradient(
+            colors = listOf(
+                AppColors.Favorite.Pink,
+                AppColors.Favorite.PinkLight.copy(alpha = 0.4f),
+                Color.Transparent
+            ),
+            center = Offset(width * 0.5f, height * 1.1f),
+            radius = height * 0.8f
+        )
+        warmBrush = Brush.radialGradient(
+            colors = listOf(AppColors.Favorite.PinkDark, Color.Transparent),
+            center = Offset(width * -0.1f, height * 1.15f),
+            radius = width * 0.6f
+        )
+        goldBrush = Brush.radialGradient(
+            colors = listOf(AppColors.Favorite.Gold, Color.Transparent),
+            center = Offset(width * 1.1f, height * -0.1f),
+            radius = width * 0.5f
+        )
+    }
+}
+
+/**
  * 誓约舰娘专属氛围背景
  * 三层结构：粉色光晕底层 + 漂浮粒子中层 + 渐变纹理顶层
  */
@@ -445,44 +486,21 @@ private fun OathAmbientBackground() {
 
     Box(modifier = Modifier.fillMaxSize()) {
         // ── 第1层：底部粉色径向光晕（誓约主色调）──
+        // Brush 按尺寸缓存 + 动画 alpha 走 drawRect(alpha=) 通道：
+        // 此前每帧新建 3 个 radialGradient Shader（60fps 无限动画驱动）造成持续 GC/GPU 开销。
+        // 数学上等价：原 colors 内 alpha=glowColor 的动态系数，改由 drawRect(alpha=) 统一乘。
+        val glowBrushCache = remember { OathGlowBrushCache() }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .drawBehind {
+                    glowBrushCache.ensure(size.width, size.height)
                     // 中心底部大光晕
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                AppColors.Favorite.Pink.copy(alpha = glowAlpha),
-                                AppColors.Favorite.PinkLight.copy(alpha = glowAlpha * 0.4f),
-                                Color.Transparent
-                            ),
-                            center = Offset(size.width * 0.5f, size.height * 1.1f),
-                            radius = size.height * 0.8f
-                        )
-                    )
+                    drawRect(brush = glowBrushCache.mainBrush, alpha = glowAlpha)
                     // 左下角暖粉光晕
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                AppColors.Favorite.PinkDark.copy(alpha = secondaryGlowAlpha),
-                                Color.Transparent
-                            ),
-                            center = Offset(size.width * -0.1f, size.height * 1.15f),
-                            radius = size.width * 0.6f
-                        )
-                    )
+                    drawRect(brush = glowBrushCache.warmBrush, alpha = secondaryGlowAlpha)
                     // 右上角金色光晕
-                    drawRect(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                AppColors.Favorite.Gold.copy(alpha = goldGlowAlpha),
-                                Color.Transparent
-                            ),
-                            center = Offset(size.width * 1.1f, size.height * -0.1f),
-                            radius = size.width * 0.5f
-                        )
-                    )
+                    drawRect(brush = glowBrushCache.goldBrush, alpha = goldGlowAlpha)
                 }
         )
 

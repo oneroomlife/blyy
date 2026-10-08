@@ -159,7 +159,7 @@ private class SpineSdGlSurfaceView(
 ) : GLSurfaceView(ctx) {
 
     /** 缩放倍率，可实时更新（由 AndroidView update 回调设置），每帧由 SpineRenderer 读取 */
-    var scaleMultiplier: Float = scaleMultiplier
+    @Volatile var scaleMultiplier: Float = scaleMultiplier
 
     /**
      * 触摸交互开关（由 AndroidView update 回调设置）。
@@ -170,7 +170,7 @@ private class SpineSdGlSurfaceView(
      * 系统悬浮窗场景下触摸穿透由 WindowManager FLAG_NOT_TOUCHABLE 控制，
      * 此字段保持 true（GLSurfaceView 本身仍可交互，但窗口不接收触摸）。
      */
-    var touchEnabled: Boolean = touchEnabled
+    @Volatile var touchEnabled: Boolean = touchEnabled
 
     /**
      * GLSurfaceView 最新尺寸缓存（px），由 [onSizeChanged] 在 UI 线程更新，
@@ -308,18 +308,20 @@ private class SpineSdGlSurfaceView(
                     // 骨骼边界框居中在 view 中心（SpineRenderer 的 skel.x/skel.y 计算保证），
                     // 透明区域 = view 矩形 - 骨骼 bounds 矩形，这部分事件全部穿透。
                     //
-                    // bounds 未就绪（首次渲染前）默认消费，避免首次点击失效；
-                    // 此时 view 还没显示内容，用户也不会点击到。
+                    // bounds 未就绪（首次渲染前）不消费事件：
+                    // 此前默认消费整窗，窗口出现后的最初几帧内，整块未渲染的透明区域
+                    // 都会拦截下层触摸，违背"只和小人显示区域交互"的目标。
                     val bounds = spineRenderer.boundsInViewport
-                    if (bounds != null && width > 0 && height > 0) {
-                        val touchX = event.x  // 相对 view 的坐标
-                        val touchY = event.y
-                        if (touchX < bounds.left || touchX > bounds.right ||
-                            touchY < bounds.top || touchY > bounds.bottom
-                        ) {
-                            // 触摸点在骨骼边界框外（透明区域），不消费事件，让下层 App 处理
-                            return@setOnTouchListener false
-                        }
+                    if (bounds == null || width <= 0 || height <= 0) {
+                        return@setOnTouchListener false
+                    }
+                    val touchX = event.x  // 相对 view 的坐标
+                    val touchY = event.y
+                    if (touchX < bounds.left || touchX > bounds.right ||
+                        touchY < bounds.top || touchY > bounds.bottom
+                    ) {
+                        // 触摸点在骨骼边界框外（透明区域），不消费事件，让下层 App 处理
+                        return@setOnTouchListener false
                     }
                     // 阻止父容器拦截后续 MOVE/UP 事件，确保拖动序列完整送达 GLSurfaceView
                     v.parent?.requestDisallowInterceptTouchEvent(true)

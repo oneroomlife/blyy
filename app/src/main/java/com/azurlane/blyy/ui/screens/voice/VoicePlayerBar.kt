@@ -212,26 +212,29 @@ internal fun GlassPlayerControlBar(
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .align(if (collapseToRight) Alignment.CenterEnd else Alignment.CenterStart)
-                    .alpha(collapsedAlpha)
-                    .offset(x = collapsedOffsetX)
-                    .graphicsLayer {
-                        scaleX = collapsedScale
-                        scaleY = collapsedScale
-                    }
-            ) {
-                CollapsedPlayerBar(
-                    isPlaying = playerState.isPlaying,
-                    playMode = playerState.playMode,
-                    collapseToRight = collapseToRight,
-                    onPlayPauseClick = { playerViewModel.playOrPause() },
-                    onModeClick = { playerViewModel.cyclePlayMode() },
-                    onExpandClick = { isCollapsed = false }
-                )
-            }
-        }
+            // 折叠气泡：展开态下完全不可见（collapsedAlpha=0），不参与组合，
+            // 避免其内部 3 组无限辉光动画在不可见时也持续重组/重绘（语音页常驻开销）
+            if (collapsedAlpha > 0f) {
+                Box(
+                    modifier = Modifier
+                        .align(if (collapseToRight) Alignment.CenterEnd else Alignment.CenterStart)
+                        .alpha(collapsedAlpha)
+                        .offset(x = collapsedOffsetX)
+                        .graphicsLayer {
+                            scaleX = collapsedScale
+                            scaleY = collapsedScale
+                        }
+                ) {
+                    CollapsedPlayerBar(
+                        isPlaying = playerState.isPlaying,
+                        playMode = playerState.playMode,
+                        collapseToRight = collapseToRight,
+                        onPlayPauseClick = { playerViewModel.playOrPause() },
+                        onModeClick = { playerViewModel.cyclePlayMode() },
+                        onExpandClick = { isCollapsed = false }
+                    )
+                }
+            }        }
     }
 
     if (showPlayLaterSheet) {
@@ -264,28 +267,39 @@ internal fun CollapsedPlayerBar(
     onExpandClick: () -> Unit
 ) {
     val isDark = LocalIsDark.current
-    val infiniteTransition = rememberInfiniteTransition(label = "GlowPulse")
-    
-    val glowScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.3f,
-        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
-        label = "GlowScale"
-    )
+    // 无限动画 gating：辉光/摇摆仅在播放中运行；暂停时挂空态（静态值），
+    // 避免折叠气泡在语音页常驻期间持续跑 3 组无限动画（重组+重绘+每帧分配）
+    val glowScale: Float
+    val glowAlpha: Float
+    val iconRotation: Float
+    if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "GlowPulse")
 
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 0.6f,
-        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
-        label = "GlowAlpha"
-    )
+        glowScale = infiniteTransition.animateFloat(
+            initialValue = 1f,
+            targetValue = 1.3f,
+            animationSpec = AppAnimation.Repeating.glow(duration = 2000),
+            label = "GlowScale"
+        ).value
 
-    val iconRotation by infiniteTransition.animateFloat(
-        initialValue = -5f,
-        targetValue = 5f,
-        animationSpec = AppAnimation.Repeating.float(duration = 1500),
-        label = "IconRotation"
-    )
+        glowAlpha = infiniteTransition.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 0.6f,
+            animationSpec = AppAnimation.Repeating.glow(duration = 2000),
+            label = "GlowAlpha"
+        ).value
+
+        iconRotation = infiniteTransition.animateFloat(
+            initialValue = -5f,
+            targetValue = 5f,
+            animationSpec = AppAnimation.Repeating.float(duration = 1500),
+            label = "IconRotation"
+        ).value
+    } else {
+        glowScale = 1f
+        glowAlpha = 0.3f
+        iconRotation = 0f
+    }
 
     Box(
         modifier = Modifier.size(64.dp),
@@ -532,13 +546,20 @@ private fun ModernPlayButton(
     isPlaying: Boolean,
     onClick: () -> Unit
 ) {
-    val infiniteTransition = rememberInfiniteTransition(label = "PlayButton")
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.2f,
-        targetValue = 0.4f,
-        animationSpec = AppAnimation.Repeating.glow(duration = 2000),
-        label = "GlowAlpha"
-    )
+    // 辉光无限动画 gating：仅在播放中运行，暂停时静态无辉光
+    // （此前播放条可见期间该动画恒跑，未播放也在消耗 CPU/GPU）
+    val glowAlpha: Float
+    if (isPlaying) {
+        val infiniteTransition = rememberInfiniteTransition(label = "PlayButton")
+        glowAlpha = infiniteTransition.animateFloat(
+            initialValue = 0.2f,
+            targetValue = 0.4f,
+            animationSpec = AppAnimation.Repeating.glow(duration = 2000),
+            label = "GlowAlpha"
+        ).value
+    } else {
+        glowAlpha = 0f
+    }
 
     Box(modifier = Modifier.size(64.dp), contentAlignment = Alignment.Center) {
         Box(

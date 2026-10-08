@@ -85,6 +85,7 @@ import com.azurlane.blyy.util.MediaDownloader
 import kotlinx.coroutines.withContext
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import java.util.concurrent.ConcurrentHashMap
@@ -101,12 +102,22 @@ private val TabFadeOutSpec = tween<Float>(AppAnimation.Duration.Fast)
 private val TabSlideInSpec = tween<androidx.compose.ui.unit.IntOffset>(AppAnimation.Duration.Normal)
 private val TabSlideOutSpec = tween<androidx.compose.ui.unit.IntOffset>(AppAnimation.Duration.Fast)
 
+/** 缩略图降采样目标边界（px）：展示区约 120dp，512px 在 4x 密度屏也足够清晰 */
+private const val VIDEO_THUMB_MAX_DIMEN = 512
+
 /**
- * 视频缩略图内存缓存 — 缓存 MediaMetadataRetriever 提取的视频首帧
+ * 视频缩略图内存缓存 — 缓存 MediaMetadataRetriever 提取的视频首帧（已降采样）
  *
- * key = 视频 URL，value = Bitmap（可能为 null 表示提取失败，避免重复尝试）
+ * 使用 LruCache 限容（约 1/8 最大堆内存）：此前是无界 ConcurrentHashMap 且缓存
+ * 原始分辨率首帧（720p 单帧 3-8MB），浏览几十个视频即可累积数百 MB 堆内存引发 OOM。
+ * value 为 [ThumbnailState]（Success/Failed），Failed 也占位计入缓存以避免重复尝试。
  */
-private val videoThumbnailCache = ConcurrentHashMap<String, Bitmap?>()
+private val videoThumbnailCache = object : LruCache<String, ThumbnailState>(
+    (Runtime.getRuntime().maxMemory() / 8).toInt().coerceAtLeast(4 * 1024 * 1024)
+) {
+    override fun sizeOf(key: String, value: ThumbnailState): Int =
+        (value as? ThumbnailState.Success)?.bitmap?.byteCount ?: 1
+}
 
 /**
  * 异步加载视频缩略图（首帧）
@@ -118,20 +129,32 @@ private val videoThumbnailCache = ConcurrentHashMap<String, Bitmap?>()
  * @return 首帧 Bitmap，提取失败返回 null
  */
 private suspend fun loadVideoThumbnail(videoUrl: String): Bitmap? {
-    videoThumbnailCache[videoUrl]?.let { return it }
+    (videoThumbnailCache.get(videoUrl) as? ThumbnailState.Success)?.let { return it.bitmap }
     return withContext(Dispatchers.IO) {
         val retriever = MediaMetadataRetriever()
         try {
             // gamekee CDN 需要Referer头，否则可能返回403
             val headers = mapOf("Referer" to "https://www.gamekee.com/")
             retriever.setDataSource(videoUrl, headers)
-            val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            videoThumbnailCache[videoUrl] = bitmap
+            // 降采样后缓存：原分辨率首帧单帧可达数 MB，缓存无界时是明确的 OOM 风险
+            val bitmap = try {
+                retriever.getScaledFrameAtTime(
+                    0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    VIDEO_THUMB_MAX_DIMEN, VIDEO_THUMB_MAX_DIMEN
+                )
+            } catch (e: Exception) {
+                // 部分机型/视频流不支持 getScaledFrameAtTime，回退到原接口
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            }
+            videoThumbnailCache.put(
+                videoUrl,
+                if (bitmap != null) ThumbnailState.Success(bitmap) else ThumbnailState.Failed
+            )
             Log.d(TAG, "Video thumbnail extracted: $videoUrl, success=${bitmap != null}")
             bitmap
         } catch (e: Exception) {
             Log.w(TAG, "Failed to extract video thumbnail: $videoUrl — ${e.message}")
-            videoThumbnailCache[videoUrl] = null // 缓存失败结果，避免重复尝试
+            videoThumbnailCache.put(videoUrl, ThumbnailState.Failed) // 缓存失败结果，避免重复尝试
             null
         } finally {
             try { retriever.release() } catch (_: Exception) {}
@@ -157,15 +180,10 @@ private sealed class ThumbnailState {
 @Composable
 private fun rememberVideoThumbnail(videoUrl: String): ThumbnailState {
     return produceState<ThumbnailState>(ThumbnailState.Loading, videoUrl) {
-        // 先查缓存：命中（含 null 失败结果）则直接返回，避免重复网络请求
-        val cached = videoThumbnailCache[videoUrl]
-        value = when {
-            cached != null -> ThumbnailState.Success(cached)
-            videoThumbnailCache.containsKey(videoUrl) -> ThumbnailState.Failed
-            else -> {
-                val bitmap = loadVideoThumbnail(videoUrl)
-                if (bitmap != null) ThumbnailState.Success(bitmap) else ThumbnailState.Failed
-            }
+        // 先查缓存：命中（含 Failed 失败占位）则直接返回，避免重复网络请求
+        value = videoThumbnailCache.get(videoUrl) ?: run {
+            val bitmap = loadVideoThumbnail(videoUrl)
+            if (bitmap != null) ThumbnailState.Success(bitmap) else ThumbnailState.Failed
         }
     }.value
 }
