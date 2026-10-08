@@ -1,5 +1,6 @@
 package com.azurlane.blyy.ui.components
 
+import android.graphics.RectF
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -61,6 +62,8 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.SDResourceManager
 import com.azurlane.blyy.util.SDResourceType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 /**
@@ -76,20 +79,23 @@ import kotlin.math.roundToInt
  * 因此骨骼渲染高度占视口比例最大为 [CHIBI_VIEWPORT_USAGE]（0.95），
  * 气泡定位用此值作为保守估计：高瘦型精确贴合头顶，矮胖型气泡稍高但不会遮挡头部。
  */
-private const val CHIBI_VIEWPORT_USAGE = 0.95f
+internal const val CHIBI_VIEWPORT_USAGE = 0.95f
 
 /**
  * 拖动边界余量比例：允许小人头顶超出容器顶部此比例的距离，使头顶可达屏幕顶端。
  *
  * 与气泡定位解耦：气泡需要精确的小人头顶位置，而拖动边界只需保证小人不会被拖到看不见。
+ *
+ * SecretaryOverlayService 的 DRAG_OVERFLOW_RATIO 与此为同一语义（悬浮窗允许向上溢出比例），
+ * 直接复用本常量，避免双处定义漂移。
  */
-private const val CHIBI_DRAG_MARGIN_RATIO = 0.15f
+internal const val CHIBI_DRAG_MARGIN_RATIO = 0.15f
 
-/** SD 小人基础宽度（dp），用于窗口尺寸计算 */
-private val CHIBI_BASE_WIDTH = 110.dp
+/** SD 小人基础宽度（dp），用于窗口尺寸计算（悬浮窗服务共用，保证双端窗口尺寸一致） */
+internal val CHIBI_BASE_WIDTH = 110.dp
 
-/** SD 小人基础高度（dp），用于窗口尺寸计算 */
-private val CHIBI_BASE_HEIGHT = 165.dp
+/** SD 小人基础高度（dp），用于窗口尺寸计算（悬浮窗服务共用，保证双端窗口尺寸一致） */
+internal val CHIBI_BASE_HEIGHT = 165.dp
 
 /**
  * 已解析的 SD 资源资产信息。
@@ -172,38 +178,47 @@ fun SecretaryChibiOverlay(
     // 统一使用 SDResourceManager.resolve：
     // - 优先用 sdResourceId 直接按 ID 加载（解除舰名限制，支持任意 SD 资源）
     // - sdResourceId 为空时回退到舰名匹配（向后兼容）
-    // 关键：将 SDResourceManager.revision 作为 remember key，
-    // 整理/清理资源后 refreshIndex() 递增 revision，触发 sdAsset 重新解析，
+    // 磁盘 I/O 后台化：resolve 首次会构建索引（全目录递归扫描），后续每次也涉及
+    // listFiles/exists，在组合期主线程执行会导致悬浮窗创建/秘书舰页明显卡顿。
+    // 改为 LaunchedEffect + Dispatchers.IO 异步解析：
+    // - sdResolved=false 期间不回退网络立绘（避免立绘→小人闪烁），短暂空白等解析完成
+    // - 结果用普通 remember 持有（produceState 在 key 变化时重置为 null），重解析期间
+    //   沿用旧值（stale-while-revalidate）
+    // 关键：将 SDResourceManager.revision 作为 key，
+    // 整理/清理资源后 refreshIndex() 递增 revision，触发重新解析，
     // 避免整理后仍使用旧的 null 结果导致 SD 小人不可动。
-    val sdResource = remember(shipName, selectedSkin, sdResourceId, SDResourceManager.revision.value) {
-        SDResourceManager.resolve(context, sdResourceId, shipName, selectedSkin)
-    }
-    // 将 SDResource 转换为渲染所需的 ResolvedSdAsset：
-    // - Spine 动画 → 传递 dirPath + assetName 给 SpineSdView
-    // - 静态图片 → 查找实际图片文件路径，用 AsyncImage 渲染
-    // - 未知类型 → 返回 null，回退到网络立绘 figureUrl
-    val sdAsset = sdResource?.let { res ->
-        val skin = res.getSkin(selectedSkin)
-        when (skin.type) {
-            SDResourceType.SPINE -> ResolvedSdAsset(
-                dirPath = skin.dirPath,
-                assetName = skin.assetName,
-                type = SDResourceType.SPINE
-            )
-            SDResourceType.STATIC_IMAGE -> {
-                val imagePath = findImageFile(skin.dirPath, skin.assetName)
-                if (imagePath != null) {
-                    ResolvedSdAsset(
+    var sdResolved by remember { mutableStateOf(false) }
+    var sdAsset by remember { mutableStateOf<ResolvedSdAsset?>(null) }
+    LaunchedEffect(shipName, selectedSkin, sdResourceId, SDResourceManager.revision.value) {
+        val resolved = withContext(Dispatchers.IO) {
+            SDResourceManager.resolve(context, sdResourceId, shipName, selectedSkin)?.let { res ->
+                // 将 SDResource 转换为渲染所需的 ResolvedSdAsset：
+                // - Spine 动画 → 传递 dirPath + assetName 给 SpineSdView
+                // - 静态图片 → 查找实际图片文件路径，用 AsyncImage 渲染
+                // - 未知类型 → 返回 null，回退到网络立绘 figureUrl
+                val skin = res.getSkin(selectedSkin)
+                when (skin.type) {
+                    SDResourceType.SPINE -> ResolvedSdAsset(
                         dirPath = skin.dirPath,
                         assetName = skin.assetName,
-                        type = SDResourceType.STATIC_IMAGE,
-                        imageFilePath = imagePath
+                        type = SDResourceType.SPINE
                     )
-                } else null
+                    SDResourceType.STATIC_IMAGE -> findImageFile(skin.dirPath, skin.assetName)?.let { imagePath ->
+                        ResolvedSdAsset(
+                            dirPath = skin.dirPath,
+                            assetName = skin.assetName,
+                            type = SDResourceType.STATIC_IMAGE,
+                            imageFilePath = imagePath
+                        )
+                    }
+                    SDResourceType.UNKNOWN -> null
+                }
             }
-            SDResourceType.UNKNOWN -> null
         }
+        sdAsset = resolved
+        sdResolved = true
     }
+    val asset = sdAsset
 
     val screenWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeight = with(density) { configuration.screenHeightDp.dp.toPx() }
@@ -257,14 +272,14 @@ fun SecretaryChibiOverlay(
         )
 
         Box(modifier = modifier.size(overlayWidth, overlayHeight)) {
-            if (sdAsset != null && sdAsset.isSpine) {
+            if (asset != null && asset.isSpine) {
                 // ── SD 小人（Spine 动画）──
                 // 直接 fillMaxSize：窗口尺寸 = 渲染尺寸，无需 requiredSize + offset 补偿。
                 // 触摸穿透由 SpineSdGlSurfaceView 内部用骨骼 bounds 判断，无需外部限制。
                 // scaleMultiplier = 1.0：视口已反映 displayScale，SpineRenderer 自适应缩放即可。
                 SpineSdView(
-                    dirPath = sdAsset.dirPath,
-                    assetName = sdAsset.assetName,
+                    dirPath = asset.dirPath,
+                    assetName = asset.assetName,
                     modifier = Modifier.fillMaxSize(),
                     scaleMultiplier = 1.0f,
                     onTap = {
@@ -285,55 +300,40 @@ fun SecretaryChibiOverlay(
                 )
             } else {
                 // ── 静态图片资源 / 网络立绘回退 ──
-                // 静态图片资源用 sdAsset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
-                // 窗口尺寸 = baseSize × displayScale，AsyncImage ContentScale.Fit 自动适配。
-                // 拖动/点击通过 pointerInput 处理，位置变化通过 onPositionChange 通知 Service。
-                val imageModel = sdAsset?.imageFilePath ?: figureUrl
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            scaleX = staticScale
-                            scaleY = staticScale
-                            this.alpha = staticAlpha
-                        }
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onTap = {
-                                    isTapped = true
-                                    hapticFeedback(BlyyHaptic.Tick)
-                                    onTap()
-                                }
-                            )
-                        }
-                        .pointerInput(Unit) {
-                            detectDragGestures(
-                                onDragStart = {
-                                    isDragging = true
-                                    onDragStateChanged?.invoke(true)
-                                    hapticFeedback(BlyyHaptic.LongPress)
-                                },
-                                onDragEnd = {
-                                    isDragging = false
-                                    onDragStateChanged?.invoke(false)
-                                },
-                                onDragCancel = {
-                                    isDragging = false
-                                    onDragStateChanged?.invoke(false)
-                                }
-                            ) { change, dragAmount ->
-                                change.consume()
-                                onPositionChange?.invoke(dragAmount.x, dragAmount.y)
-                            }
-                        }
-                ) {
-                    AsyncImage(
-                        model = imageModel,
-                        contentDescription = "秘书舰 $shipName",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
-                    )
+                // 静态图片资源用 asset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
+                // SD 解析未完成期间 imageModel = null：先不渲染，避免网络立绘→SD 小人的闪烁。
+                // 交互区域 = 图片实际显示矩形（Fit 后），不再整个窗口拦截触摸——
+                // 此前整个窗口挂 pointerInput，ContentScale.Fit 四周的透明区域
+                // 在悬浮窗场景会挡住下层 App 的触摸操作。
+                val imagePath = asset?.imageFilePath
+                val imageModel = when {
+                    !sdResolved -> null
+                    imagePath != null -> imagePath
+                    else -> figureUrl
                 }
+                InteractiveStaticFigure(
+                    containerWidthPx = with(density) { overlayWidth.toPx() },
+                    containerHeightPx = with(density) { overlayHeight.toPx() },
+                    imageModel = imageModel,
+                    contentDescription = "秘书舰 $shipName",
+                    onTap = {
+                        isTapped = true
+                        hapticFeedback(BlyyHaptic.Tick)
+                        onTap()
+                    },
+                    onDragStart = {
+                        isDragging = true
+                        onDragStateChanged?.invoke(true)
+                        hapticFeedback(BlyyHaptic.LongPress)
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        onDragStateChanged?.invoke(false)
+                    },
+                    onDrag = { dx, dy -> onPositionChange?.invoke(dx, dy) },
+                    scale = staticScale,
+                    alpha = staticAlpha
+                )
             }
         }
     } else {
@@ -448,7 +448,7 @@ fun SecretaryChibiOverlay(
                 .size(CHIBI_BASE_WIDTH, CHIBI_BASE_HEIGHT)
                 .offset { IntOffset(localOffsetX.roundToInt(), localOffsetY.roundToInt()) }
         ) {
-            if (sdAsset != null && sdAsset.isSpine) {
+            if (asset != null && asset.isSpine) {
                 // ── SD 小人（Spine 动画）──
                 // GLSurfaceView 容器尺寸 = renderWidth × renderHeight（放大时跟随放大，渲染完整不裁剪）。
                 //
@@ -473,8 +473,8 @@ fun SecretaryChibiOverlay(
                 // 但骨骼 bounds 只占视口 95%（0.95 系数），bounds 外的透明区域事件穿透。
                 // 无需外层 touchAreaRatio 限制，bounds 判断更精确（贴合角色实际形状）。
                 SpineSdView(
-                    dirPath = sdAsset.dirPath,
-                    assetName = sdAsset.assetName,
+                    dirPath = asset.dirPath,
+                    assetName = asset.assetName,
                     modifier = Modifier
                         .requiredSize(renderWidth, renderHeight)
                         .offset { IntOffset(renderOffsetX.roundToInt(), renderOffsetY.roundToInt()) },
@@ -499,50 +499,46 @@ fun SecretaryChibiOverlay(
                 )
             } else {
                 // ── 静态图片资源 / 网络立绘回退 ──
-                // 静态图片资源用 sdAsset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
+                // 静态图片资源用 asset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
+                // SD 解析未完成期间 imageModel = null：先不渲染，避免网络立绘→SD 小人的闪烁
                 // 仅在此场景使用 pointerInput + scale/alpha 动画
                 // 渲染层尺寸同 SD 小人场景，保证放大时渲染完整
                 // 同样使用 requiredSize 突破外层 Box 的尺寸约束（见上方 SD 小人注释）
-                val imageModel = sdAsset?.imageFilePath ?: figureUrl
+                val imagePath = asset?.imageFilePath
+                val imageModel = when {
+                    !sdResolved -> null
+                    imagePath != null -> imagePath
+                    else -> figureUrl
+                }
+                // 容器跟随放大 + 居中补偿的定位 Box 内放置交互层：
+                // 交互区域 = 图片实际显示矩形，四周透明区域的事件穿透到父级
+                // （不再挡住页面滚动等父级手势）
                 Box(
                     modifier = Modifier
                         .requiredSize(renderWidth, renderHeight)
                         .offset { IntOffset(renderOffsetX.roundToInt(), renderOffsetY.roundToInt()) }
-                        .graphicsLayer {
-                            scaleX = staticScale
-                            scaleY = staticScale
-                            this.alpha = staticAlpha
-                        }
-                        // 应用内场景始终可交互：触摸穿透仅用于系统悬浮窗
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onTap = {
-                                    isTapped = true
-                                    hapticFeedback(BlyyHaptic.Tick)
-                                    onTap()
-                                }
-                            )
-                        }
-                        .pointerInput(Unit) {
-                            detectDragGestures(
-                                onDragStart = {
-                                    isDragging = true
-                                    hapticFeedback(BlyyHaptic.LongPress)
-                                },
-                                onDragEnd = { isDragging = false },
-                                onDragCancel = { isDragging = false }
-                            ) { change, dragAmount ->
-                                change.consume()
-                                localOffsetX = (localOffsetX + dragAmount.x).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
-                                localOffsetY = (localOffsetY + dragAmount.y).coerceIn(dragMinY, dragMaxY)
-                            }
-                        }
                 ) {
-                    AsyncImage(
-                        model = imageModel,
+                    InteractiveStaticFigure(
+                        containerWidthPx = with(density) { renderWidth.toPx() },
+                        containerHeightPx = with(density) { renderHeight.toPx() },
+                        imageModel = imageModel,
                         contentDescription = "秘书舰 $shipName",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
+                        onTap = {
+                            isTapped = true
+                            hapticFeedback(BlyyHaptic.Tick)
+                            onTap()
+                        },
+                        onDragStart = {
+                            isDragging = true
+                            hapticFeedback(BlyyHaptic.LongPress)
+                        },
+                        onDragEnd = { isDragging = false },
+                        onDrag = { dx, dy ->
+                            localOffsetX = (localOffsetX + dx).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
+                            localOffsetY = (localOffsetY + dy).coerceIn(dragMinY, dragMaxY)
+                        },
+                        scale = staticScale,
+                        alpha = staticAlpha
                     )
                 }
             }
@@ -660,6 +656,101 @@ fun SecretaryOverlayAuxiliaryContent(
         } else {
             BlyySpeechBubble(text = dialogue ?: "", isDark = isDark, maxLines = 2, modifier = Modifier.widthIn(max = 280.dp))
         }
+    }
+}
+
+/**
+ * 静态立绘交互层：把触摸交互限制在图片实际显示区域（ContentScale.Fit 后的矩形）。
+ *
+ * 背景：此前静态图分支在整个容器（悬浮窗场景 = 整个窗口）上挂 pointerInput，
+ * ContentScale.Fit 四周的透明区域同样拦截触摸——悬浮窗场景挡住下层 App，
+ * 应用内场景挡住父级滚动手势，违背"只和 SD 小人显示部分交互"的目标。
+ *
+ * 实现：读取 Coil 加载结果的图片宽高比，计算 Fit 后的实际显示矩形，
+ * 只在该矩形上渲染与交互；图片未加载（宽高比未知）或无图可显示（imageModel=null）
+ * 时不提供任何交互（此前 null 模型也会挂一个整容器可交互的空 Box）。
+ *
+ * @param containerWidthPx/containerHeightPx 容器尺寸（px），显示矩形在其内计算
+ * @param imageModel Coil 模型；null = 无图可显示，也不提供交互
+ * @param scale/alpha 点击/拖动反馈动画（与原静态分支一致）
+ */
+@Composable
+private fun InteractiveStaticFigure(
+    containerWidthPx: Float,
+    containerHeightPx: Float,
+    imageModel: Any?,
+    contentDescription: String,
+    onTap: () -> Unit,
+    onDragStart: () -> Unit,
+    onDragEnd: () -> Unit,
+    onDrag: (dx: Float, dy: Float) -> Unit,
+    modifier: Modifier = Modifier,
+    scale: Float = 1f,
+    alpha: Float = 1f
+) {
+    // 图片宽高比：由 Coil 加载成功回调写入；模型变化时重置（切舰娘/皮肤后重新测量）
+    var imageAspect by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(imageModel) { imageAspect = null }
+    val fitRect = remember(imageAspect, containerWidthPx, containerHeightPx) {
+        computeFittedImageRect(imageAspect, containerWidthPx, containerHeightPx)
+    }
+    if (imageModel == null || fitRect == null) return
+
+    val density = LocalDensity.current
+    Box(
+        modifier = modifier
+            .offset { IntOffset(fitRect.left.roundToInt(), fitRect.top.roundToInt()) }
+            .size(
+                with(density) { fitRect.width().toDp() },
+                with(density) { fitRect.height().toDp() }
+            )
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                this.alpha = alpha
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { _ -> onTap() })
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { _ -> onDragStart() },
+                    onDragEnd = onDragEnd,
+                    onDragCancel = onDragEnd
+                ) { change, dragAmount ->
+                    change.consume()
+                    onDrag(dragAmount.x, dragAmount.y)
+                }
+            }
+    ) {
+        AsyncImage(
+            model = imageModel,
+            contentDescription = contentDescription,
+            modifier = Modifier.fillMaxSize(),
+            // 矩形尺寸 = 图片宽高比精确计算，FillBounds 不会引入变形
+            contentScale = ContentScale.FillBounds,
+            onSuccess = { state ->
+                val intrinsic = state.painter.intrinsicSize
+                if (intrinsic.width > 0f && intrinsic.height > 0f) {
+                    imageAspect = intrinsic.width / intrinsic.height
+                }
+            }
+        )
+    }
+}
+
+/** 计算 ContentScale.Fit 后图片实际显示矩形（容器坐标，px）；宽高比未知或容器无效时返回 null */
+private fun computeFittedImageRect(aspect: Float?, containerW: Float, containerH: Float): RectF? {
+    if (aspect == null || !aspect.isFinite() || aspect <= 0f || containerW <= 0f || containerH <= 0f) return null
+    val containerAspect = containerW / containerH
+    return if (aspect >= containerAspect) {
+        // 图片更宽：宽度铺满，垂直居中
+        val h = containerW / aspect
+        RectF(0f, (containerH - h) / 2f, containerW, (containerH + h) / 2f)
+    } else {
+        // 图片更高：高度铺满，水平居中
+        val w = containerH * aspect
+        RectF((containerW - w) / 2f, 0f, (containerW + w) / 2f, containerH)
     }
 }
 

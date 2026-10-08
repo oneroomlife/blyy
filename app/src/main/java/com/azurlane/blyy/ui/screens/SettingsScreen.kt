@@ -98,7 +98,8 @@ fun SettingsScreen(
                     BlyySectionPanel(
                         title = "界面风格",
                         icon = Icons.Rounded.Sailing,
-                        accentColor = MaterialTheme.colorScheme.primary
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        separateItems = true
                     ) {
                         BlyySettingsRow(
                             icon = Icons.Rounded.Sailing,
@@ -123,7 +124,8 @@ fun SettingsScreen(
                     BlyySectionPanel(
                         title = "显示",
                         icon = Icons.Rounded.AutoMode,
-                        accentColor = MaterialTheme.colorScheme.secondary
+                        accentColor = MaterialTheme.colorScheme.secondary,
+                        separateItems = true
                     ) {
                         BlyySettingsRow(
                             icon = Icons.Rounded.AutoMode,
@@ -162,7 +164,8 @@ fun SettingsScreen(
                     BlyySectionPanel(
                         title = "更新",
                         icon = Icons.Rounded.CloudSync,
-                        accentColor = MaterialTheme.colorScheme.tertiary
+                        accentColor = MaterialTheme.colorScheme.tertiary,
+                        separateItems = true
                     ) {
                         BlyySettingsRow(
                             icon = Icons.Rounded.CloudSync,
@@ -179,7 +182,8 @@ fun SettingsScreen(
                         BlyySectionPanel(
                             title = "碧蓝航线助手",
                             icon = Icons.Rounded.PersonSearch,
-                            accentColor = MaterialTheme.colorScheme.primary
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            separateItems = true
                         ) {
                         SettingsNavigationRow(
                             icon = Icons.Rounded.PersonSearch,
@@ -239,20 +243,12 @@ private fun SettingsNavigationRow(
     onClick: () -> Unit
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
-    val isDark = LocalIsDark.current
     val accentColor = MaterialTheme.colorScheme.primary
     val isWatch = isWatchScreen()
 
-    val containerModifier = if (isCommandCenter) {
-        Modifier.fillMaxWidth()
-    } else {
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-    }
-
-    BlyyPanel(modifier = containerModifier) {
+    // 独立卡片设计（与 BlyySettingsRow 的 asCard=true 一致）：每行自带面板外壳，
+    // 配合 BlyySectionPanel(separateItems = true) 作为单独组件排列
+    BlyyPanel(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()

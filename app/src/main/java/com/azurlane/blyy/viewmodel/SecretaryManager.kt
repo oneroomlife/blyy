@@ -123,7 +123,11 @@ class SecretaryManager @Inject constructor(
             settingsDataStore.secretaryAvatarUrl.collect { _avatarUrl.value = it }
         }
         scope.launch {
-            settingsDataStore.secretaryAutoPlayEnabled.collect { enabled ->
+            // distinctUntilChanged：safeData 在任意 key 的 edit 后都会重新发射整包
+            // Preferences（包括聊天消息保存等其他功能的高频写入）。不加去重时，
+            // 每次写入都会走到 startAutoPlay → stop+restart，自动播放的 delay 定时器
+            // 被频繁重置，表现为什么时候都不会触发自动播放。
+            settingsDataStore.secretaryAutoPlayEnabled.distinctUntilChanged().collect { enabled ->
                 if (enabled && _shipName.value.isNotEmpty()) {
                     startAutoPlay()
                 } else {
@@ -176,9 +180,13 @@ class SecretaryManager @Inject constructor(
             // 从 Wiki 获取立绘 URL
             _isLoadingVoices.value = true
             val (voices, defaultFigure, skinFigureMap) = getVoicesUseCase(ship.name)
-            
-            // 优先使用皮肤立绘，其次使用默认立绘，最后使用头像作为降级
-            val finalFigureUrl = skinFigureMap.values.firstOrNull()
+
+            // 与 loadFigureAndSave 同一优先级：历史保存立绘 > 皮肤立绘 > 默认立绘 > 头像。
+            // 此前直接取 skinFigureMap.firstOrNull（依赖 Map 顺序、且与随机翻牌路径不一致），
+            // 同一舰娘经"心有所属"与"随机翻牌"两条路径可能得到不同立绘
+            val savedFigure = settingsDataStore.getSavedFigure(ship.name).first()
+            val finalFigureUrl = savedFigure
+                ?: skinFigureMap.values.firstOrNull()
                 ?: defaultFigure
                 ?: ship.avatarUrl
             
@@ -273,8 +281,22 @@ class SecretaryManager @Inject constructor(
 
     @androidx.annotation.OptIn(UnstableApi::class)
     fun playRandomVoice() {
+        // 点击即播语义：语音未就绪时先等待在途/新发起的加载完成再播。
+        // 此前调用方（悬浮窗 onTap）先 ensureVoicesLoaded（异步）后立刻 playRandomVoice，
+        // voices 仍为空 → 本次点击只触发后台加载、不出声，要点第二次才有声音
+        scope.launch {
+            if (_voices.value.isEmpty()) {
+                loadVoicesInBackground(_shipName.value)?.join()
+            }
+            playRandomVoiceNow()
+        }
+    }
+
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun playRandomVoiceNow() {
         val voices = _voices.value
         if (voices.isEmpty()) {
+            // 等待后仍为空（加载失败/无语音数据）：再触发一次后台加载供下次播放
             if (_shipName.value.isNotEmpty()) loadVoicesInBackground(_shipName.value)
             return
         }
@@ -330,13 +352,20 @@ class SecretaryManager @Inject constructor(
         }
     }
 
-    private fun loadVoicesInBackground(shipName: String) {
+    // 语音后台加载 Job 与目标舰名：点击播放等待它完成；并发触发（点击/自动播放/
+    // ensureVoicesLoaded）复用在途请求，且切换舰娘后不会误挂到旧舰名的加载上。
+    // 仅在主线程（scope = Main）读写，无并发问题。
+    private var voicesLoadJob: Job? = null
+    private var voicesLoadTarget: String? = null
+
+    private fun loadVoicesInBackground(shipName: String): Job? {
         // 舰名为空时不加载语音（自定义非舰娘资源无对应舰娘，不应触发语音加载）
         if (shipName.isBlank()) {
             _voices.value = emptyList()
-            return
+            return null
         }
-        scope.launch {
+        voicesLoadJob?.takeIf { it.isActive && voicesLoadTarget == shipName }?.let { return it }
+        val job = scope.launch {
             _isLoadingVoices.value = true
             try {
                 val (voices, _, _) = getVoicesUseCase(shipName)
@@ -349,6 +378,9 @@ class SecretaryManager @Inject constructor(
                 _isLoadingVoices.value = false
             }
         }
+        voicesLoadJob = job
+        voicesLoadTarget = shipName
+        return job
     }
 
     fun setAutoPlay(enabled: Boolean, intervalMinutes: Int) {
@@ -356,8 +388,12 @@ class SecretaryManager @Inject constructor(
             withContext(NonCancellable) {
                 settingsDataStore.setSecretaryAutoPlay(enabled, intervalMinutes)
             }
-            if (enabled && _shipName.value.isNotEmpty()) startAutoPlay()
-            else stopAutoPlay()
+            if (enabled && _shipName.value.isNotEmpty()) {
+                // 已在运行则不打断：间隔由循环每轮自适应读取，滑块连发不再重启定时器
+                if (autoPlayJob?.isActive != true) startAutoPlay()
+            } else {
+                stopAutoPlay()
+            }
         }
     }
 
@@ -531,9 +567,10 @@ class SecretaryManager @Inject constructor(
 
     private fun startAutoPlay() {
         stopAutoPlay()
-        val intervalMs = state.value.autoPlayIntervalMinutes * 60 * 1000L
         autoPlayJob = scope.launch {
             while (isActive && _shipName.value.isNotEmpty()) {
+                // 每轮循环读取最新间隔：滑块调整对下一轮生效，无需重启循环
+                val intervalMs = state.value.autoPlayIntervalMinutes * 60 * 1000L
                 delay(intervalMs)
                 if (isActive && state.value.autoPlayEnabled) playRandomVoice()
             }

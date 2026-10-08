@@ -880,8 +880,7 @@ fun AppContent() {
                         },
                         selectedSkin = secretaryState.sdSkin,
                         sdScale = secretaryState.sdScale,
-                        sdResourceId = secretaryState.sdResourceId,
-                        overlayTouchPassthrough = secretaryState.overlayTouchPassthrough
+                        sdResourceId = secretaryState.sdResourceId
                     )
                 }
 

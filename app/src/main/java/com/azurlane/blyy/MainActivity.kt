@@ -31,6 +31,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
@@ -69,6 +70,19 @@ class MainActivity : ComponentActivity() {
 
         val intent = Intent(this, PlaybackService::class.java)
         startService(intent)
+
+        // 按持久化设置恢复悬浮窗：用户开启过"桌面悬浮窗"且服务未在运行（进程被杀/
+        // 重启 App）→ 自动拉起，让开关成为真正的持久化设置而非一次性行为。
+        // 权限被系统撤销时静默跳过（下次启动再试），避免启动流程被中断。
+        lifecycleScope.launch {
+            val enabled = playerSettings.secretaryOverlayEnabled.first()
+            if (enabled && !SecretaryOverlayService.isServiceRunning() &&
+                OverlayPermissionHelper.hasOverlayPermission(this@MainActivity)
+            ) {
+                Log.d(TAG_OVERLAY, "onCreate: 按设置恢复悬浮窗服务")
+                startOverlayServiceInternal(persist = false, showToast = false)
+            }
+        }
 
         setContent {
             val uiStyle by playerSettings.uiStyle.collectAsStateWithLifecycle(
@@ -131,33 +145,51 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 启动系统悬浮窗服务
+     * 启动悬浮窗核心路径。
+     *
+     * @param persist 是否写入"桌面悬浮窗"持久化设置（手动开关=true，启动自动恢复=false）
+     * @param showToast 是否弹出 Toast 提示（自动恢复场景静默）
      */
-    fun startOverlayService() {
-        Log.d(TAG_OVERLAY, "startOverlayService: 开始启动悬浮窗服务")
-
-        if (OverlayPermissionHelper.hasOverlayPermission(this)) {
-            Log.d(TAG_OVERLAY, "startOverlayService: 权限已授予，启动服务")
-
-            // 保存状态（绑定 Activity 生命周期，避免 GlobalScope 泄漏）
-            lifecycleScope.launch {
-                playerSettings.setSecretaryOverlayEnabled(true)
+    private fun startOverlayServiceInternal(persist: Boolean, showToast: Boolean) {
+        if (!OverlayPermissionHelper.hasOverlayPermission(this)) {
+            if (showToast) {
+                Toast.makeText(this, "需要悬浮窗权限才能显示", Toast.LENGTH_SHORT).show()
+                requestOverlayPermission()
             }
+            return
+        }
 
-            val intent = Intent(this, SecretaryOverlayService::class.java)
+        val intent = Intent(this, SecretaryOverlayService::class.java)
+        try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
                 startService(intent)
             }
-
-            // 显示成功提示
-            Toast.makeText(this, "悬浮窗已开启", Toast.LENGTH_SHORT).show()
-        } else {
-            Log.d(TAG_OVERLAY, "startOverlayService: 权限未授予，请求权限")
-            Toast.makeText(this, "需要悬浮窗权限才能显示", Toast.LENGTH_SHORT).show()
-            requestOverlayPermission()
+        } catch (e: Exception) {
+            // FGS 启动在系统限制下可能失败（后台启动限制等）；不写持久化设置，
+            // 避免出现"开关显示已开但悬浮窗没起来"的状态漂移
+            Log.e(TAG_OVERLAY, "startOverlayServiceInternal: 启动服务失败", e)
+            if (showToast) Toast.makeText(this, "悬浮窗启动失败", Toast.LENGTH_SHORT).show()
+            return
         }
+
+        if (persist) {
+            lifecycleScope.launch {
+                playerSettings.setSecretaryOverlayEnabled(true)
+            }
+        }
+        if (showToast) {
+            Toast.makeText(this, "悬浮窗已开启", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * 启动系统悬浮窗服务（设置页手动开启的入口）
+     */
+    fun startOverlayService() {
+        Log.d(TAG_OVERLAY, "startOverlayService: 开始启动悬浮窗服务")
+        startOverlayServiceInternal(persist = true, showToast = true)
     }
 
     /**
@@ -173,23 +205,5 @@ class MainActivity : ComponentActivity() {
         stopService(intent)
 
         Toast.makeText(this, "悬浮窗已关闭", Toast.LENGTH_SHORT).show()
-    }
-
-    /**
-     * 切换悬浮窗显示状态
-     */
-    fun toggleOverlayService() {
-        if (OverlayPermissionHelper.hasOverlayPermission(this)) {
-            val isCurrentlyRunning = SecretaryOverlayService.isServiceRunning()
-
-            if (isCurrentlyRunning) {
-                stopOverlayService()
-            } else {
-                startOverlayService()
-            }
-        } else {
-            Toast.makeText(this, "需要悬浮窗权限才能显示", Toast.LENGTH_SHORT).show()
-            requestOverlayPermission()
-        }
     }
 }

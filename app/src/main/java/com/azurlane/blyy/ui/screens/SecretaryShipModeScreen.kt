@@ -53,7 +53,6 @@ import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -97,7 +96,10 @@ import com.azurlane.blyy.util.SDResourceManager
 import com.azurlane.blyy.util.SdResourceOrganizer
 import com.azurlane.blyy.util.StoragePermissionHelper
 import com.azurlane.blyy.viewmodel.SecretaryShipState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -477,26 +479,31 @@ fun SecretaryShipSettingsScreen(
                 BlyySectionPanel(
                     title = "SD 小人",
                     icon = Icons.Rounded.SmartToy,
-                    accentColor = MaterialTheme.colorScheme.primary
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    separateItems = true
                 ) {
-                    SdScaleSlider(
-                        sdScale = secretaryState.sdScale,
-                        onSetSdScale = onSetSdScale
-                    )
-                    HorizontalDivider()
-                    SdSkinSelector(
-                        shipName = secretaryState.shipName,
-                        selectedSkin = secretaryState.sdSkin,
-                        onSetSdSkin = onSetSdSkin,
-                        sdResourceId = secretaryState.sdResourceId
-                    )
+                    BlyyPanel {
+                        SdScaleSlider(
+                            sdScale = secretaryState.sdScale,
+                            onSetSdScale = onSetSdScale
+                        )
+                    }
+                    BlyyPanel {
+                        SdSkinSelector(
+                            shipName = secretaryState.shipName,
+                            selectedSkin = secretaryState.sdSkin,
+                            onSetSdSkin = onSetSdSkin,
+                            sdResourceId = secretaryState.sdResourceId
+                        )
+                    }
                 }
 
                 // 2. 显示设置（悬浮窗 + 触摸穿透 + 台词弹窗）
                 BlyySectionPanel(
                     title = "显示设置",
                     icon = Icons.Rounded.Visibility,
-                    accentColor = MaterialTheme.colorScheme.secondary
+                    accentColor = MaterialTheme.colorScheme.secondary,
+                    separateItems = true
                 ) {
                     BlyySettingsRow(
                         icon = Icons.Rounded.Visibility,
@@ -505,7 +512,6 @@ fun SecretaryShipSettingsScreen(
                         checked = isOverlayEnabled,
                         onCheckedChange = onToggleOverlay
                     )
-                    HorizontalDivider()
                     BlyySettingsRow(
                         icon = Icons.Rounded.TouchApp,
                         title = "触摸穿透",
@@ -517,7 +523,6 @@ fun SecretaryShipSettingsScreen(
                         checked = secretaryState.overlayTouchPassthrough,
                         onCheckedChange = onToggleOverlayTouchPassthrough
                     )
-                    HorizontalDivider()
                     BlyySettingsRow(
                         icon = Icons.Rounded.Palette,
                         title = "台词弹窗",
@@ -531,7 +536,8 @@ fun SecretaryShipSettingsScreen(
                 BlyySectionPanel(
                     title = "语音设置",
                     icon = Icons.Rounded.GraphicEq,
-                    accentColor = MaterialTheme.colorScheme.tertiary
+                    accentColor = MaterialTheme.colorScheme.tertiary,
+                    separateItems = true
                 ) {
                     BlyySettingsRow(
                         icon = Icons.Rounded.GraphicEq,
@@ -545,7 +551,8 @@ fun SecretaryShipSettingsScreen(
                         enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
                         exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
                     ) {
-                        Column(modifier = Modifier.padding(AppSpacing.Lg)) {
+                        BlyyPanel {
+                            Column(modifier = Modifier.padding(AppSpacing.Lg)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -570,6 +577,7 @@ fun SecretaryShipSettingsScreen(
                                 )
                             )
                         }
+                        }
                     }
                 }
 
@@ -577,17 +585,21 @@ fun SecretaryShipSettingsScreen(
                 BlyySectionPanel(
                     title = "SD 资源库",
                     icon = Icons.Rounded.SdStorage,
-                    accentColor = MaterialTheme.colorScheme.tertiary
+                    accentColor = MaterialTheme.colorScheme.tertiary,
+                    separateItems = true
                 ) {
                     // SD 资源库入口：跳转到通用 SD 资源管理页面，
                     // 解除舰名限制，支持选择任意已发现的 SD 资源（舰娘/自定义）
-                    SdResourceGalleryEntry(
-                        sdResourceId = secretaryState.sdResourceId,
-                        onOpenGallery = onOpenSdGallery,
-                        onClearResource = onClearSdResource
-                    )
-                    HorizontalDivider()
-                    SdResourceManagement()
+                    BlyyPanel {
+                        SdResourceGalleryEntry(
+                            sdResourceId = secretaryState.sdResourceId,
+                            onOpenGallery = onOpenSdGallery,
+                            onClearResource = onClearSdResource
+                        )
+                    }
+                    BlyyPanel {
+                        SdResourceManagement()
+                    }
                 }
             }
         }
@@ -650,12 +662,16 @@ private fun SdSkinSelector(
     //    确保切换 SD 资源后皮肤列表及时更新为新资源的皮肤
     // 2. sdResourceId 为空 → 回退到 LocalSdResolver.listSkins(shipName)
     //    保持原有舰名匹配行为，向后兼容
+    // 磁盘 I/O 后台化：listSkins 内部有目录扫描/索引构建，不能在组合期主线程执行
     // 同时监听两个 revision，整理/清理任一索引后自动刷新
-    val skins = remember(shipName, sdResourceId, refreshTrigger, LocalSdResolver.revision.value, SDResourceManager.revision.value) {
-        when {
-            sdResourceId.isNotBlank() -> SDResourceManager.listSkins(context, sdResourceId)
-            shipName.isBlank() -> emptyList()
-            else -> LocalSdResolver.listSkins(context, shipName)
+    var skins by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(shipName, sdResourceId, refreshTrigger, LocalSdResolver.revision.value, SDResourceManager.revision.value) {
+        skins = withContext(Dispatchers.IO) {
+            when {
+                sdResourceId.isNotBlank() -> SDResourceManager.listSkins(context, sdResourceId)
+                shipName.isBlank() -> emptyList()
+                else -> LocalSdResolver.listSkins(context, shipName)
+            }
         }
     }
 
@@ -866,16 +882,21 @@ private fun SdResourceManagement() {
     var organizeResult by remember { mutableStateOf<OrganizeResult?>(null) }
     var isOrganizing by remember { mutableStateOf(false) }
 
-    // 将 LocalSdResolver.revision 作为 remember key，
+    // 将 LocalSdResolver.revision 作为 key，
     // 整理/清理资源后自动刷新资源计数和路径显示
-    val importedCount = remember(refreshTrigger, organizeResult, LocalSdResolver.revision.value) {
-        LocalSdResolver.listAllAssets(context).size
+    // 磁盘 I/O 后台化：listAllAssets 全目录扫描 / getResourceDir 目录探测，
+    // 不能在组合期主线程执行（否则每次 revision 变化都卡主线程）
+    var importedCount by remember { mutableStateOf(0) }
+    var resourceDir by remember { mutableStateOf<File?>(null) }
+    LaunchedEffect(refreshTrigger, organizeResult, LocalSdResolver.revision.value) {
+        val (count, dir) = withContext(Dispatchers.IO) {
+            LocalSdResolver.listAllAssets(context).size to LocalSdResolver.getResourceDir(context)
+        }
+        importedCount = count
+        resourceDir = dir
     }
-    val resourceDir = remember(refreshTrigger, organizeResult, LocalSdResolver.revision.value) {
-        LocalSdResolver.getResourceDir(context)
-    }
-    val resourcePath = resourceDir.absolutePath
-    val isAppPrivateDir = resourceDir.absolutePath.contains("/Android/data/")
+    val resourcePath = resourceDir?.absolutePath ?: ""
+    val isAppPrivateDir = resourceDir?.absolutePath?.contains("/Android/data/") == true
 
     // SAF 选择源目录的 Launcher
     val pickDirectoryLauncher = rememberLauncherForActivityResult(

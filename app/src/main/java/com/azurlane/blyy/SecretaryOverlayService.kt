@@ -32,6 +32,9 @@ import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.azurlane.blyy.MainActivity
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
+import com.azurlane.blyy.ui.components.CHIBI_BASE_HEIGHT
+import com.azurlane.blyy.ui.components.CHIBI_BASE_WIDTH
+import com.azurlane.blyy.ui.components.CHIBI_DRAG_MARGIN_RATIO
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.ui.components.SecretaryOverlayAuxiliaryContent
 import com.azurlane.blyy.ui.theme.BlyyTheme
@@ -41,6 +44,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -86,6 +90,11 @@ class SecretaryOverlayService : Service() {
     private var auxWidthPx: Int = 0
     private var auxHeightPx: Int = 0
 
+    // 辅助窗口内容状态：窗口只创建一次，内容由状态驱动自动更新
+    // （此前每次对话变化都重新 setContent 重建整个组合）
+    private val auxDialogueState = mutableStateOf<String?>(null)
+    private val auxDraggingState = mutableStateOf(false)
+
     private var lifecycleOwner: FloatingWindowLifecycleOwner? = null
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
@@ -94,20 +103,9 @@ class SecretaryOverlayService : Service() {
         private const val TAG = "SecretaryOverlay"
         private const val ANIMATION_DURATION_MS = 300
 
-        /** SD 小人基础宽度（dp），与 SecretaryChibiOverlay 的 CHIBI_BASE_WIDTH 一致 */
-        private const val CHIBI_BASE_WIDTH_DP = 110f
-
-        /** SD 小人基础高度（dp），与 SecretaryChibiOverlay 的 CHIBI_BASE_HEIGHT 一致 */
-        private const val CHIBI_BASE_HEIGHT_DP = 165f
-
-        /**
-         * 拖动到屏幕上方时允许的向上溢出比例（相对于窗口高度）。
-         *
-         * 与 SecretaryChibiOverlay 应用内场景的 CHIBI_DRAG_MARGIN_RATIO 保持一致（0.15f），
-         * 允许小人头顶超出屏幕顶端 15% 窗口高度的距离，
-         * 既能让用户把小人拖到屏幕上方靠近状态栏区域，又不会完全拖出屏幕不可见。
-         */
-        private const val DRAG_OVERFLOW_RATIO = 0.15f
+        /** 未保存过位置时的默认落点（px） */
+        private const val DEFAULT_POS_X = 100
+        private const val DEFAULT_POS_Y = 300
 
         private val isRunning = AtomicBoolean(false)
         fun isServiceRunning(): Boolean = isRunning.get()
@@ -119,19 +117,49 @@ class SecretaryOverlayService : Service() {
         MainActivity.updateOverlayState(true)
         Log.d(TAG, "onCreate: 服务创建")
         startForegroundServiceNotification()
-        showOverlay()
+        // 窗口创建移入协程：先读取上次保存的位置再 addView，
+        // 小人直接出现在用户上次摆放的位置（而非先出现在默认位再跳转）
+        serviceScope.launch { showOverlay() }
+    }
+
+    /**
+     * 读取持久化的悬浮窗位置；无保存记录时返回默认落点。
+     *
+     * 恢复时按当前屏幕与窗口尺寸重新夹取：分辨率/旋转/缩放后保存值可能越界。
+     */
+    private suspend fun resolveWindowPosition(windowWidth: Int, windowHeight: Int): Pair<Int, Int> {
+        val savedX = playerSettings.secretaryOverlayPosX.first()
+        val savedY = playerSettings.secretaryOverlayPosY.first()
+        if (savedX == null || savedY == null) return DEFAULT_POS_X to DEFAULT_POS_Y
+        val dm = resources.displayMetrics
+        val maxX = (dm.widthPixels - windowWidth).coerceAtLeast(0)
+        val minY = -(windowHeight * CHIBI_DRAG_MARGIN_RATIO).toInt()
+        val maxY = (dm.heightPixels - windowHeight).coerceAtLeast(0)
+        return savedX.coerceIn(0, maxX) to savedY.coerceIn(minY, maxY)
+    }
+
+    /** 拖动结束/缩放调整后把当前位置写回 DataStore（下次服务启动恢复） */
+    private fun persistWindowPosition() {
+        val lp = overlayLayoutParams ?: return
+        val x = lp.x
+        val y = lp.y
+        serviceScope.launch {
+            runCatching { playerSettings.setSecretaryOverlayPosition(x, y) }
+                .onFailure { Log.w(TAG, "persistWindowPosition: 保存位置失败", it) }
+        }
     }
 
     @Suppress("DEPRECATION")
-    private fun showOverlay() {
+    private suspend fun showOverlay() {
         Log.d(TAG, "showOverlay: 开始显示悬浮窗（双窗口架构）")
 
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
             val density = resources.displayMetrics.density
-            val baseWidthPx = (CHIBI_BASE_WIDTH_DP * density).toInt()
-            val baseHeightPx = (CHIBI_BASE_HEIGHT_DP * density).toInt()
+            // 基础尺寸与 SecretaryChibiOverlay 共用同一常量，保证双端渲染/交互范围一致
+            val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
+            val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
             // 主窗口初始尺寸 = baseSize（sdScale 初始 1.0）；sdScale 变化后由 updateMainWindowSize 动态调整
             val overlayWidthPx = baseWidthPx
             val overlayHeightPx = baseHeightPx
@@ -160,8 +188,9 @@ class SecretaryOverlayService : Service() {
                 PixelFormat.TRANSLUCENT
             )
             params.gravity = Gravity.TOP or Gravity.START
-            params.x = 100
-            params.y = 300
+            val (posX, posY) = resolveWindowPosition(overlayWidthPx, overlayHeightPx)
+            params.x = posX
+            params.y = posY
             overlayLayoutParams = params
 
             lifecycleOwner = FloatingWindowLifecycleOwner()
@@ -176,11 +205,6 @@ class SecretaryOverlayService : Service() {
                     BlyyTheme {
                         // 实时监听秘书舰状态变化
                         val secretaryState by secretaryManager.state.collectAsState()
-
-                        val displayFigureUrl = secretaryState.figureUrl.ifEmpty {
-                            "https://patchwiki.biligame.com/images/blhx/7/7c/lum7av08ir2klicda1h1v3neccoykmu.png"
-                        }
-                        val displayShipName = secretaryState.shipName.ifEmpty { "秘书舰" }
 
                         // 拖动状态（Compose State，让 LaunchedEffect 感知变化）
                         var isDragging by remember { mutableStateOf(false) }
@@ -230,8 +254,8 @@ class SecretaryOverlayService : Service() {
                             )
                         ) {
                             SecretaryChibiOverlay(
-                                figureUrl = displayFigureUrl,
-                                shipName = displayShipName,
+                                figureUrl = secretaryState.figureUrl,
+                                shipName = secretaryState.shipName,
                                 dialogue = dialogue,
                                 isSystemOverlay = true,
                                 selectedSkin = secretaryState.sdSkin,
@@ -239,11 +263,10 @@ class SecretaryOverlayService : Service() {
                                 sdResourceId = secretaryState.sdResourceId,
                                 onTap = {
                                     Log.d(TAG, "showOverlay: 悬浮窗被点击")
-
                                     if (secretaryState.shipName.isNotEmpty()) {
+                                        // playRandomVoice 内部会等待语音列表就绪（首次点击也出声）
                                         serviceScope.launch {
                                             try {
-                                                secretaryManager.ensureVoicesLoaded(secretaryState.shipName)
                                                 secretaryManager.playRandomVoice()
                                                 Log.d(TAG, "showOverlay: 语音播放成功")
                                             } catch (e: Exception) {
@@ -255,7 +278,11 @@ class SecretaryOverlayService : Service() {
                                 onPositionChange = { dx, dy ->
                                     moveMainWindow(dx, dy)
                                 },
-                                onDragStateChanged = { dragging -> isDragging = dragging }
+                                onDragStateChanged = { dragging ->
+                                    isDragging = dragging
+                                    // 拖动结束（含取消）时持久化最终位置，下次启动恢复
+                                    if (!dragging) persistWindowPosition()
+                                }
                             )
                         }
                     }
@@ -263,7 +290,7 @@ class SecretaryOverlayService : Service() {
             }
 
             windowManager?.addView(composeView, params)
-            Log.d(TAG, "showOverlay: 主窗口添加成功 (尺寸=${overlayWidthPx}x${overlayHeightPx}px)")
+            Log.d(TAG, "showOverlay: 主窗口添加成功 (尺寸=${overlayWidthPx}x${overlayHeightPx}px, pos=($posX,$posY))")
 
         } catch (e: Exception) {
             Log.e(TAG, "showOverlay: 悬浮窗显示失败", e)
@@ -283,8 +310,8 @@ class SecretaryOverlayService : Service() {
         val lp = overlayLayoutParams ?: return
         val view = composeView ?: return
         val density = resources.displayMetrics.density
-        val baseWidthPx = (CHIBI_BASE_WIDTH_DP * density).toInt()
-        val baseHeightPx = (CHIBI_BASE_HEIGHT_DP * density).toInt()
+        val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
+        val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
         val displayScale = sdScale.coerceIn(0.3f, 2.0f)
         val newWidth = (baseWidthPx * displayScale).toInt()
         val newHeight = (baseHeightPx * displayScale).toInt()
@@ -299,11 +326,11 @@ class SecretaryOverlayService : Service() {
         lp.x = oldCenterX - newWidth / 2
         lp.y = oldCenterY - newHeight / 2
 
-        // 边界检查：x 限制在屏幕内；y 允许向上溢出 DRAG_OVERFLOW_RATIO 比例
+        // 边界检查：x 限制在屏幕内；y 允许向上溢出 CHIBI_DRAG_MARGIN_RATIO 比例
         // 与 moveMainWindow 的边界限制保持一致，确保缩放后小人仍可位于屏幕上方区域
         val dm = resources.displayMetrics
         lp.x = lp.x.coerceIn(0, (dm.widthPixels - newWidth).coerceAtLeast(0))
-        val minY = -(newHeight * DRAG_OVERFLOW_RATIO).toInt()
+        val minY = -(newHeight * CHIBI_DRAG_MARGIN_RATIO).toInt()
         val maxY = (dm.heightPixels - newHeight).coerceAtLeast(0)
         lp.y = lp.y.coerceIn(minY, maxY)
 
@@ -315,6 +342,8 @@ class SecretaryOverlayService : Service() {
         }
 
         updateAuxiliaryPosition()
+        // 缩放调整过位置，持久化保持"重启后回到当前位置"
+        persistWindowPosition()
     }
 
     /**
@@ -375,9 +404,9 @@ class SecretaryOverlayService : Service() {
         val view = composeView ?: return
         val dm = resources.displayMetrics
         val maxX = (dm.widthPixels - lp.width).coerceAtLeast(0)
-        // 允许向上溢出：minY = -窗口高度 × DRAG_OVERFLOW_RATIO
+        // 允许向上溢出：minY = -窗口高度 × CHIBI_DRAG_MARGIN_RATIO
         // 这样小人头顶最多超出屏幕顶端 15% 窗口高度，仍保持可见可拖动
-        val minY = -(lp.height * DRAG_OVERFLOW_RATIO).toInt()
+        val minY = -(lp.height * CHIBI_DRAG_MARGIN_RATIO).toInt()
         val maxY = (dm.heightPixels - lp.height).coerceAtLeast(0)
         lp.x = (lp.x + dx.toInt()).coerceIn(0, maxX)
         lp.y = (lp.y + dy.toInt()).coerceIn(minY, maxY)
@@ -403,69 +432,64 @@ class SecretaryOverlayService : Service() {
         if (dialogue == null && !isDragging) {
             hideAuxiliaryWindow()
         } else {
-            showAuxiliaryWindow(dialogue, isDragging)
+            // 内容经状态驱动更新：已存在的窗口无需 setContent 重建
+            auxDialogueState.value = dialogue
+            auxDraggingState.value = isDragging
+            showAuxiliaryWindow()
         }
     }
 
     /**
-     * 显示辅助窗口（若已存在则更新内容）。
+     * 显示辅助窗口（若已存在则由状态自动更新内容）。
      *
      * 辅助窗口使用 WRAP_CONTENT 自动适应内容尺寸，位置紧贴主窗口上方。
      * FLAG_LAYOUT_NO_LIMITS 允许窗口 y 为负（主窗口在屏幕顶部时辅助窗口上方溢出）。
      * FLAG_NOT_TOUCHABLE 确保辅助窗口完全不拦截触摸事件（纯展示，不需要交互）。
      */
     @Suppress("DEPRECATION")
-    private fun showAuxiliaryWindow(dialogue: String?, isDragging: Boolean) {
+    private fun showAuxiliaryWindow() {
         val owner = lifecycleOwner ?: return
         val wm = windowManager ?: return
+        if (auxComposeView != null) return
 
-        if (auxComposeView == null) {
-            // 创建辅助窗口
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                } else {
-                    WindowManager.LayoutParams.TYPE_PHONE
-                },
-                // FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL：与主窗口一致
-                // FLAG_NOT_TOUCHABLE：辅助窗口纯展示，不拦截任何触摸事件，全部穿透到下层
-                // FLAG_LAYOUT_NO_LIMITS：允许 y 为负（紧贴主窗口上方时可能超出屏幕顶部）
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            )
-            params.gravity = Gravity.TOP or Gravity.START
+        // 创建辅助窗口
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                WindowManager.LayoutParams.TYPE_PHONE
+            },
+            // FLAG_NOT_FOCUSABLE | FLAG_NOT_TOUCH_MODAL：与主窗口一致
+            // FLAG_NOT_TOUCHABLE：辅助窗口纯展示，不拦截任何触摸事件，全部穿透到下层
+            // FLAG_LAYOUT_NO_LIMITS：允许 y 为负（紧贴主窗口上方时可能超出屏幕顶部）
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        params.gravity = Gravity.TOP or Gravity.START
 
-            val view = ComposeView(this).apply {
-                setViewTreeLifecycleOwner(owner)
-                setViewTreeSavedStateRegistryOwner(owner)
-                setViewTreeViewModelStoreOwner(owner)
-                setContent {
-                    BlyyTheme {
-                        AuxiliaryWindowContent(dialogue, isDragging)
-                    }
-                }
-            }
-
-            try {
-                wm.addView(view, params)
-                auxComposeView = view
-                auxLayoutParams = params
-                Log.d(TAG, "showAuxiliaryWindow: 辅助窗口添加成功")
-            } catch (e: Exception) {
-                Log.e(TAG, "showAuxiliaryWindow: addView failed", e)
-            }
-        } else {
-            // 更新辅助窗口内容（dialogue 或 isDragging 变化）
-            auxComposeView?.setContent {
+        val view = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(owner)
+            setViewTreeSavedStateRegistryOwner(owner)
+            setViewTreeViewModelStoreOwner(owner)
+            setContent {
                 BlyyTheme {
-                    AuxiliaryWindowContent(dialogue, isDragging)
+                    AuxiliaryWindowContent()
                 }
             }
+        }
+
+        try {
+            wm.addView(view, params)
+            auxComposeView = view
+            auxLayoutParams = params
+            Log.d(TAG, "showAuxiliaryWindow: 辅助窗口添加成功")
+        } catch (e: Exception) {
+            Log.e(TAG, "showAuxiliaryWindow: addView failed", e)
         }
     }
 
@@ -473,13 +497,14 @@ class SecretaryOverlayService : Service() {
      * 辅助窗口 Compose 内容。
      *
      * 通过 [SecretaryOverlayAuxiliaryContent] 渲染气泡或拖动提示，
+     * 内容读取 [auxDialogueState]/[auxDraggingState]，变化时自动重组；
      * [onSizeChanged] 回调测量实际尺寸并更新窗口位置。
      */
     @androidx.compose.runtime.Composable
-    private fun AuxiliaryWindowContent(dialogue: String?, isDragging: Boolean) {
+    private fun AuxiliaryWindowContent() {
         SecretaryOverlayAuxiliaryContent(
-            dialogue = dialogue,
-            isDragging = isDragging,
+            dialogue = auxDialogueState.value,
+            isDragging = auxDraggingState.value,
             onSizeChanged = { w, h ->
                 if (w != auxWidthPx || h != auxHeightPx) {
                     auxWidthPx = w
@@ -506,6 +531,9 @@ class SecretaryOverlayService : Service() {
         auxLayoutParams = null
         auxWidthPx = 0
         auxHeightPx = 0
+        // 清空内容状态，避免下次创建瞬间闪现旧内容
+        auxDialogueState.value = null
+        auxDraggingState.value = false
     }
 
     /**
@@ -555,11 +583,13 @@ class SecretaryOverlayService : Service() {
             // 再移除主窗口：先从 WindowManager 移除 View（触发 detach），再销毁 LifecycleOwner
             composeView?.let { view ->
                 windowManager?.removeView(view)
-                lifecycleOwner?.dispose()
             }
         } catch (e: Exception) {
             Log.e(TAG, "onDestroy: 移除视图失败", e)
         } finally {
+            // dispose 与 removeView 解耦：removeView 抛异常（如 view 本就未附加）时，
+            // LifecycleOwner/ViewModelStore 的清理也不能跳过（handleLifecycleEvent 幂等）
+            try { lifecycleOwner?.dispose() } catch (_: Exception) {}
             // 主动断开引用，加速 GC
             composeView = null
             overlayLayoutParams = null
