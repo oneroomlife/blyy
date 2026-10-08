@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,7 +40,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -47,11 +50,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -65,7 +73,6 @@ import com.azurlane.blyy.data.model.StudentFilterData
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyEmptyState
-import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.components.ShipCardShimmer
 import com.azurlane.blyy.ui.theme.*
@@ -73,6 +80,7 @@ import com.azurlane.blyy.viewmodel.GalleryIntent
 import com.azurlane.blyy.viewmodel.GalleryViewState
 import com.azurlane.blyy.ui.components.rememberBlyyHaptics
 import com.azurlane.blyy.ui.components.BlyyHaptic
+import kotlin.math.roundToInt
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
@@ -80,9 +88,15 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
- * 自适应船坞顶部栏 — 根据UI风格自动切换布局
- * Command Center：BlyyTopBar + 玻璃搜索栏（HUD风格）
- * Classic：集成式 Material Design 顶栏 + 搜索框
+ * 自适应船坞顶部栏 — 标题栏与搜索栏合并为单一组件，按 UI 风格切换外观
+ * Command Center：玻璃 HUD 面板（标题 + 搜索按钮 + 档案切换 + 渐变强调线）
+ * Classic：Material 卡片（标题 + 搜索按钮 + 档案切换）
+ *
+ * 搜索交互为「点击展开」：收起态仅显示搜索按钮，点击后同一行切换为
+ * 「搜索胶囊 + 筛选按钮 + 收起按钮」（档案切换器让位于搜索），两态均为单行等高，
+ * 切换时内容区无需重排，避免网格跳动。
+ *
+ * 头部实际高度通过 [onHeaderHeightChanged] 上报，供内容区动态计算网格顶部内边距。
  */
 @Composable
 internal fun AdaptiveGalleryTopBar(
@@ -108,73 +122,100 @@ internal fun AdaptiveGalleryTopBar(
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
     isRefreshing: Boolean = false,
     isCacheHit: Boolean = false,
-    cacheTimestamp: Long = 0L
+    cacheTimestamp: Long = 0L,
+    onHeaderHeightChanged: (Int) -> Unit = {}
 ) {
     val uiStyle = LocalUiStyle.current
     val isCommandCenter = uiStyle.isCommandCenter()
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val entityLabel = when (archiveType) {
         com.azurlane.blyy.viewmodel.ArchiveType.DOCK -> "舰娘"
         com.azurlane.blyy.viewmodel.ArchiveType.STUDENT -> "学生"
     }
 
+    // 搜索展开态：收起时仅显示搜索按钮，展开后切换为搜索框 + 筛选
+    var isSearchExpanded by remember { mutableStateOf(false) }
+
+    // 失焦（点击遮罩关闭下拉、选择历史/建议）时自动收起
+    LaunchedEffect(isSearchFocused) {
+        if (!isSearchFocused && isSearchExpanded) {
+            isSearchExpanded = false
+        }
+    }
+
+    val onSearchToggle: () -> Unit = {
+        if (isSearchExpanded) {
+            isSearchExpanded = false
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        } else {
+            isSearchExpanded = true
+        }
+    }
+
     Column {
         if (isCommandCenter) {
-            // Command Center 风格：档案切换器整合到顶部栏 actions 中
-            BlyyTopBar(
-                title = title,
-                subtitle = "共 $totalCount 位$entityLabel"
-            ) {
-                // 顶部栏右侧：紧凑型档案切换器
-                CompactArchiveSwitcher(
+            // Command Center 风格：标题、搜索、筛选、档案切换合并为单个 HUD 面板
+            // onSizeChanged 仅测量合并面板本身（不含下拉面板/进度条），供内容区避让
+            Box(modifier = Modifier.onSizeChanged { onHeaderHeightChanged(it.height) }) {
+                MergedCcGalleryHeader(
+                    title = title,
+                    totalCount = totalCount,
+                    filteredCount = filteredCount,
+                    searchInput = searchInput,
+                    onSearchInputChange = onSearchInputChange,
+                    isSearchFocused = isSearchFocused,
+                    onSearchFocusChange = onSearchFocusChange,
+                    searchFocusRequester = searchFocusRequester,
+                    onFilterClick = onFilterClick,
+                    hasActiveFilters = hasActiveFilters,
+                    activeFilterCount = activeFilterCount,
+                    onSubmitSearch = onSubmitSearch,
                     archiveType = archiveType,
-                    onSwitchArchive = onSwitchArchive
+                    onSwitchArchive = onSwitchArchive,
+                    entityLabel = entityLabel,
+                    isSearchExpanded = isSearchExpanded,
+                    onSearchToggle = onSearchToggle
                 )
             }
-            // 后台刷新进度条 — 细线动画
-            AnimatedVisibility(
-                visible = isRefreshing,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
-            ) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = AppSpacing.Screen.Horizontal),
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                )
-            }
-            GallerySearchBar(
-                searchInput = searchInput,
-                onSearchInputChange = onSearchInputChange,
-                isSearchFocused = isSearchFocused,
-                onSearchFocusChange = onSearchFocusChange,
-                searchFocusRequester = searchFocusRequester,
-                onFilterClick = onFilterClick,
-                hasActiveFilters = hasActiveFilters,
-                activeFilterCount = activeFilterCount,
-                onSubmitSearch = onSubmitSearch,
-                entityLabel = entityLabel
-            )
         } else {
-            // Classic 风格：档案切换器整合到标题卡片中
-            ClassicGallerySearchBar(
-                title = title,
-                totalCount = totalCount,
-                filteredCount = filteredCount,
-                searchInput = searchInput,
-                onSearchInputChange = onSearchInputChange,
-                isSearchFocused = isSearchFocused,
-                onSearchFocusChange = onSearchFocusChange,
-                searchFocusRequester = searchFocusRequester,
-                onFilterClick = onFilterClick,
-                hasActiveFilters = hasActiveFilters,
-                activeFilterCount = activeFilterCount,
-                onSubmitSearch = onSubmitSearch,
-                archiveType = archiveType,
-                onSwitchArchive = onSwitchArchive,
-                isRefreshing = isRefreshing,
-                entityLabel = entityLabel
+            // Classic 风格：标题、搜索、筛选、档案切换合并为单个卡片
+            Box(modifier = Modifier.onSizeChanged { onHeaderHeightChanged(it.height) }) {
+                ClassicGallerySearchBar(
+                    title = title,
+                    totalCount = totalCount,
+                    filteredCount = filteredCount,
+                    searchInput = searchInput,
+                    onSearchInputChange = onSearchInputChange,
+                    isSearchFocused = isSearchFocused,
+                    onSearchFocusChange = onSearchFocusChange,
+                    searchFocusRequester = searchFocusRequester,
+                    onFilterClick = onFilterClick,
+                    hasActiveFilters = hasActiveFilters,
+                    activeFilterCount = activeFilterCount,
+                    onSubmitSearch = onSubmitSearch,
+                    archiveType = archiveType,
+                    onSwitchArchive = onSwitchArchive,
+                    entityLabel = entityLabel,
+                    isSearchExpanded = isSearchExpanded,
+                    onSearchToggle = onSearchToggle
+                )
+            }
+        }
+
+        // 后台刷新进度条 — 两风格共用，置于被测面板之外避免顶距跳动
+        AnimatedVisibility(
+            visible = isRefreshing,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Xxs),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
             )
         }
 
@@ -190,20 +231,26 @@ internal fun AdaptiveGalleryTopBar(
             onRemoveHistoryItem = onRemoveHistoryItem
         )
 
-        // 结果计数徽章
-        if (filteredCount != totalCount) {
-            Spacer(modifier = Modifier.height(AppSpacing.Xs))
-            ResultCountBadge(filteredCount = filteredCount, totalCount = totalCount)
-        }
         Spacer(modifier = Modifier.height(AppSpacing.Md))
     }
 }
 
 /**
- * Command Center 风格搜索栏 — HUD 玻璃面板 + 聚焦高亮 + 动画清除按钮
+ * Command Center 风格合并头部 — 标题块 / 搜索胶囊 + 筛选 / 档案切换器整合为单个 HUD 面板
+ *
+ * 交互（点击展开）：
+ * - 收起态：`标题块（含计数徽章）· 搜索按钮 · 档案切换器`
+ * - 展开态：`搜索胶囊（自适应宽度）· 筛选按钮 · 搜索按钮（变为收起）`（档案切换器让位于搜索）
+ * 动画：以「搜索按钮」为固定锚点，搜索胶囊与筛选按钮自其左侧水平弹开（expandHorizontally），
+ * 标题块与档案切换器同步水平收起；行高锁定，全程顶栏高度不变，内容区不发生上下位移。
+ * - 面板底部保留 2dp 主色→金色渐变强调线，延续指挥中心 HUD 视觉签名
+ * - 聚焦搜索时面板描边高亮、阴影增强
  */
 @Composable
-private fun GallerySearchBar(
+private fun MergedCcGalleryHeader(
+    title: String,
+    totalCount: Int,
+    filteredCount: Int,
     searchInput: String,
     onSearchInputChange: (String) -> Unit,
     isSearchFocused: Boolean,
@@ -213,141 +260,469 @@ private fun GallerySearchBar(
     hasActiveFilters: Boolean,
     activeFilterCount: Int,
     onSubmitSearch: (String) -> Unit,
-    entityLabel: String = "舰娘"
+    archiveType: com.azurlane.blyy.viewmodel.ArchiveType,
+    onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit,
+    entityLabel: String = "舰娘",
+    isSearchExpanded: Boolean = false,
+    onSearchToggle: () -> Unit = {}
 ) {
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
 
     val glassSurface = if (isDark) AppColors.GlassSurfaceDark else AppColors.GlassSurfaceLight
     val glassBorder = if (isDark) AppColors.GlassBorderDark else AppColors.GlassBorderLight
+    val accentColor = MaterialTheme.colorScheme.primary
 
-    val searchIconScale by animateFloatAsState(
-        targetValue = if (searchInput.isNotEmpty()) 1.1f else 1f,
-        animationSpec = AppAnimation.Specs.scale(),
-        label = "SearchIconScale"
-    )
-
-    // 聚焦时边框高亮 + 阴影增强
+    // 聚焦时边框高亮
     val borderAlpha by animateFloatAsState(
         targetValue = if (isSearchFocused) 1f else 0.5f,
         animationSpec = AppAnimation.Specs.fast(),
         label = "BorderAlpha"
     )
-    val iconBgAlpha by animateFloatAsState(
-        targetValue = if (isSearchFocused) 0.45f else 0.3f,
-        animationSpec = AppAnimation.Specs.fast(),
-        label = "IconBgAlpha"
-    )
 
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Screen.Horizontal)
-            .height(if (isWatch) AppSpacing.Height.Input - 8.dp else AppSpacing.Height.Input),
-        shape = BlyyShapes.PanelMedium,
-        color = glassSurface.copy(alpha = if (isSearchFocused) 0.98f else 0.92f),
-        shadowElevation = if (isSearchFocused) AppSpacing.Elevation.Lg else AppSpacing.Elevation.Md
-    ) {
-        Box(
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Surface(
             modifier = Modifier
-                .fillMaxSize()
-                .border(
-                    width = AppSpacing.Border.Thin,
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            glassBorder.copy(alpha = borderAlpha),
-                            glassBorder.copy(alpha = borderAlpha * 0.2f)
-                        )
-                    ),
-                    shape = BlyyShapes.PanelMedium
-                )
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Screen.Horizontal),
+            shape = BlyyShapes.PanelMedium,
+            color = glassSurface,
+            shadowElevation = if (isSearchFocused) AppElevation.Level3 else AppElevation.Level2,
+            border = androidx.compose.foundation.BorderStroke(
+                width = AppSpacing.Border.Thin,
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        glassBorder.copy(alpha = borderAlpha),
+                        glassBorder.copy(alpha = borderAlpha * 0.2f)
+                    )
+                ),
+            )
         ) {
+            // 行高由左侧自适应区的最小高度锁定（见 GalleryLeftAdaptiveRegion），
+            // 此处仅留垂直内边距，保证切换全程顶栏高度恒定、内容区不发生上下位移
             Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = AppSpacing.Padding.InputHorizontal),
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AppSpacing.Padding.InputHorizontal,
+                        vertical = AppSpacing.Sm
+                    ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // 搜索图标 — 带圆形背景
-                Box(
-                    modifier = Modifier
-                        .size(if (isWatch) 28.dp else 36.dp)
-                        .background(
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = iconBgAlpha),
-                            shape = CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
-                            .scale(searchIconScale)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(AppSpacing.Md))
-
-                // 输入区域
-                Box(modifier = Modifier.weight(1f)) {
-                    if (searchInput.isEmpty()) {
-                        Text(
-                            text = "搜索$entityLabel...",
-                            style = AppTypography.BodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                // ── 左侧自适应区 ──
+                // 收起 = 标题块，展开 = 搜索胶囊 + 筛选按钮；
+                // 两态叠放并共用同一右端锚点，均自「搜索按钮」处向左水平弹开。
+                GalleryLeftAdaptiveRegion(
+                    isSearchExpanded = isSearchExpanded,
+                    modifier = Modifier.weight(1f),
+                    titleBlock = {
+                        GalleryHeaderTitleBlock(
+                            title = title,
+                            totalCount = totalCount,
+                            filteredCount = filteredCount,
+                            entityLabel = entityLabel,
+                            modifier = Modifier.fillMaxWidth()
                         )
+                    },
+                    searchBlock = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            GallerySearchFieldContent(
+                                modifier = Modifier.weight(1f),
+                                searchInput = searchInput,
+                                onSearchInputChange = onSearchInputChange,
+                                onSearchFocusChange = onSearchFocusChange,
+                                searchFocusRequester = searchFocusRequester,
+                                onSubmitSearch = onSubmitSearch,
+                                entityLabel = entityLabel,
+                                isFocused = isSearchFocused,
+                                isWatch = isWatch,
+                                autoFocusOnAppear = true
+                            )
+                            Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                            ModernFilterButton(
+                                hasActiveFilters = hasActiveFilters,
+                                activeFilterCount = activeFilterCount,
+                                onClick = onFilterClick,
+                                isWatch = isWatch
+                            )
+                        }
                     }
-                    BasicTextField(
-                        value = searchInput,
-                        onValueChange = onSearchInputChange,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(searchFocusRequester)
-                            .onFocusChanged { onSearchFocusChange(it.isFocused) },
-                        textStyle = AppTypography.BodyLarge.copy(
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        singleLine = true,
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(
-                            onSearch = { onSubmitSearch(searchInput) }
-                        )
-                    )
-                }
+                )
 
-                // 清除按钮 — 带动画进出
-                AnimatedVisibility(
-                    visible = searchInput.isNotEmpty(),
-                    enter = fadeIn() + expandHorizontally(),
-                    exit = fadeOut() + shrinkHorizontally()
-                ) {
-                    IconButton(
-                        onClick = {
-                            onSearchInputChange("")
-                            searchFocusRequester.requestFocus()
-                        },
-                        modifier = Modifier.size(if (isWatch) 28.dp else 32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "清除",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(AppSpacing.Icon.Sm)
-                        )
-                    }
-                }
+                Spacer(modifier = Modifier.width(AppSpacing.Sm))
 
-                Spacer(modifier = Modifier.width(AppSpacing.Xs))
-
-                // 筛选按钮 — 带激活计数徽章
-                ModernFilterButton(
-                    hasActiveFilters = hasActiveFilters,
-                    activeFilterCount = activeFilterCount,
-                    onClick = onFilterClick,
+                // 锚点按钮 — 展开/收起均在此位置，搜索与筛选自其左侧弹出
+                SearchToggleButton(
+                    expanded = isSearchExpanded,
+                    onClick = onSearchToggle,
                     isWatch = isWatch
+                )
+
+                // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索
+                // 过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致
+                AnimatedVisibility(
+                    visible = !isSearchExpanded,
+                    enter = HeaderRevealEnter,
+                    exit = HeaderRevealExit
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Spacer(modifier = Modifier.width(AppSpacing.Md))
+                        CompactArchiveSwitcher(
+                            archiveType = archiveType,
+                            onSwitchArchive = onSwitchArchive
+                        )
+                    }
+                }
+            }
+        }
+
+        // 顶部栏视觉签名：面板底部 2dp 主色→金色强调渐变线
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Screen.Horizontal)
+                .height(2.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            accentColor.copy(alpha = 0.7f),
+                            AppColors.Accent.Gold.copy(alpha = 0.5f),
+                            Color.Transparent
+                        )
+                    )
+                )
+        )
+    }
+}
+
+/**
+ * 左侧自适应区最小高度（兜底值）
+ *
+ * 高度锚点本体是常驻组合的标题块（自然高度 ≈ `TitleLarge` 28sp + `LabelLarge` 20sp = 48dp，
+ * 高于搜索胶囊 44dp，且随系统字体缩放自适应）。区域高度全程等于标题块自然高度，
+ * 此下限仅作兜底，防止极端情况下区域高度低于行高预期。
+ */
+private val HeaderAdaptiveRegionMinHeight = 50.dp
+
+/** 展开时长 — 尺寸与滑动共用同曲线同时长，形成"揭示边缘推着内容走"的视差 */
+private const val HeaderRevealDurationMs = AppAnimation.Duration.Normal
+
+/** 收拢时长 — 快于展开，收起干脆 */
+private const val HeaderHideDurationMs = AppAnimation.Duration.Fast
+
+/** 内容淡出时长 — 明显快于尺寸收拢，旧内容先退场，避免两段文字交叠发糊 */
+private const val HeaderFadeOutDurationMs = 120
+
+/**
+ * 弹开进入过渡 — 三层动作叠加：
+ * 1. 尺寸自右向左展开（减速曲线：起步快、落位柔）
+ * 2. 内容带 20% 轻微右→左滑动视差，如同从「搜索按钮」下方滑出
+ * 3. 淡入延迟 60ms 再启动，让揭示边缘先走一段，消除"瞬间整块浮现"的生硬感
+ */
+private val HeaderRevealEnter: EnterTransition =
+    expandHorizontally(
+        expandFrom = Alignment.End,
+        animationSpec = tween(HeaderRevealDurationMs, easing = AppAnimation.Easings.EmphasizedDecelerate)
+    ) + slideInHorizontally(
+        initialOffsetX = { it / 5 },
+        animationSpec = tween(HeaderRevealDurationMs, easing = AppAnimation.Easings.EmphasizedDecelerate)
+    ) + fadeIn(
+        tween(durationMillis = 240, delayMillis = 60, easing = AppAnimation.Easings.EmphasizedDecelerate)
+    )
+
+/** 收拢退出过渡 — 内容先快速淡出并轻微滑向锚点，尺寸随后向右收拢（加速曲线，利落退场） */
+private val HeaderRevealExit: ExitTransition =
+    fadeOut(tween(HeaderFadeOutDurationMs, easing = AppAnimation.Easings.EmphasizedAccelerate)) +
+        slideOutHorizontally(
+            targetOffsetX = { it / 5 },
+            animationSpec = tween(HeaderHideDurationMs, easing = AppAnimation.Easings.EmphasizedAccelerate)
+        ) + shrinkHorizontally(
+            shrinkTowards = Alignment.End,
+            animationSpec = tween(HeaderHideDurationMs, easing = AppAnimation.Easings.EmphasizedAccelerate)
+        )
+
+/**
+ * 顶部栏左侧自适应区 — 标题块与「搜索胶囊 + 筛选按钮」两态叠放于同一区域
+ *
+ * 两态共用同一右端锚点：收起态标题块自右向左收起，展开态搜索胶囊与筛选按钮自右向左弹开，
+ * 视觉上搜索栏如同从右侧「搜索按钮」处向左展开。
+ *
+ * 顶栏高度恒定的关键：标题块「常驻组合」—— 只用透明度与自定义水平收拢动画切换可见性，
+ * 而非 [AnimatedVisibility]（其退出完成后会把内容移出组合，区域高度回落到搜索胶囊高度，
+ * 与标题块自然高度不一致 → 实测头部高度变化 → 网格顶部内边距重算 → 顶栏抖动）。
+ * 区域高度全程等于常驻标题块的自然高度，任何字体缩放下均恒定，切换全程顶栏高度不变。
+ */
+@Composable
+private fun GalleryLeftAdaptiveRegion(
+    isSearchExpanded: Boolean,
+    titleBlock: @Composable () -> Unit,
+    searchBlock: @Composable () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // 高度稳定性关键：标题块「常驻组合」作为区域高度锚点 —— 只用透明度 + 自定义水平收拢
+    // 切换可见性，而不是 AnimatedVisibility（后者退出完成后会把内容移出组合，区域高度会
+    // 回落到搜索胶囊高度，与标题块自然高度不一致 → 实测头部高度变化 → 顶栏抖动）。
+    val titleVisible = !isSearchExpanded
+    val titleProgress by animateFloatAsState(
+        targetValue = if (titleVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (titleVisible) HeaderRevealDurationMs else HeaderHideDurationMs,
+            delayMillis = if (titleVisible) 60 else 0,
+            easing = if (titleVisible) AppAnimation.Easings.EmphasizedDecelerate
+            else AppAnimation.Easings.EmphasizedAccelerate
+        ),
+        label = "TitleCollapseProgress"
+    )
+    val titleAlpha by animateFloatAsState(
+        targetValue = if (titleVisible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = if (titleVisible) 240 else HeaderFadeOutDurationMs,
+            delayMillis = if (titleVisible) 60 else 0,
+            easing = if (titleVisible) AppAnimation.Easings.EmphasizedDecelerate
+            else AppAnimation.Easings.EmphasizedAccelerate
+        ),
+        label = "TitleCollapseAlpha"
+    )
+    Box(
+        modifier = modifier.heightIn(min = HeaderAdaptiveRegionMinHeight),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        // 标题块 — 常驻组合，区域高度锚点；宽度按 titleProgress 右端锚定收放
+        // （等价于 shrinkHorizontally(End)，但内容永不离开组合，高度测量恒定）
+        Box(
+            modifier = Modifier
+                .graphicsLayer { alpha = titleAlpha }
+                .clipToBounds()
+                .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints)
+                    val width = (placeable.width * titleProgress).roundToInt()
+                    layout(width, placeable.height) {
+                        // 右端锚定：可见窗口自右向左收放，超出窗口左缘的内容被裁切
+                        placeable.placeRelative(x = width - placeable.width, y = 0)
+                    }
+                }
+        ) {
+            titleBlock()
+        }
+
+        AnimatedVisibility(
+            visible = isSearchExpanded,
+            enter = HeaderRevealEnter,
+            exit = HeaderRevealExit
+        ) {
+            searchBlock()
+        }
+    }
+}
+
+/**
+ * 合并头部的标题块：主色装饰条 + 标题 + 总数（含筛选命中徽章）
+ */
+@Composable
+private fun GalleryHeaderTitleBlock(
+    title: String,
+    totalCount: Int,
+    filteredCount: Int,
+    entityLabel: String,
+    modifier: Modifier = Modifier
+) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .height(32.dp)
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                        )
+                    )
+                )
+        )
+        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+        Column {
+            Text(
+                text = title,
+                style = AppTypography.TitleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "共 $totalCount 位$entityLabel",
+                    style = AppTypography.LabelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (filteredCount != totalCount) {
+                    Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            text = "$filteredCount/$totalCount",
+                            style = AppTypography.LabelSmallBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 搜索输入行（合并头部共用）— 内嵌胶囊输入框
+ *
+ * 设计：
+ * - 圆角胶囊外形，内含前置搜索图标 + 输入区 + 动画清除按钮，明确"这是一个可输入框"
+ * - 未聚焦：中性薄底 + 淡描边；聚焦：主色薄纱底 + 主色描边，形成清晰焦点反馈
+ * - 前置图标：空文字时点击聚焦并唤起键盘，有文字时点击直接提交搜索
+ */
+@Composable
+private fun GallerySearchFieldContent(
+    searchInput: String,
+    onSearchInputChange: (String) -> Unit,
+    onSearchFocusChange: (Boolean) -> Unit,
+    searchFocusRequester: FocusRequester,
+    onSubmitSearch: (String) -> Unit,
+    entityLabel: String,
+    isFocused: Boolean,
+    modifier: Modifier = Modifier,
+    isWatch: Boolean = false,
+    autoFocusOnAppear: Boolean = false
+) {
+    val isDark = LocalIsDark.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusInput: () -> Unit = {
+        searchFocusRequester.requestFocus()
+        keyboardController?.show()
+    }
+    val capsuleShape = RoundedCornerShape(AppSpacing.Corner.Full)
+
+    // 展开时自动聚焦并唤起键盘（仅在该输入框首次进入组合时执行一次）
+    LaunchedEffect(Unit) {
+        if (autoFocusOnAppear) {
+            // 等待淡入/布局完成，确保输入框节点已挂载
+            delay(60)
+            runCatching { searchFocusRequester.requestFocus() }
+            keyboardController?.show()
+        }
+    }
+
+    // 聚焦时底色升为"主色薄纱"，未聚焦为中性薄底
+    val containerColor by animateColorAsState(
+        targetValue = if (isFocused) {
+            MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.18f else 0.10f)
+        } else {
+            MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.06f else 0.04f)
+        },
+        animationSpec = AppAnimation.Specs.fast(),
+        label = "SearchCapsuleBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (isFocused) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.70f)
+        } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.50f)
+        },
+        animationSpec = AppAnimation.Specs.fast(),
+        label = "SearchCapsuleBorder"
+    )
+
+    Row(
+        modifier = modifier
+            .height(if (isWatch) 36.dp else 44.dp)
+            .clip(capsuleShape)
+            .background(containerColor)
+            .border(AppSpacing.Border.Thin, borderColor, capsuleShape)
+            .padding(horizontal = AppSpacing.Md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 搜索图标 — 空文字时点击聚焦，有文字时点击提交
+        Icon(
+            imageVector = Icons.Default.Search,
+            contentDescription = if (searchInput.isEmpty()) "搜索" else "搜索$searchInput",
+            tint = if (isFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
+                .clickable {
+                    if (searchInput.isEmpty()) {
+                        focusInput()
+                    } else {
+                        onSubmitSearch(searchInput)
+                        keyboardController?.hide()
+                    }
+                }
+        )
+
+        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+
+        // 输入区域
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .semantics { contentDescription = "搜索$entityLabel" },
+            contentAlignment = Alignment.CenterStart
+        ) {
+            if (searchInput.isEmpty()) {
+                Text(
+                    text = "搜索$entityLabel…",
+                    style = AppTypography.BodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            BasicTextField(
+                value = searchInput,
+                onValueChange = onSearchInputChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(searchFocusRequester)
+                    .onFocusChanged { onSearchFocusChange(it.isFocused) },
+                textStyle = AppTypography.BodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface
+                ),
+                singleLine = true,
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = { onSubmitSearch(searchInput) }
+                )
+            )
+        }
+
+        // 清除按钮 — 带动画进出
+        AnimatedVisibility(
+            visible = searchInput.isNotEmpty(),
+            enter = fadeIn() + expandHorizontally(),
+            exit = fadeOut() + shrinkHorizontally()
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(start = AppSpacing.Xs)
+                    .size(if (isWatch) 22.dp else 26.dp)
+                    .clip(CircleShape)
+                    .clickable {
+                        onSearchInputChange("")
+                        searchFocusRequester.requestFocus()
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "清除",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(AppSpacing.Icon.Sm)
                 )
             }
         }
@@ -355,15 +730,19 @@ private fun GallerySearchBar(
 }
 
 /**
- * 经典风格船坞搜索栏 — 双层卡片结构
- * 标题卡片（带舰娘总数 + 档案切换器） + 独立搜索卡片
+ * 经典风格船坞顶部栏 — 单卡片合并结构
+ *
+ * 交互（点击展开）：
+ * - 收起态：`标题块（标题 + 计数）· 搜索按钮 · 档案切换器`
+ * - 展开态：`搜索胶囊 · 筛选按钮 · 搜索按钮（变为收起）`（档案切换器让位于搜索）
+ * 动画：以「搜索按钮」为固定锚点，搜索胶囊与筛选按钮自其左侧水平弹开（expandHorizontally），
+ * 标题块与档案切换器同步水平收起；行高锁定，全程卡片高度不变，内容区不发生上下位移。
  *
  * 设计优化：
- * - 标题卡片使用 surfaceContainerHigh 背景 + outlineVariant 边框，与 ClassicTopBar 配色协调
- * - 标题左侧添加主色装饰条，增强视觉锚点
- * - 搜索框添加搜索图标圆形背景装饰，与 Command Center 风格视觉一致
- * - 未聚焦时保留淡边框，避免突兀；聚焦时主色边框高亮
- * - 暗色下提高对比度，确保文字清晰可读
+ * - 卡片使用 surfaceContainerHigh 背景 + outlineVariant 描边，与 ClassicTopBar 配色协调
+ * - 标题复用 [GalleryHeaderTitleBlock]（主色装饰条 + 标题 + 计数徽章），两风格标题表现统一
+ * - 搜索复用共享的胶囊输入框，交互与观感与 Command Center 风格一致
+ * - 聚焦时卡片描边过渡到主色并抬升阴影；暗色下提高对比度确保文字清晰
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -382,222 +761,161 @@ private fun ClassicGallerySearchBar(
     onSubmitSearch: (String) -> Unit,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType = com.azurlane.blyy.viewmodel.ArchiveType.DOCK,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
-    isRefreshing: Boolean = false,
-    entityLabel: String = "舰娘"
+    entityLabel: String = "舰娘",
+    isSearchExpanded: Boolean = false,
+    onSearchToggle: () -> Unit = {}
 ) {
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
 
-    // 聚焦时搜索框边框高亮（未聚焦时保留淡边框，避免突兀）
+    // 聚焦时卡片描边高亮（未聚焦时保留淡描边，避免突兀）
     val searchBorderAlpha by animateFloatAsState(
         targetValue = if (isSearchFocused) 1f else 0.4f,
         animationSpec = AppAnimation.Specs.fast(),
         label = "SearchBorderAlpha"
     )
-    // 搜索图标圆形背景透明度动画
-    val searchIconBgAlpha by animateFloatAsState(
-        targetValue = if (isSearchFocused) 0.4f else 0.2f,
-        animationSpec = AppAnimation.Specs.fast(),
-        label = "SearchIconBgAlpha"
-    )
 
-    Column {
-        // 标题卡片 — surfaceContainerHigh 背景 + 主色装饰条 + 档案切换器
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = AppSpacing.Screen.Horizontal),
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.9f else 0.7f),
-            border = androidx.compose.foundation.BorderStroke(
-                width = AppSpacing.Border.Thin,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.5f else 0.4f)
-            ),
-            shadowElevation = AppSpacing.Elevation.Sm
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // 左侧主色装饰条 — 增强视觉锚点
-                Box(
-                    modifier = Modifier
-                        .width(3.dp)
-                        .height(if (isWatch) 28.dp else 32.dp)
-                        .background(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                                )
-                            )
-                        )
-                )
-                Spacer(modifier = Modifier.width(AppSpacing.Md))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = AppTypography.TitleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(AppSpacing.Xxs))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "共 $totalCount 位$entityLabel",
-                            style = AppTypography.LabelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.9f else 0.85f)
-                        )
-                        if (filteredCount != totalCount) {
-                            Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.25f else 0.15f)
-                            ) {
-                                Text(
-                                    text = "$filteredCount/$totalCount",
-                                    style = AppTypography.LabelSmallBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs)
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // 档案切换器 — 紧凑型，整合到标题卡片右侧
-                CompactArchiveSwitcher(
-                    archiveType = archiveType,
-                    onSwitchArchive = onSwitchArchive
-                )
-            }
-        }
-
-        // 后台刷新进度条 — 细线动画
-        AnimatedVisibility(
-            visible = isRefreshing,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
-        ) {
-            LinearProgressIndicator(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Xxs),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+    // 合并卡片 — surfaceContainerHigh 背景 + 主色描边过渡 + 档案切换器
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.Screen.Horizontal),
+        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+        // 全不透明：半透明卡片叠在 surfaceContainer 灰背景上会发浑，
+        // 且网格滚动时卡片从顶栏后方穿过会透出"脏色"
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = androidx.compose.foundation.BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = lerp(
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.5f else 0.4f),
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                searchBorderAlpha
             )
-        }
-
-        // 标题与搜索框之间的呼吸间距
-        Spacer(modifier = Modifier.height(AppSpacing.Md))
-
-        // 搜索框卡片 — 聚焦时边框高亮 + 阴影增强 + 搜索图标圆形背景
-        Surface(
+        ),
+        shadowElevation = if (isSearchFocused) AppSpacing.Elevation.Md else AppSpacing.Elevation.Sm
+    ) {
+        // 行高由左侧自适应区的最小高度锁定（见 GalleryLeftAdaptiveRegion），
+        // 此处仅留内边距，保证切换全程卡片高度恒定、内容区不发生上下位移
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AppSpacing.Screen.Horizontal)
-                .height(if (isWatch) 40.dp else 48.dp),
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = if (isSearchFocused) 0.98f else 0.9f),
-            shadowElevation = if (isSearchFocused) AppSpacing.Elevation.Md else AppSpacing.Elevation.Sm
+                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .border(
-                        width = AppSpacing.Border.Thin,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = searchBorderAlpha * 0.6f),
-                        shape = RoundedCornerShape(AppSpacing.Corner.Lg)
+            // ── 左侧自适应区 ──
+            // 收起 = 标题块，展开 = 搜索胶囊 + 筛选按钮；
+            // 两态叠放并共用同一右端锚点，均自「搜索按钮」处向左水平弹开。
+            GalleryLeftAdaptiveRegion(
+                isSearchExpanded = isSearchExpanded,
+                modifier = Modifier.weight(1f),
+                titleBlock = {
+                    GalleryHeaderTitleBlock(
+                        title = title,
+                        totalCount = totalCount,
+                        filteredCount = filteredCount,
+                        entityLabel = entityLabel,
+                        modifier = Modifier.fillMaxWidth()
                     )
+                },
+                searchBlock = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        GallerySearchFieldContent(
+                            modifier = Modifier.weight(1f),
+                            searchInput = searchInput,
+                            onSearchInputChange = onSearchInputChange,
+                            onSearchFocusChange = onSearchFocusChange,
+                            searchFocusRequester = searchFocusRequester,
+                            onSubmitSearch = onSubmitSearch,
+                            entityLabel = entityLabel,
+                            isFocused = isSearchFocused,
+                            isWatch = isWatch,
+                            autoFocusOnAppear = true
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        ModernFilterButton(
+                            hasActiveFilters = hasActiveFilters,
+                            activeFilterCount = activeFilterCount,
+                            onClick = onFilterClick,
+                            isWatch = isWatch
+                        )
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.width(AppSpacing.Sm))
+
+            // 锚点按钮 — 展开/收起均在此位置，搜索与筛选自其左侧弹出
+            SearchToggleButton(
+                expanded = isSearchExpanded,
+                onClick = onSearchToggle,
+                isWatch = isWatch
+            )
+
+            // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索
+            // 过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致
+            AnimatedVisibility(
+                visible = !isSearchExpanded,
+                enter = HeaderRevealEnter,
+                exit = HeaderRevealExit
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = AppSpacing.Padding.InputHorizontal),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // 搜索图标 — 带圆形背景装饰，与 Command Center 视觉一致
-                    Box(
-                        modifier = Modifier
-                            .size(if (isWatch) 28.dp else 32.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = searchIconBgAlpha),
-                                shape = CircleShape
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
-                        )
-                    }
-
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Spacer(modifier = Modifier.width(AppSpacing.Md))
-
-                    Box(modifier = Modifier.weight(1f)) {
-                        if (searchInput.isEmpty()) {
-                            Text(
-                                text = "搜索$entityLabel...",
-                                style = AppTypography.BodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (isDark) 0.7f else 0.6f)
-                            )
-                        }
-                        BasicTextField(
-                            value = searchInput,
-                            onValueChange = onSearchInputChange,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(searchFocusRequester)
-                                .onFocusChanged { onSearchFocusChange(it.isFocused) },
-                            textStyle = AppTypography.BodyLarge.copy(
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            singleLine = true,
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(
-                                onSearch = { onSubmitSearch(searchInput) }
-                            )
-                        )
-                    }
-
-                    // 清除按钮 — 带动画进出
-                    AnimatedVisibility(
-                        visible = searchInput.isNotEmpty(),
-                        enter = fadeIn() + expandHorizontally(),
-                        exit = fadeOut() + shrinkHorizontally()
-                    ) {
-                        IconButton(
-                            onClick = {
-                                onSearchInputChange("")
-                                searchFocusRequester.requestFocus()
-                            },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "清除",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(AppSpacing.Icon.Sm)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(AppSpacing.Xs))
-
-                    // 筛选按钮 — 带激活计数徽章（与 Command Center 搜索栏位置一致）
-                    ModernFilterButton(
-                        hasActiveFilters = hasActiveFilters,
-                        activeFilterCount = activeFilterCount,
-                        onClick = onFilterClick,
-                        isWatch = isWatch
+                    CompactArchiveSwitcher(
+                        archiveType = archiveType,
+                        onSwitchArchive = onSwitchArchive
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 搜索开关按钮 — 收起态显示放大镜（点击展开搜索），展开态显示关闭图标（点击收起）
+ *
+ * 与 [ModernFilterButton] 保持一致的圆形按钮规格，使顶栏右侧操作区视觉统一。
+ */
+@Composable
+private fun SearchToggleButton(
+    expanded: Boolean,
+    onClick: () -> Unit,
+    isWatch: Boolean = false
+) {
+    val isDark = LocalIsDark.current
+    val scale by animateFloatAsState(
+        targetValue = if (expanded) 1.05f else 1f,
+        animationSpec = AppAnimation.Specs.scale(),
+        label = "SearchToggleScale"
+    )
+    val containerColor = if (expanded) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+    } else if (isDark) {
+        MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    }
+
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = containerColor,
+        modifier = Modifier
+            .size(if (isWatch) 36.dp else 40.dp)
+            .scale(scale)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Default.Close else Icons.Default.Search,
+                contentDescription = if (expanded) "收起搜索" else "搜索",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
+            )
         }
     }
 }
@@ -676,39 +994,6 @@ private fun ModernFilterButton(
     }
 }
 
-@Composable
-fun ResultCountBadge(
-    filteredCount: Int,
-    totalCount: Int
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Screen.Horizontal),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Surface(
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Xs),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "$filteredCount",
-                    style = AppTypography.LabelLargeBold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-                Text(
-                    text = " / $totalCount",
-                    style = AppTypography.LabelSmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                )
-            }
-        }
-    }
-}
 /**
  * 搜索下拉面板 — 历史记录（输入为空时）或搜索建议（输入非空时）
  */

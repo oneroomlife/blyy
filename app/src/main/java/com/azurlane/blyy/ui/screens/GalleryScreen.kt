@@ -111,6 +111,9 @@ fun GalleryScreen(
     var isSearchFocused by remember { mutableStateOf(false) }
     val searchHistory = rememberSearchHistory()
 
+    // 顶部合并栏实际高度（px）— 由 AdaptiveGalleryTopBar 测量上报，用于动态计算网格顶部内边距
+    var headerHeightPx by remember { mutableIntStateOf(0) }
+
     // 搜索建议 — 从舰娘名称中实时匹配
     val suggestions by remember(state.ships, searchInput) {
         derivedStateOf {
@@ -241,8 +244,15 @@ fun GalleryScreen(
     AdaptiveScreenBackground(
         modifier = Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Horizontal))
     ) {
-        val fixedTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() +
+        val statusBarTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        // 顶部栏已合并为单面板：用实测高度（px→dp）替代旧的固定内边距，
+        // 未测得前回退固定值，避免首帧内容跳动
+        val headerTopPadding = if (headerHeightPx > 0) {
+            with(LocalDensity.current) { headerHeightPx.toDp() } + AppSpacing.Lg
+        } else {
             AppSpacing.TopBar.ContentTopPadding
+        }
+        val fixedTopPadding = statusBarTopPadding + headerTopPadding
         val fixedBottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
             AppSpacing.TopBar.ContentBottomPadding
 
@@ -426,7 +436,8 @@ fun GalleryScreen(
                 },
                 isRefreshing = state.isRefreshing,
                 isCacheHit = state.isCacheHit,
-                cacheTimestamp = state.cacheTimestamp
+                cacheTimestamp = state.cacheTimestamp,
+                onHeaderHeightChanged = { headerHeightPx = it }
             )
         }
     }
