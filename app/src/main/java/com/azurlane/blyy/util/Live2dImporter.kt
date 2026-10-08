@@ -10,7 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.util.zip.ZipInputStream
+import java.util.zip.ZipFile
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -109,64 +109,58 @@ class Live2dImporter @Inject constructor(
         isCancelled: () -> Boolean = { false }
     ): ImportResult = withContext(Dispatchers.IO) {
         val tempDir = File(context.cacheDir, "live2d_import_${System.currentTimeMillis()}")
+        // SAF 输入流只支持顺序读一遍，先落地为缓存临时文件，再用 [ZipFile] 随机访问：
+        // - 枚举条目只读 central directory（O(entries)，不解压任何数据）
+        //   此前用 ZipInputStream"只列目录"的第一遍实际把整个包解压流读了一遍
+        //   （closeEntry 需读取并丢弃条目全部数据才能定位下一目录项），
+        //   大压缩包的解压 I/O 与耗时直接翻倍
+        // - 解压阶段按条目 getInputStream 精确读取，天然跳过无关条目
+        val srcFile = File(context.cacheDir, "live2d_import_src_${System.currentTimeMillis()}.zip")
         val createdTargets = mutableListOf<String>()
         try {
             onProgress(ImportProgress(Phase.EXTRACTING))
             tempDir.mkdirs()
             val resolver = context.contentResolver
 
-            // 第一遍：读取目录结构，找出所有 model3.json 及其所属模型根
-            data class ZipEntryInfo(val name: String, val isModel3: Boolean)
-            val entries = mutableListOf<ZipEntryInfo>()
             resolver.openInputStream(zipUri)?.use { input ->
-                ZipInputStream(input.buffered()).use { zip ->
-                    while (true) {
-                        val entry = zip.nextEntry ?: break
-                        if (!entry.isDirectory) {
-                            entries += ZipEntryInfo(entry.name, entry.name.endsWith(MODEL3_EXT, ignoreCase = true))
-                        }
-                        zip.closeEntry()
-                    }
-                }
+                srcFile.outputStream().buffered().use { output -> input.copyTo(output) }
             } ?: return@withContext ImportResult(
                 emptyList(), emptyList(), listOf("无法读取压缩包"), false
             )
 
-            val model3Entries = entries.filter { it.isModel3 }
-            if (model3Entries.isEmpty()) {
-                return@withContext ImportResult(
-                    emptyList(), emptyList(), listOf("压缩包内未找到 *.model3.json 模型文件"), false
-                )
-            }
-            val modelRoots = model3Entries.map { it.name.substringBeforeLast('/', "") }.toSet()
+            ZipFile(srcFile).use { zip ->
+                val fileEntries = zip.entries().asSequence().filter { !it.isDirectory }.toList()
+                val model3Entries = fileEntries.filter { it.name.endsWith(MODEL3_EXT, ignoreCase = true) }
+                if (model3Entries.isEmpty()) {
+                    return@withContext ImportResult(
+                        emptyList(), emptyList(), listOf("压缩包内未找到 *.model3.json 模型文件"), false
+                    )
+                }
+                val modelRoots = model3Entries.map { it.name.substringBeforeLast('/', "") }.toSet()
 
-            // 第二遍：仅解包属于模型根的条目（归属规则与 importCollected 一致：
-            // 取最长匹配根，保证根目录下 motions/textures 等子目录一并解出）
-            var extracted = 0
-            resolver.openInputStream(zipUri)?.use { input ->
-                ZipInputStream(input.buffered()).use { zip ->
-                    while (true) {
-                        val entry = zip.nextEntry ?: break
-                        val name = entry.name
-                        if (!entry.isDirectory && ownerRoot(name, modelRoots.toList()) != null) {
-                            val out = safeOutputFile(tempDir, name)
-                            if (out != null) {
-                                // zip 条目按需逐级建父目录（目录条目在压缩包里可能缺省）
-                                out.parentFile?.mkdirs()
-                                out.outputStream().use { zip.copyTo(it) }
-                                extracted++
-                                if (extracted % 20 == 0) {
-                                    onProgress(
-                                        ImportProgress(
-                                            Phase.EXTRACTING,
-                                            copiedFiles = extracted
-                                        )
+                // 仅解包属于模型根的条目（归属规则与 importCollected 一致：
+                // 取最长匹配根，保证根目录下 motions/textures 等子目录一并解出）
+                var extracted = 0
+                for (entry in fileEntries) {
+                    if (ownerRoot(entry.name, modelRoots.toList()) != null) {
+                        val out = safeOutputFile(tempDir, entry.name)
+                        if (out != null) {
+                            // zip 条目按需逐级建父目录（目录条目在压缩包里可能缺省）
+                            out.parentFile?.mkdirs()
+                            zip.getInputStream(entry).use { zipIn ->
+                                out.outputStream().use { zipIn.copyTo(it) }
+                            }
+                            extracted++
+                            if (extracted % 20 == 0) {
+                                onProgress(
+                                    ImportProgress(
+                                        Phase.EXTRACTING,
+                                        copiedFiles = extracted
                                     )
-                                    if (isCancelled()) throw InterruptedException("已取消")
-                                }
+                                )
+                                if (isCancelled()) throw InterruptedException("已取消")
                             }
                         }
-                        zip.closeEntry()
                     }
                 }
             }
@@ -198,6 +192,7 @@ class Live2dImporter @Inject constructor(
             ImportResult(emptyList(), emptyList(), listOf("导入失败: $reason"), false)
         } finally {
             runCatching { tempDir.deleteRecursively() }
+            runCatching { srcFile.delete() }
         }
     }
 
@@ -276,7 +271,9 @@ class Live2dImporter @Inject constructor(
                         if (group.rootRel.isEmpty()) "" else "${group.rootRel}/"
                     )
                     val out = File(targetDir, relUnderModel)
-                    if (!out.canonicalPath.startsWith(targetDir.canonicalPath)) {
+                    // canonicalPath 前缀比较必须带分隔符，否则同级兄弟目录
+                    // （如 targetDirX）会误判通过（与 Live2dWebViewClient 的校验一致）
+                    if (!out.canonicalPath.startsWith(targetDir.canonicalPath + File.separator)) {
                         Log.w(TAG, "跳过越界路径: ${f.relPath}")
                         continue
                     }
@@ -384,7 +381,8 @@ class Live2dImporter @Inject constructor(
     private fun safeOutputFile(baseDir: File, entryName: String): File? {
         val sanitized = entryName.replace('\\', '/')
         val out = File(baseDir, sanitized)
-        return if (out.canonicalPath.startsWith(baseDir.canonicalPath)) out else null
+        // canonicalPath 前缀比较必须带分隔符，否则同级兄弟目录会误判通过
+        return if (out.canonicalPath.startsWith(baseDir.canonicalPath + File.separator)) out else null
     }
 
     private fun sanitizeFolderName(name: String): String =
