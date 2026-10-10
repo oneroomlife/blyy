@@ -9,6 +9,8 @@ package com.azurlane.blyy.util
  *  - 实名表按页序依次对应 换装1、换装2、…（与资源目录 _N 编号对齐：换装k = 资源 _k+1；
  *    实证：埃尔德里奇换装3 = 正月的牵手 = live2d 资源 aierdeliqi_4 渲染的和服模型）
  *  - 【誓约】xxx 表对应立绘"誓约"tab，xxx.改 表对应"改造"tab，均不占用换装序号
+ *  - "X（特殊形态）"表是皮肤 X 的战斗变身形态（实证：伊404 = 绛縢华舞 / 绛縢华舞（特殊形态）），
+ *    不占用换装序号
  *
  * 纯 Kotlin 无 Android 依赖，可 JVM 单测。
  */
@@ -19,6 +21,11 @@ object SkinVoiceIndex {
 
     private const val OATH_PREFIX = "【誓约】"
     private const val REMODEL_SUFFIX = ".改"
+    private const val SPECIAL_FORM_SUFFIX = "（特殊形态）"
+
+    /** "X（特殊形态）" → X；其余原样返回 */
+    fun stripSpecialFormSuffix(name: String): String =
+        if (name.endsWith(SPECIAL_FORM_SUFFIX)) name.removeSuffix(SPECIAL_FORM_SUFFIX) else name
 
     fun isOathTable(name: String): Boolean = name.startsWith(OATH_PREFIX)
 
@@ -41,17 +48,19 @@ object SkinVoiceIndex {
             return SkinTables(emptySet(), emptyList(), emptyList(), emptyList())
         }
         // 输入可能是"每行台词"的 skinName 序列（同一张表的 N 行连续同名），
-        // 先折叠连续同名运行——每段连续同名视为一张表
-        val tables = titles.fold(mutableListOf<String>()) { acc, name ->
+        // 先归一"特殊形态"后缀，再折叠连续同名运行——每段连续同名视为一张表。
+        // 归一让 "X" 与 "X（特殊形态）" 相邻运行折叠为同一皮肤，不占换装序号
+        val tables = titles.map { stripSpecialFormSuffix(it) }.fold(mutableListOf<String>()) { acc, name ->
             if (acc.lastOrNull() != name) acc.add(name)
             acc
         }
         // 未命名表（回退名）全部属于默认装扮，不占用换装序号；
         // 实名表按页序依次对应 换装1、换装2、…（实测：埃尔德里奇换装3=正月的牵手，
-        // 与 live2d 资源 aierdeliqi_4 渲染的和服模型一致）
+        // 与 live2d 资源 aierdeliqi_4 渲染的和服模型一致）。
+        // distinct() 兜底同名皮肤表非连续出现时（页面结构异常）不重复占位
         val skinSequence = tables.filter { name ->
             name != DEFAULT_NAME && !isOathTable(name) && !isRemodelTable(name)
-        }
+        }.distinct()
         return SkinTables(
             defaultNames = setOf(DEFAULT_NAME),
             skinSequence = skinSequence,

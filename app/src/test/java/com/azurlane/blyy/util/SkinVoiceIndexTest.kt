@@ -83,4 +83,34 @@ class SkinVoiceIndexTest {
         assertEquals("金月桂香", tables.skinSequence.last())
         assertEquals(setOf("默认装扮"), tables.defaultNames)
     }
+
+    @Test
+    fun `伊404 - 特殊形态表并入同皮肤，换装序列只有绛縢华舞一张`() {
+        // 2026-10 实测伊404 页：情人节礼物表与默认表均无 data-title，
+        // 皮肤"绛縢华舞"有常规 + （特殊形态）两张表（战斗变身形态）
+        val titles = listOf(
+            "默认装扮", "默认装扮", "绛縢华舞", "绛縢华舞（特殊形态）"
+        )
+        val tables = SkinVoiceIndex.classify(titles)
+        // 特殊形态不占用换装序号：序列只有一张，裸"换装"tab 映射到它
+        assertEquals(listOf("绛縢华舞"), tables.skinSequence)
+        assertEquals(setOf("默认装扮"), tables.defaultNames)
+    }
+
+    @Test
+    fun `特殊形态表穿插在多皮肤序列中 - 不整体错位`() {
+        // 假设两皮肤舰 A/B，A 有特殊形态表：A 表 → B 表 → A特殊形态表
+        val titles = listOf("默认装扮", "绯红舞衣", "苍蓝舞衣", "绯红舞衣（特殊形态）")
+        val tables = SkinVoiceIndex.classify(titles)
+        assertEquals(listOf("绯红舞衣", "苍蓝舞衣"), tables.skinSequence)
+    }
+
+    @Test
+    fun `stripSpecialFormSuffix - 只剥离尾部特殊形态后缀`() {
+        assertEquals("绛縢华舞", SkinVoiceIndex.stripSpecialFormSuffix("绛縢华舞（特殊形态）"))
+        assertEquals("绛縢华舞", SkinVoiceIndex.stripSpecialFormSuffix("绛縢华舞"))
+        // 只去尾部后缀，其他部分（如誓约前缀）原样保留
+        assertEquals("【誓约】X", SkinVoiceIndex.stripSpecialFormSuffix("【誓约】X（特殊形态）"))
+        assertEquals("X", SkinVoiceIndex.stripSpecialFormSuffix("X"))
+    }
 }

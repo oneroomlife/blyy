@@ -455,7 +455,9 @@ class ShipRepository @Inject constructor(
 
                 // 立绘 tab 若是 wiki 的通用"换装N"标签，替换为真实皮肤名。
                 // 真实名来自同页语音表：首表/未命名表 = 默认装扮，换装N = 第 N 张
-                // 实名表（【誓约】/xxx.改 表单独对应誓约/改造，不占换装序号）
+                // 实名表（【誓约】/xxx.改 表单独对应誓约/改造，不占换装序号）。
+                // 只有一个皮肤的舰娘（如伊404）立绘 tab 是裸的"换装"（无序号），
+                // 对应首个实名换装表
                 val voiceSkinTitles = doc.select(".table-ShipWordsTable").map { t ->
                     var name = t.attr("data-title")
                     if (name.isEmpty() || name == "舰船台词") name = SkinVoiceIndex.DEFAULT_NAME
@@ -466,6 +468,7 @@ class ShipRepository @Inject constructor(
                 skinTables.skinSequence.forEachIndexed { idx, name ->
                     skinRenameMap["换装${idx + 1}"] = name
                 }
+                skinTables.skinSequence.firstOrNull()?.let { skinRenameMap["换装"] = it }
                 if (skinRenameMap.isNotEmpty()) {
                     Log.d(TAG, "皮肤名映射: $skinRenameMap")
                 }
