@@ -98,12 +98,13 @@ object AppTypography {
     )
     
     // ==================== 正文主体字体 ====================
+    // CJK 优化：正值字距源自拉丁字母排版的 M3 默认，中文方块字会显松散，正文族整体收紧
     val BodyLarge = TextStyle(
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Normal,
         fontSize = 16.sp,
         lineHeight = 24.sp,
-        letterSpacing = 0.5.sp
+        letterSpacing = 0.15.sp
     )
     
     val BodyMedium = TextStyle(
@@ -111,7 +112,7 @@ object AppTypography {
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
         lineHeight = 20.sp,
-        letterSpacing = 0.25.sp
+        letterSpacing = 0.1.sp
     )
     
     val BodySmall = TextStyle(
@@ -119,7 +120,7 @@ object AppTypography {
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.4.sp
+        letterSpacing = 0.15.sp
     )
     
     // ==================== 标签字体 ====================
@@ -136,7 +137,7 @@ object AppTypography {
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.5.sp
+        letterSpacing = 0.3.sp
     )
     
     val LabelSmall = TextStyle(
@@ -144,7 +145,7 @@ object AppTypography {
         fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.5.sp
+        letterSpacing = 0.3.sp
     )
 
     // ==================== 说明文字 Caption ====================
@@ -153,7 +154,7 @@ object AppTypography {
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.4.sp
+        letterSpacing = 0.15.sp
     )
 
     val CaptionMedium = TextStyle(
@@ -161,7 +162,7 @@ object AppTypography {
         fontWeight = FontWeight.Normal,
         fontSize = 11.sp,
         lineHeight = 14.sp,
-        letterSpacing = 0.5.sp
+        letterSpacing = 0.2.sp
     )
 
     val CaptionSmall = TextStyle(
@@ -169,7 +170,7 @@ object AppTypography {
         fontWeight = FontWeight.Normal,
         fontSize = 10.sp,
         lineHeight = 12.sp,
-        letterSpacing = 0.5.sp
+        letterSpacing = 0.2.sp
     )
     
     // ==================== 自定义样式 ====================

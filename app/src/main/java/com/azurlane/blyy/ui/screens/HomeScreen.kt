@@ -922,9 +922,14 @@ fun PremiumInteractiveButton(
             modifier = Modifier
                 .background(
                     brush = Brush.linearGradient(
-                        colors = listOf(
+                        // 亮色模式按 V2 规范用 PrimaryDeep→Primary：原 primary@80% 端
+                        // 在亮色海床上白字仅 ~2.9:1（AA 不达标）
+                        colors = if (LocalIsDark.current) listOf(
                             MaterialTheme.colorScheme.primary,
                             MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                        ) else listOf(
+                            AppColors.PrimaryDeepLight,
+                            AppColors.PrimaryLight
                         )
                     )
                 )

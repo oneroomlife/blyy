@@ -429,7 +429,7 @@ private fun HistoryRecordCard(
                             onUpload()
                         }
                     },
-                    modifier = Modifier.size(32.dp),
+                    modifier = Modifier.minimumInteractiveComponentSize().size(32.dp),
                     enabled = uploadStatus !is RecordUploadStatus.Uploading &&
                             uploadStatus !is RecordUploadStatus.Success
                 ) {
@@ -466,7 +466,7 @@ private fun HistoryRecordCard(
                         }
                     }
                 }
-                IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                     Icon(
                         Icons.Rounded.Delete,
                         contentDescription = "删除",

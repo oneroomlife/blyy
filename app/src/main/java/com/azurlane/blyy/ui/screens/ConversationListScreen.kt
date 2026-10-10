@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -621,7 +622,7 @@ private fun JuusListHeader(
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Box {
-                    IconButton(onClick = onPlusClick, modifier = Modifier.size(32.dp)) {
+                    IconButton(onClick = onPlusClick, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                         Icon(
                             Icons.Rounded.Add,
                             contentDescription = "新建会话",
@@ -680,7 +681,7 @@ private fun JuusListHeader(
                         )
                     }
                 }
-                IconButton(onClick = onMenuClick, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = onMenuClick, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                     Icon(
                         Icons.Rounded.Menu,
                         contentDescription = "菜单",

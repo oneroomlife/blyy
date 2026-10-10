@@ -59,8 +59,10 @@ import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyySecondaryButton
 import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.util.AppIconType
 import com.azurlane.blyy.viewmodel.SettingsViewModel
 import com.azurlane.blyy.viewmodel.SettingsViewModel.IconSwitchState
@@ -250,13 +252,16 @@ private fun IconPreviewCard(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            // 阴影层
+            // 阴影层 — Depth 双色有色阴影（原实现走默认纯黑，暗色模式下与海床色打架）
+            val isDark = LocalIsDark.current
             Box(
                 modifier = Modifier
                     .size(previewSize)
                     .shadow(
                         elevation = AppSpacing.Elevation.Lg,
                         shape = iconShape,
+                        ambientColor = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
+                        spotColor = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight,
                         clip = false
                     )
                     .clip(iconShape)

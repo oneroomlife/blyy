@@ -313,3 +313,54 @@ tween(easing = AppAnimation.Easings.Standard)     // ✅
 | 设置行 | `BlyySettingsRow` |
 | 分段面板 | `BlyySectionPanel` |
 | 聊天气泡 | `BlyySpeechBubble` |
+
+---
+
+## 七、设计语言 V2「深海舰队」新增令牌（2026-10）
+
+### 色彩（AppColors 内）
+
+| Token | 值 | 用途 |
+|-------|-----|------|
+| `PrimaryDeepLight/Dark` | #0077B6 / #0096C7 | 小字号文字直落青底时的安全填充（AA 达标）、按压渐变终点 |
+| `PrimaryVeilLight/Dark` | #0096C7@12% / #48CAE4@16% | 选中行底色、聚焦光晕（替代 `primary.copy(alpha=0.1f)` 散写） |
+| `Scrim.Base` | #05101E | 深海黑遮罩（非纯黑）——媒体查看器/相机/图片上文字底 |
+| `Scrim.OnScrim` | #FFFFFF | 遮罩上的文字 |
+| `Scrim.Subtle/Medium/Heavy` | 0.35 / 0.55 / 0.85 | 遮罩三档 alpha（渐晕 / 控件底 / 全屏取景） |
+| `Gold.TextLight/TextDark` | #8C5E00 / #FFD97A | 金系文字仅有的两个安全档（#FFD166 禁作文字色） |
+| `Gold.Glow` | #FFD166@28% | 金色边缘辉光（配 GoldAccent 渐变 = 抛光黄铜） |
+| `Depth.AmbientLight/Dark`、`Depth.SpotLight/Dark` | 见 Color.kt | 有色双色阴影——**全 app 阴影唯一色彩来源，禁止默认纯黑** |
+
+**金色红线**：金色只属于誓约、海上传奇/决战方案稀有度、结算奖杯、成就徽章；普通面板描边（PanelBorder 已降纯青）、普通按钮、导航、加载动画禁金。
+
+### 深度阴影（theme/Depth.kt）
+
+四层深度模型，禁止跨层混用：
+
+| Token | 层 | elevation | 适用 |
+|-------|-----|-----------|------|
+| `Modifier.blyyDepth(DepthLayer.Sea)` | L0 海床 | 0 | 屏幕背景、AGSL 流体层 |
+| `Modifier.blyyDepth(DepthLayer.Deck)` | L1 甲板 | 4dp | 内容面板、卡片 |
+| `Modifier.blyyDepth(DepthLayer.Instrument)` | L2 仪表 | 8dp | 主按钮、播放器、题面卡 |
+| `Modifier.blyyDepth(DepthLayer.Lookout)` | L3 瞭望 | 12dp | 对话框、BottomSheet、全屏查看器 |
+
+可选 `spotTint` 参数：仅染直射光（稀有度/主色辉光投影），环境光保持全阵列统一。
+
+### 排版（AppTypography 内）—— 等宽数字族
+
+| Token | 用途 |
+|-------|------|
+| `NumericHud` | 分数/进度/计数读数（tnum，读数不跳动） |
+| `NumericScore` | 大号得分 |
+| `NumericTimer` | 播放器时间 |
+
+### 动效
+
+| Token | 用途 |
+|-------|------|
+| `rememberReducedMotion()` | 系统「移除动画」开启时跳过装饰性动效（stagger 退化、脉冲跳过） |
+
+### 触控规范
+
+- 视觉尺寸可以小（icon 28dp），**热区必须 ≥48dp**：给自定义尺寸的 `IconButton` 外层补 `minimumInteractiveComponentSize()`（material3 包）。
+- 禁止 `Modifier.size(28.dp)` 直接作为可点击件的总热区。

@@ -90,25 +90,30 @@ fun ShipCard(
     )
 
     val cardShape = adaptiveCardShape()
+    val isDark = LocalIsDark.current
 
     Box(
         modifier = modifier
             .padding(AppSpacing.Padding.CardOuter)
-            .aspectRatio(0.8f)
+            // 与骨架屏 ShipCardShimmer 共用同一纵横比令牌，加载完成瞬间不再"跳一下"
+            .aspectRatio(AppSpacing.Card.AspectRatio)
             .scale(scale)
+            // V2 有色阴影规范：环境光保持全阵列统一（Depth 双色），
+            // 仅直射光（spot）允许染稀有度色（@25%）——彩色只染直射光，阵列才不花
             .shadow(
                 elevation = elevation,
                 shape = cardShape,
-                ambientColor = rarityColor.copy(alpha = 0.3f),
-                spotColor = rarityColor.copy(alpha = 0.2f)
+                ambientColor = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
+                spotColor = rarityColor.copy(alpha = 0.25f)
             )
             .clip(cardShape)
             .border(
                 width = if (isHighRarity) 1.5.dp else 1.dp,
+                // V2 红线：普通卡片描边禁金（金色只属于誓约/传奇时刻——
+                // 传奇档的 rarityColor 本身即金色，誓约金边由 OathSpecialEffect 承载）
                 brush = Brush.linearGradient(
                     colors = listOf(
                         rarityColor.copy(alpha = borderAlpha),
-                        AppColors.Accent.Gold.copy(alpha = borderAlpha * 0.4f),
                         rarityColor.copy(alpha = borderAlpha * 0.5f)
                     )
                 ),
@@ -147,6 +152,7 @@ fun ShipCard(
                 RarityAccentBar(rarityColor = rarityColor)
             }
 
+            // 底部渐晕 — 深海黑（品牌阴影同色族），黑得"深"而不"脏"，比纯黑更贴合主题
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -156,9 +162,9 @@ fun ShipCard(
                         Brush.verticalGradient(
                             colors = listOf(
                                 Color.Transparent,
-                                Color.Black.copy(alpha = 0.3f),
-                                Color.Black.copy(alpha = 0.65f),
-                                Color.Black.copy(alpha = 0.92f)
+                                AppColors.Scrim.Base.copy(alpha = 0.32f),
+                                AppColors.Scrim.Base.copy(alpha = 0.68f),
+                                AppColors.Scrim.Base.copy(alpha = 0.94f)
                             )
                         )
                     )
@@ -211,7 +217,7 @@ fun ShipCard(
                             } else {
                                 Brush.verticalGradient(
                                     colors = listOf(
-                                        Color.Black.copy(alpha = 0.25f),
+                                        AppColors.Scrim.Base.copy(alpha = 0.28f),
                                         Color.Transparent
                                     )
                                 )
@@ -227,18 +233,16 @@ fun ShipCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 阵营徽章 — 深海黑底保证白字对比度（稀有度色直接作底时金色/亮青达不到 AA），
+                    // 稀有度信息改由渐变描边承载，全稀有度可读且保留色彩识别
                     Surface(
                         shape = RoundedCornerShape(AppSpacing.Corner.Sm),
-                        color = rarityColor.copy(alpha = 0.55f),
+                        color = AppColors.Scrim.Base.copy(alpha = 0.66f),
                         modifier = Modifier
-                            .then(
-                                if (isHighRarity) {
-                                    Modifier.border(
-                                        width = AppSpacing.Border.Thin,
-                                        brush = rarityGradient,
-                                        shape = RoundedCornerShape(AppSpacing.Corner.Sm)
-                                    )
-                                } else Modifier
+                            .border(
+                                width = AppSpacing.Border.Thin,
+                                brush = rarityGradient,
+                                shape = RoundedCornerShape(AppSpacing.Corner.Sm)
                             )
                     ) {
                         Text(
@@ -251,10 +255,10 @@ fun ShipCard(
                             )
                         )
                     }
-                    
+
                     Surface(
                         shape = RoundedCornerShape(AppSpacing.Corner.Sm),
-                        color = Color.White.copy(alpha = 0.28f)
+                        color = AppColors.Scrim.Base.copy(alpha = 0.5f)
                     ) {
                         Text(
                             text = ship.type,

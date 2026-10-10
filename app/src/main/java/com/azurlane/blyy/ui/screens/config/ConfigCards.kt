@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -181,7 +182,7 @@ internal fun PresetCard(
         }
         // 操作按钮
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onApply, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onApply, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Check,
                     contentDescription = "应用",
@@ -189,7 +190,7 @@ internal fun PresetCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onEdit, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Edit,
                     contentDescription = "编辑",
@@ -197,7 +198,7 @@ internal fun PresetCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Delete,
                     contentDescription = "删除",
@@ -298,7 +299,7 @@ internal fun ApiConfigCard(
         }
         // 操作按钮
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onApply, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onApply, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Check,
                     contentDescription = "应用",
@@ -306,7 +307,7 @@ internal fun ApiConfigCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onEdit, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Edit,
                     contentDescription = "编辑",
@@ -314,7 +315,7 @@ internal fun ApiConfigCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Delete,
                     contentDescription = "删除",
@@ -420,7 +421,7 @@ internal fun PersonaConfigCard(
         }
         // 操作按钮
         Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onApply, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onApply, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Check,
                     contentDescription = "应用",
@@ -428,7 +429,7 @@ internal fun PersonaConfigCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onEdit, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Edit,
                     contentDescription = "编辑",
@@ -436,7 +437,7 @@ internal fun PersonaConfigCard(
                     modifier = Modifier.size(18.dp)
                 )
             }
-            IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                 Icon(
                     Icons.Rounded.Delete,
                     contentDescription = "删除",

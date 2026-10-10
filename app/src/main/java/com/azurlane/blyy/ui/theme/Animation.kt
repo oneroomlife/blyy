@@ -41,18 +41,15 @@ object AppAnimation {
         /** EaseInOutSine — 平滑的正弦进出，用于呼吸/光晕等循环动画 */
         val EaseInOutSine = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
 
-        val Emphasized = Easing { f ->
-            val x = f * 1.1f
-            x * x * (3.5f - 2f * x)
-        }
-        
-        val EmphasizedDecelerate = Easing { f ->
-            1f - (1f - f) * (1f - f) * (1f - f)
-        }
-        
-        val EmphasizedAccelerate = Easing { f ->
-            f * f * f
-        }
+        // ── Material 3 规范缓动（官方三次贝塞尔，替代旧多项式近似）──
+        // Emphasized: 标准强调曲线 — 快出缓入，用于常规状态过渡
+        val Emphasized = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+
+        // EmphasizedDecelerate: 强调进入 — 高速起步、长尾减速，元素入场
+        val EmphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+
+        // EmphasizedAccelerate: 强调退出 — 缓慢起步、加速离场，元素退场
+        val EmphasizedAccelerate = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
         
         val Decelerate = Easing { f -> 1f - (1f - f) * (1f - f) }
         

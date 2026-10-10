@@ -52,7 +52,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.graphics.Color
@@ -82,6 +81,8 @@ import com.azurlane.blyy.ui.screens.guess.GuessSettlementDialog
 import com.azurlane.blyy.ui.screens.guess.GuessWrongCard
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.DepthLayer
+import com.azurlane.blyy.ui.theme.blyyDepth
 import com.azurlane.blyy.viewmodel.CropRegion
 import com.azurlane.blyy.viewmodel.GuessGameUiState
 import com.azurlane.blyy.viewmodel.GuessResult
@@ -407,11 +408,12 @@ private fun ImageCard(
             .fillMaxWidth()
             .aspectRatio(3f / 4f)
             .scale(scale)
-            .shadow(
-                elevation = 16.dp,
-                shape = RoundedCornerShape(AppSpacing.Corner.Xxl),
-                ambientColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+            // L2 仪表层（题面卡）— 四层深度模型统一阴影，
+            // 仅直射光允许染主色（原实现环境光也染了主色，且 16.dp 绕过令牌）
+            .blyyDepth(
+                DepthLayer.Instrument,
+                RoundedCornerShape(AppSpacing.Corner.Xxl),
+                spotTint = MaterialTheme.colorScheme.primary
             )
             .clip(RoundedCornerShape(AppSpacing.Corner.Xxl))
             .background(

@@ -13,6 +13,7 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -282,17 +283,17 @@ private fun RowScope.ModernNavigationItem(
         label = "IconScale"
     )
 
-    // 指示器淡入淡出 — 统一 normal token
-    val indicatorAlpha by animateFloatAsState(
-        targetValue = if (isSelected) 1f else 0f,
-        animationSpec = AppAnimation.Specs.normal(),
-        label = "IndicatorAlpha"
+    // 图标与文字色彩平滑过渡 — 替代硬切，切换 tab 时无闪变
+    val iconTint by animateColorAsState(
+        targetValue = if (isSelected) accentColor
+        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f),
+        animationSpec = tween(AppAnimation.Duration.Normal, easing = AppAnimation.Easings.Standard),
+        label = "IconTint"
     )
 
     // 选中态光晕呼吸 — gating：仅在 isSelected=true 时挂载 rememberInfiniteTransition，
     // 未选中项移出组合树，零 CPU/GPU 开销（4 个 tab 仅 1 个跑无限动画，省 75% 开销）。
-    // 两个分支均返回 State<Float>，由 `by` 委托读取。
-    val glowPulse by if (isSelected) {
+    val glowPulse by if (isSelected && isCommandCenter) {
         rememberInfiniteTransition(label = "navItemGlow").animateFloat(
             initialValue = 0.72f,
             targetValue = 1f,
@@ -315,24 +316,26 @@ private fun RowScope.ModernNavigationItem(
         color = Color.Transparent,
         shape = RoundedCornerShape(AppSpacing.Corner.Lg)
     ) {
+        // 标签常显 + 颜色过渡：消除旧"选中才展开文字"造成的图标上下跳变，
+        // 未选中项文字同时保证可发现性；高度恒定无布局位移。
         Column(
             modifier = Modifier
-                .padding(vertical = AppSpacing.Sm)
+                .padding(vertical = if (isWatch) AppSpacing.Xs else AppSpacing.Sm)
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
             Box(
                 modifier = Modifier
-                    .size(if (isWatch) 30.dp else 40.dp)
+                    .size(if (isWatch) 30.dp else 44.dp)
                     .then(
                         if (isCommandCenter && isSelected) {
                             Modifier
                                 .background(
                                     brush = Brush.radialGradient(
                                         colors = listOf(
-                                            accentColor.copy(alpha = 0.24f * indicatorAlpha * glowPulse),
-                                            accentColor.copy(alpha = 0.10f * indicatorAlpha),
+                                            accentColor.copy(alpha = 0.24f * glowPulse),
+                                            accentColor.copy(alpha = 0.10f),
                                             Color.Transparent
                                         )
                                     ),
@@ -342,26 +345,18 @@ private fun RowScope.ModernNavigationItem(
                                     width = 1.dp,
                                     brush = Brush.sweepGradient(
                                         colors = listOf(
-                                            accentColor.copy(alpha = 0.65f * indicatorAlpha * glowPulse),
-                                            AppColors.Accent.Gold.copy(alpha = 0.28f * indicatorAlpha),
-                                            accentColor.copy(alpha = 0.32f * indicatorAlpha)
+                                            accentColor.copy(alpha = 0.65f * glowPulse),
+                                            AppColors.Accent.Gold.copy(alpha = 0.28f),
+                                            accentColor.copy(alpha = 0.32f)
                                         )
                                     ),
                                     shape = CircleShape
                                 )
-                        } else if (isCommandCenter && !isSelected) {
-                            // 未选中项也加一层极淡的描边，保持视觉一致性
-                            Modifier.border(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f),
-                                shape = CircleShape
-                            )
                         } else if (isSelected) {
-                            Modifier
-                                .background(
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f * indicatorAlpha),
-                                    CircleShape
-                                )
+                            Modifier.background(
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                CircleShape
+                            )
                         } else Modifier
                     ),
                 contentAlignment = Alignment.Center
@@ -372,69 +367,20 @@ private fun RowScope.ModernNavigationItem(
                     modifier = Modifier
                         .size(if (isWatch) 18.dp else 24.dp)
                         .scale(iconScale),
-                    tint = if (isSelected) {
-                        accentColor
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    }
+                    tint = iconTint
                 )
             }
 
-            // 文字与指示器使用 AnimatedVisibility 平滑出入，避免布局跳变
-            AnimatedVisibility(
-                visible = isSelected,
-                enter = fadeIn(tween(AppAnimation.Duration.Fast)) +
-                    expandVertically(tween(AppAnimation.Duration.Normal)),
-                exit = fadeOut(tween(AppAnimation.Duration.Instant)) +
-                    shrinkVertically(tween(AppAnimation.Duration.Fast))
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Spacer(modifier = Modifier.height(if (isWatch) 1.dp else AppSpacing.Xxs))
+            Spacer(modifier = Modifier.height(if (isWatch) 1.dp else 2.dp))
 
-                    Text(
-                        text = displayLabel,
-                        style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
-                        color = accentColor,
-                        modifier = Modifier.padding(horizontal = AppSpacing.Sm)
-                    )
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    // 选中指示条 — 呼吸感与图标光晕同步，增强"活"的视觉律动
-                    Box(
-                        modifier = Modifier
-                            .padding(horizontal = AppSpacing.Sm)
-                            .height(3.dp)
-                            .width(20.dp)
-                            .clip(RoundedCornerShape(AppSpacing.Corner.Xxs))
-                            .background(
-                                if (isCommandCenter) {
-                                    Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            accentColor.copy(alpha = glowPulse),
-                                            AppColors.Accent.Gold.copy(alpha = 0.8f * glowPulse),
-                                            accentColor.copy(alpha = glowPulse),
-                                            Color.Transparent
-                                        )
-                                    )
-                                } else {
-                                    Brush.horizontalGradient(
-                                        colors = listOf(
-                                            Color.Transparent,
-                                            accentColor,
-                                            accentColor,
-                                            Color.Transparent
-                                        )
-                                    )
-                                }
-                            )
-                    )
-                }
-            }
+            // 常显文字 — 色彩随选中态平滑过渡（选中=主色，未选中=弱化变体色）
+            Text(
+                text = displayLabel,
+                style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
+                color = iconTint,
+                maxLines = 1,
+                modifier = Modifier.padding(horizontal = AppSpacing.Sm)
+            )
         }
     }
 }

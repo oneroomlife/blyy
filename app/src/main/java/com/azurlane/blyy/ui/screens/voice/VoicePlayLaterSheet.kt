@@ -343,7 +343,7 @@ private fun PlayLaterQueueItem(
                         } else {
                             IconButton(
                                 onClick = { onPlayItem(item) },
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.minimumInteractiveComponentSize().size(28.dp)
                             ) {
                                 Icon(
                                     Icons.Rounded.PlayCircle,
@@ -451,7 +451,7 @@ private fun PlayLaterQueueItem(
             // 移除按钮 — 低调设计
             IconButton(
                 onClick = { onRemoveItem(item) },
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.minimumInteractiveComponentSize().size(28.dp)
             ) {
                 Icon(
                     Icons.Rounded.Close,

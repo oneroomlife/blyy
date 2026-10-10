@@ -70,7 +70,9 @@ import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.DepthLayer
 import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.ui.theme.blyyDepth
 import com.azurlane.blyy.viewmodel.GameScore
 import com.azurlane.blyy.viewmodel.HintItem
 
@@ -492,12 +494,8 @@ fun GuessCorrectCard(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .shadow(
-                    elevation = AppElevation.Level3,
-                    shape = ResultCardShape,
-                    ambientColor = AppColors.Depth.AmbientLight,
-                    spotColor = AppColors.Depth.SpotLight
-                ),
+                // L2 仪表层 — 统一四层深度模型（原实现亮暗两态都用了亮色阴影，暗色下发灰）
+                .blyyDepth(DepthLayer.Instrument, ResultCardShape),
             shape = ResultCardShape,
             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
         ) {
@@ -662,8 +660,9 @@ private fun GuessRewardImage(rewardImageUrl: String?) {
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(3f / 4f)
-            .clip(ResultCardShape)
-            .shadow(AppElevation.Level4, ResultCardShape),
+            // L3 瞭望层 — 原 Level4 走的是默认纯黑阴影，改用 Depth 双色（暗色下发脏）
+            .blyyDepth(DepthLayer.Lookout, ResultCardShape)
+            .clip(ResultCardShape),
         contentScale = ContentScale.Fit
     )
 }

@@ -25,7 +25,8 @@ object AppColors {
 
     val TertiaryLight: Color = Color(0xFF5B8DEF)
     val TertiaryContainerLight: Color = Color(0xFFDBEAFE)
-    val OnTertiaryLight: Color = Color(0xFFFFFFFF)
+    /** WCAG AA — #5B8DEF 上白字仅 3.2:1，深海军蓝达 5.6:1 */
+    val OnTertiaryLight: Color = Color(0xFF0A1628)
     val OnTertiaryContainerLight: Color = Color(0xFF1E3A8A)
 
     val SecondaryDark: Color = Color(0xFFFFD166)
@@ -35,7 +36,8 @@ object AppColors {
 
     val TertiaryDark: Color = Color(0xFF7EB6FF)
     val TertiaryContainerDark: Color = Color(0xFF1E3A5F)
-    val OnTertiaryDark: Color = Color(0xFFECFEFF)
+    /** WCAG AA — #7EB6FF 上 #ECFEFF 仅 2.0:1，深海军蓝达 8.7:1 */
+    val OnTertiaryDark: Color = Color(0xFF0A1628)
     val OnTertiaryContainerDark: Color = Color(0xFFDBEAFE)
 
     // ==================== 背景色 — 深海指挥室（Background 比 Surface 低一阶，增强层次） ====================
@@ -272,20 +274,14 @@ object AppColors {
             )
         )
 
-        val HudAccent = Brush.horizontalGradient(
-            colors = listOf(
-                Color(0xFF48CAE4),
-                Color(0xFFFFD166),
-                Color(0xFF48CAE4)
-            )
-        )
-
-        /** 面板边框渐变 — 青蓝到金色，营造 HUD 描边质感 */
+        /**
+         * 面板边框渐变 — 纯青双档（V2 红线：普通面板描边禁用金色，
+         * 金色只属于誓约/传奇/奖杯等珍贵时刻）。
+         */
         val PanelBorder = Brush.linearGradient(
             colors = listOf(
-                Color(0xFF48CAE4).copy(alpha = 0.6f),
-                Color(0xFFFFD166).copy(alpha = 0.25f),
-                Color(0xFF48CAE4).copy(alpha = 0.4f)
+                Color(0xFF48CAE4).copy(alpha = 0.45f),
+                Color(0xFF0096C7).copy(alpha = 0.18f)
             )
         )
 
@@ -318,12 +314,15 @@ object AppColors {
             )
         )
 
-        /** 三色金属渐变 — 用于高级标题文字，模拟青金双色金属光泽 */
+        /**
+         * 三色金属渐变（亮色）— 模拟青金双色金属光泽。
+         * 中段禁用白色：白段在亮色海床上不可见，改用深青保持「金属折光」且全程可读。
+         */
         val MetallicText = Brush.linearGradient(
             colors = listOf(
-                Color(0xFF48CAE4),
-                Color(0xFFFFFFFF),
-                Color(0xFFFFD166)
+                Color(0xFF0096C7),
+                Color(0xFF0077B6),
+                Color(0xFFE8A838)
             )
         )
 
@@ -347,22 +346,6 @@ object AppColors {
             )
         )
 
-        /** 毛玻璃边框渐变 — 配合 GlassSurface 使用 */
-        val GlassBorderLight = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF0096C7).copy(alpha = 0.3f),
-                Color(0xFFFFD166).copy(alpha = 0.15f),
-                Color(0xFF0096C7).copy(alpha = 0.2f)
-            )
-        )
-
-        val GlassBorderDark = Brush.linearGradient(
-            colors = listOf(
-                Color(0xFF48CAE4).copy(alpha = 0.35f),
-                Color(0xFFFFD166).copy(alpha = 0.2f),
-                Color(0xFF48CAE4).copy(alpha = 0.25f)
-            )
-        )
     }
 
     // ==================== 功能色 ====================
@@ -508,12 +491,16 @@ object ClassicColors {
 
     val SurfaceVariantLight: Color = Color(0xFFE5E7EB)
     val OnSurfaceVariantLight: Color = Color(0xFF4B5563)
+    val SurfaceContainerLowestLight: Color = Color(0xFFFFFFFF)
+    val SurfaceContainerLowLight: Color = Color(0xFFF9FAFB)
     val SurfaceContainerLight: Color = Color(0xFFF3F4F6)
     val SurfaceContainerHighLight: Color = Color(0xFFE5E7EB)
     val SurfaceContainerHighestLight: Color = Color(0xFFD1D5DB)
 
     val SurfaceVariantDark: Color = Color(0xFF2D2D3A)
     val OnSurfaceVariantDark: Color = Color(0xFFCBD5E1)
+    val SurfaceContainerLowestDark: Color = Color(0xFF0A0A10)
+    val SurfaceContainerLowDark: Color = Color(0xFF14141B)
     val SurfaceContainerDark: Color = Color(0xFF18181F)
     val SurfaceContainerHighDark: Color = Color(0xFF1F1F28)
     val SurfaceContainerHighestDark: Color = Color(0xFF2D2D3A)

@@ -9,6 +9,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -642,7 +643,7 @@ private fun ImportResultBanner(
                 modifier = Modifier.weight(1f)
             )
             onDismiss?.let {
-                IconButton(onClick = it, modifier = Modifier.size(28.dp)) {
+                IconButton(onClick = it, modifier = Modifier.minimumInteractiveComponentSize().size(28.dp)) {
                     Icon(
                         Icons.Rounded.Close,
                         contentDescription = "关闭",

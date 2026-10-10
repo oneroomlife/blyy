@@ -1,12 +1,15 @@
 package com.azurlane.blyy.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +34,10 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
@@ -218,6 +225,16 @@ fun BlyySearchBar(
     val glass = adaptiveGlassSurface()
     val shape = if (isCommandCenter) BlyyShapes.PanelSmall else RoundedCornerShape(AppSpacing.Corner.Lg)
 
+    // 聚焦态 — 边框亮起 + 光标色，替代无反馈的静态边框
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val borderColor by animateColorAsState(
+        targetValue = if (isFocused) MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+        animationSpec = tween(AppAnimation.Duration.Fast, easing = AppAnimation.Easings.Standard),
+        label = "searchBorder"
+    )
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -229,7 +246,7 @@ fun BlyySearchBar(
             )
             .border(
                 width = AppSpacing.Border.Thin,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                color = borderColor,
                 shape = shape
             )
             .padding(horizontal = AppSpacing.Md),
@@ -239,7 +256,8 @@ fun BlyySearchBar(
         Icon(
             imageVector = Icons.Rounded.Search,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary.copy(alpha = BlyyIcon.AlphaSecondary),
+            tint = if (isFocused) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.primary.copy(alpha = BlyyIcon.AlphaSecondary),
             modifier = Modifier.size(BlyyIcon.Standard)
         )
         BasicTextField(
@@ -249,6 +267,7 @@ fun BlyySearchBar(
             textStyle = AppTypography.BodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
             singleLine = true,
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            interactionSource = interactionSource,
             decorationBox = { inner ->
                 if (query.isEmpty()) {
                     Text(
@@ -261,15 +280,25 @@ fun BlyySearchBar(
             }
         )
         if (query.isNotEmpty() && onClear != null) {
-            Icon(
-                imageVector = Icons.Rounded.Close,
-                contentDescription = "清除",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 清除键 — 40dp 触摸目标（无障碍 48dp 基线内），圆形 ripple 反馈
+            Box(
                 modifier = Modifier
-                    .size(BlyyIcon.Standard)
+                    .size(40.dp)
                     .clip(RoundedCornerShape(AppSpacing.Corner.Full))
-                    .clickable(onClick = onClear)
-            )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = ripple(color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.2f)),
+                        onClick = onClear
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Close,
+                    contentDescription = "清除",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(BlyyIcon.Standard)
+                )
+            }
         }
     }
 }

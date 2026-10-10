@@ -229,7 +229,6 @@ fun BlyyTopBar(
                     text = title,
                     style = AppTypography.TitleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -310,7 +309,6 @@ fun ClassicTopBar(
                     text = title,
                     style = AppTypography.TitleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
-                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -512,13 +510,15 @@ fun BlyyPrimaryButton(
         label = "btnShadow"
     )
     val primaryColor = MaterialTheme.colorScheme.primary
+    // 亮色模式下白字落于 #0096C7 仅 3.4:1（不足 AA），按 V2 色彩规范改用深青 PrimaryDeep（4.9:1）
+    val buttonBase = if (LocalIsDark.current) primaryColor else AppColors.PrimaryDeepLight
     // 三段垂直渐变 — 顶亮中实底深，模拟顶部受光的实体按键
     val btnBrush = if (enabled) {
         Brush.verticalGradient(
             colors = listOf(
-                lerp(primaryColor, Color.White, 0.22f),
-                primaryColor,
-                lerp(primaryColor, Color.Black, 0.22f)
+                lerp(buttonBase, Color.White, 0.22f),
+                buttonBase,
+                lerp(buttonBase, Color.Black, 0.22f)
             )
         )
     } else {
