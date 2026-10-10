@@ -1,12 +1,15 @@
 package com.azurlane.blyy.viewmodel
 
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dLibrary
 import com.azurlane.blyy.util.Live2dModelInfo
 import com.azurlane.blyy.util.Live2dNameResolver
+import com.azurlane.blyy.util.Live2dResourceLink
+import com.azurlane.blyy.util.Live2dResourceLinkProvider
 import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -54,8 +57,13 @@ class Live2dViewModel @Inject constructor(
     private val library: Live2dLibrary,
     private val importer: Live2dImporter,
     private val nameResolver: Live2dNameResolver,
-    private val skinNameRegistry: Live2dSkinNameRegistry
+    private val skinNameRegistry: Live2dSkinNameRegistry,
+    private val live2dResourceLinkProvider: Live2dResourceLinkProvider
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "Live2dViewModel"
+    }
 
     data class State(
         val loading: Boolean = true,
@@ -72,6 +80,41 @@ class Live2dViewModel @Inject constructor(
     val state: StateFlow<State> = _state.asStateFlow()
 
     private var importJob: Job? = null
+
+    // ── Live2D 资源下载链接状态（远程获取）──
+
+    /** Live2D 模型资源下载链接（在线获取，来自仓库 network_drive_links.json 的 live2d_* 字段） */
+    private val _live2dResourceLink = MutableStateFlow<Live2dResourceLink?>(null)
+    val live2dResourceLink: StateFlow<Live2dResourceLink?> = _live2dResourceLink.asStateFlow()
+
+    /** Live2D 资源链接加载中标记，供 UI 显示 loading 状态 */
+    private val _isLoadingLive2dLink = MutableStateFlow(false)
+    val isLoadingLive2dLink: StateFlow<Boolean> = _isLoadingLive2dLink.asStateFlow()
+
+    /**
+     * 确保 Live2D 资源下载链接已加载（供页面进入时调用）。
+     *
+     * 缓存友好的智能重试：启动阶段获取失败（网络异常/仓库文件缺失）时，
+     * 进入页面自动重试；已加载成功或正在加载中则跳过，避免重复请求。
+     */
+    fun ensureLive2dResourceLinkLoaded() {
+        if (_live2dResourceLink.value != null || _isLoadingLive2dLink.value) return
+        loadLive2dResourceLink(forceRefresh = false)
+    }
+
+    private fun loadLive2dResourceLink(forceRefresh: Boolean) {
+        viewModelScope.launch {
+            _isLoadingLive2dLink.value = true
+            try {
+                _live2dResourceLink.value = live2dResourceLinkProvider.getLink(forceRefresh = forceRefresh)
+                Log.i(TAG, "Live2D resource link loaded: ${_live2dResourceLink.value?.label}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load Live2D resource link", e)
+            } finally {
+                _isLoadingLive2dLink.value = false
+            }
+        }
+    }
 
     init {
         refresh()

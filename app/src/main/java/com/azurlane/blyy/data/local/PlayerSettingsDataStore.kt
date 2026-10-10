@@ -98,6 +98,13 @@ class PlayerSettingsDataStore @Inject constructor(
         private val CACHED_SD_RESOURCE_LINK_JSON_KEY = stringPreferencesKey("cached_sd_resource_link_json")
         private val CACHED_SD_RESOURCE_LINK_AT_KEY = androidx.datastore.preferences.core.longPreferencesKey("cached_sd_resource_link_at")
 
+        // Live2D 模型资源下载链接持久化缓存（与 SD 资源链接缓存机制相同，独立存储避免互相覆盖）
+        private val CACHED_LIVE2D_RESOURCE_LINK_JSON_KEY = stringPreferencesKey("cached_live2d_resource_link_json")
+        private val CACHED_LIVE2D_RESOURCE_LINK_AT_KEY = androidx.datastore.preferences.core.longPreferencesKey("cached_live2d_resource_link_at")
+
+        // Live2D 皮肤名序列持久化缓存（舰名 → 已解析的换装序列 JSON，含每条目的落库时间戳）
+        private val LIVE2D_SKIN_SEQUENCES_JSON_KEY = stringPreferencesKey("live2d_skin_sequences_json")
+
         // 小助手配置
         private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
         private val ASSISTANT_DEFAULT_SERVER_KEY = stringPreferencesKey("assistant_default_server")
@@ -805,6 +812,52 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { prefs ->
             prefs.remove(CACHED_SD_RESOURCE_LINK_JSON_KEY)
             prefs.remove(CACHED_SD_RESOURCE_LINK_AT_KEY)
+        }
+    }
+
+    // ── Live2D 模型资源下载链接持久化缓存 ──
+
+    /**
+     * 读取 Live2D 模型资源下载链接持久化缓存。
+     * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
+     */
+    suspend fun getCachedLive2dResourceLink(): Pair<String, Long>? {
+        val prefs = safeData.first()
+        val json = prefs[CACHED_LIVE2D_RESOURCE_LINK_JSON_KEY] ?: return null
+        val ts = prefs[CACHED_LIVE2D_RESOURCE_LINK_AT_KEY] ?: 0L
+        return json to ts
+    }
+
+    /** 写入 Live2D 模型资源下载链接持久化缓存（JSON + 当前时间戳） */
+    suspend fun setCachedLive2dResourceLink(json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[CACHED_LIVE2D_RESOURCE_LINK_JSON_KEY] = json
+            prefs[CACHED_LIVE2D_RESOURCE_LINK_AT_KEY] = System.currentTimeMillis()
+        }
+    }
+
+    /** 清空 Live2D 模型资源下载链接持久化缓存 */
+    suspend fun clearCachedLive2dResourceLink() {
+        context.dataStore.edit { prefs ->
+            prefs.remove(CACHED_LIVE2D_RESOURCE_LINK_JSON_KEY)
+            prefs.remove(CACHED_LIVE2D_RESOURCE_LINK_AT_KEY)
+        }
+    }
+
+    // ── Live2D 皮肤名序列持久化缓存 ──
+
+    /**
+     * 读取 Live2D 皮肤名序列持久化缓存（解析后的换装序列 JSON，含每条目时间戳）。
+     * @return JSON 字符串，若不存在返回 null
+     */
+    suspend fun getLive2dSkinNameSequences(): String? {
+        return safeData.first()[LIVE2D_SKIN_SEQUENCES_JSON_KEY]
+    }
+
+    /** 写入 Live2D 皮肤名序列持久化缓存（整体 JSON 覆盖写） */
+    suspend fun setLive2dSkinNameSequences(json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[LIVE2D_SKIN_SEQUENCES_JSON_KEY] = json
         }
     }
 

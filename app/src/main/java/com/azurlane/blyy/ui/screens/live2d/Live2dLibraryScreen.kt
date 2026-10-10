@@ -1,6 +1,10 @@
 package com.azurlane.blyy.ui.screens.live2d
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -27,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
@@ -112,6 +117,13 @@ fun Live2dLibraryScreen(
     val displayNameOf: (String) -> String = { id -> displayNames[id] ?: viewModel.displayNameFor(id) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val haptic = rememberBlyyHaptics()
+
+    // Live2D 模型资源下载链接（远程获取，导入面板/空态的"资源下载"入口使用）
+    val live2dResourceLink by viewModel.live2dResourceLink.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) {
+        // 进入页面即预取链接（缓存友好），用户点击下载入口时通常已就绪
+        viewModel.ensureLive2dResourceLinkLoaded()
+    }
 
     var searchQuery by remember { mutableStateOf("") }
     var showImportSheet by remember { mutableStateOf(false) }
@@ -281,6 +293,28 @@ fun Live2dLibraryScreen(
                             actionLabel = "导入模型",
                             onAction = { showImportSheet = true }
                         )
+                        // 没有模型资源时的快捷下载入口（跳转网盘）
+                        Spacer(Modifier.height(AppSpacing.Md))
+                        TextButton(
+                            onClick = {
+                                val link = live2dResourceLink
+                                if (link != null) {
+                                    openLive2dResourceLink(context, link)
+                                } else {
+                                    Toast.makeText(context, "正在获取下载链接，请稍后重试", Toast.LENGTH_SHORT).show()
+                                    viewModel.ensureLive2dResourceLinkLoaded()
+                                }
+                            }
+                        ) {
+                            Icon(
+                                Icons.Rounded.CloudDownload,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(AppSpacing.Xs))
+                            Text("下载 Live2D 模型资源包")
+                        }
                     }
                 }
 
@@ -356,6 +390,23 @@ fun Live2dLibraryScreen(
                     onClick = {
                         showImportSheet = false
                         zipLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                    }
+                )
+
+                Spacer(Modifier.height(AppSpacing.Md))
+                ImportOptionCard(
+                    icon = Icons.Rounded.CloudDownload,
+                    title = live2dResourceLink?.label?.let { "获取模型资源（$it）" } ?: "获取模型资源",
+                    description = "前往网盘下载 Live2D 模型资源包，下载后用上方方式导入",
+                    enabled = state.importProgress == null,
+                    onClick = {
+                        val link = live2dResourceLink
+                        if (link != null) {
+                            openLive2dResourceLink(context, link)
+                        } else {
+                            Toast.makeText(context, "正在获取下载链接，请稍后重试", Toast.LENGTH_SHORT).show()
+                            viewModel.ensureLive2dResourceLinkLoaded()
+                        }
                     }
                 )
             }
@@ -803,6 +854,20 @@ private fun DetailRow(label: String, value: String) {
 }
 
 // ---------- 工具 ----------
+
+/**
+ * 打开 Live2D 模型资源下载链接（跳转浏览器）。
+ * 无可用浏览器应用时 Toast 提示，不抛异常。
+ */
+private fun openLive2dResourceLink(context: Context, link: com.azurlane.blyy.util.Live2dResourceLink) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link.url))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        Toast.makeText(context, "未找到可用的浏览器应用", Toast.LENGTH_SHORT).show()
+    }
+}
 
 private fun formatSize(bytes: Long): String = when {
     bytes >= 1 shl 20 -> String.format(Locale.US, "%.1f MB", bytes / 1048576.0)

@@ -4,5 +4,8 @@
   "notes": "若 GitHub 下载缓慢，可使用网盘下载。",
   "sd_pan_url": "https://pan.quark.cn/s/05dc839ab38b?pwd=PFSv",
   "sd_pan_type": "夸克网盘",
-  "sd_notes": "下载 SD 小人资源包"
+  "sd_notes": "下载 SD 小人资源包",
+  "live2d_pan_url": "https://pan.quark.cn/s/000000000000?pwd=live2d",
+  "live2d_pan_type": "夸克网盘",
+  "live2d_notes": "下载 Live2D 模型资源包（链接待更新）"
 }
