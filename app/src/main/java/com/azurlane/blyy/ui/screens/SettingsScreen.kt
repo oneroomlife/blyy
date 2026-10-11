@@ -76,6 +76,8 @@ fun SettingsScreen(
     val dynamicColor by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
     val hideStatusBar by viewModel.hideStatusBar.collectAsStateWithLifecycle()
     val showArchiveSwitcher by viewModel.showArchiveSwitcher.collectAsStateWithLifecycle()
+    // null=设置尚未加载完成，开关行按默认开启回显
+    val archiveSwitcherChecked = showArchiveSwitcher ?: true
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
@@ -161,12 +163,12 @@ fun SettingsScreen(
                         BlyySettingsRow(
                             icon = Icons.Rounded.SwapHoriz,
                             title = "档案切换按钮",
-                            description = if (showArchiveSwitcher) {
+                            description = if (archiveSwitcherChecked) {
                                 "在船坞顶栏显示舰娘/学生切换按钮"
                             } else {
                                 "已隐藏，船坞顶栏自动回收按钮空间"
                             },
-                            checked = showArchiveSwitcher,
+                            checked = archiveSwitcherChecked,
                             onCheckedChange = viewModel::setShowArchiveSwitcher
                         )
                     }

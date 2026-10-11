@@ -62,9 +62,13 @@ class SettingsViewModel @Inject constructor(
     val hideStatusBar: StateFlow<Boolean> = settings.hideStatusBar
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
-    /** 船坞顶栏「舰娘/学生」档案切换按钮开关，默认开启 */
-    val showArchiveSwitcher: StateFlow<Boolean> = settings.showArchiveSwitcher
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    /**
+     * 船坞顶栏「舰娘/学生」档案切换按钮开关，默认开启。
+     * null=尚未从 DataStore 加载完成：下游以 null 为准跳过首组合动画，
+     * 避免冷启动幽灵默认值 true→持久化 false 触发收拢动画重播。
+     */
+    val showArchiveSwitcher: StateFlow<Boolean?> = settings.showArchiveSwitcher
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val autoCheckUpdateEnabled: StateFlow<Boolean> = settings.autoCheckUpdateEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
