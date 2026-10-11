@@ -1,19 +1,11 @@
 package com.azurlane.blyy.ui.screens.gallery
 
-import android.content.Intent
-import android.net.Uri
-import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,26 +15,19 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FilterList
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -51,11 +36,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
@@ -64,28 +47,16 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import com.azurlane.blyy.data.model.Ship
-import com.azurlane.blyy.data.model.StudentFilterData
-import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
-import com.azurlane.blyy.ui.components.BlyyBottomSheet
-import com.azurlane.blyy.ui.components.BlyyEmptyState
-import com.azurlane.blyy.ui.components.ShipCard
-import com.azurlane.blyy.ui.components.ShipCardShimmer
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.viewmodel.GalleryIntent
 import com.azurlane.blyy.viewmodel.GalleryViewState
 import com.azurlane.blyy.ui.components.rememberBlyyHaptics
 import com.azurlane.blyy.ui.components.BlyyHaptic
 import kotlin.math.roundToInt
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
 
 /**
  * 自适应船坞顶部栏 — 标题栏与搜索栏合并为单一组件，按 UI 风格切换外观
@@ -120,8 +91,11 @@ internal fun AdaptiveGalleryTopBar(
     activeFilterCount: Int,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType = com.azurlane.blyy.viewmodel.ArchiveType.DOCK,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
-    /** 档案切换按钮开关：false 时隐藏右上角「舰娘/学生」切换器，顶栏自动回收其空间 */
-    showArchiveSwitcher: Boolean = true,
+    /**
+     * 档案切换按钮开关：false 隐藏右上角「舰娘/学生」切换器；null=设置未加载完成，
+     * 切换器不参与首组合（不播动画），避免冷启动重播收拢动画
+     */
+    showArchiveSwitcher: Boolean? = true,
     isRefreshing: Boolean = false,
     isCacheHit: Boolean = false,
     cacheTimestamp: Long = 0L,
@@ -131,13 +105,15 @@ internal fun AdaptiveGalleryTopBar(
     val isCommandCenter = uiStyle.isCommandCenter()
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val haptic = rememberBlyyHaptics()
     val entityLabel = when (archiveType) {
         com.azurlane.blyy.viewmodel.ArchiveType.DOCK -> "舰娘"
         com.azurlane.blyy.viewmodel.ArchiveType.STUDENT -> "学生"
     }
 
     // 搜索展开态：收起时仅显示搜索按钮，展开后切换为搜索框 + 筛选
-    var isSearchExpanded by remember { mutableStateOf(false) }
+    // rememberSaveable：旋转/进程死亡后恢复展开态，避免输入到一半搜索面板凭空收起
+    var isSearchExpanded by rememberSaveable { mutableStateOf(false) }
 
     // 失焦（点击遮罩关闭下拉、选择历史/建议）时自动收起
     LaunchedEffect(isSearchFocused) {
@@ -147,6 +123,7 @@ internal fun AdaptiveGalleryTopBar(
     }
 
     val onSearchToggle: () -> Unit = {
+        haptic(BlyyHaptic.Tick)
         if (isSearchExpanded) {
             isSearchExpanded = false
             keyboardController?.hide()
@@ -266,7 +243,7 @@ private fun MergedCcGalleryHeader(
     onSubmitSearch: (String) -> Unit,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit,
-    showArchiveSwitcher: Boolean = true,
+    showArchiveSwitcher: Boolean? = true,
     entityLabel: String = "舰娘",
     isSearchExpanded: Boolean = false,
     onSearchToggle: () -> Unit = {}
@@ -286,13 +263,14 @@ private fun MergedCcGalleryHeader(
     )
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        // top 外边距：状态栏隐藏（沉浸式）时 statusBars inset 为 0，面板会紧贴设备上边缘，
+        // 固定上边距保证任何模式下与屏幕顶部都有呼吸空间
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AppSpacing.Screen.Horizontal),
+                .padding(start = AppSpacing.Screen.Horizontal, top = AppSpacing.Sm, end = AppSpacing.Screen.Horizontal),
             shape = BlyyShapes.PanelMedium,
             color = glassSurface,
-            shadowElevation = if (isSearchFocused) AppElevation.Level3 else AppElevation.Level2,
             border = androidx.compose.foundation.BorderStroke(
                 width = AppSpacing.Border.Thin,
                 brush = Brush.linearGradient(
@@ -310,7 +288,7 @@ private fun MergedCcGalleryHeader(
                     .fillMaxWidth()
                     .padding(
                         horizontal = AppSpacing.Padding.InputHorizontal,
-                        vertical = AppSpacing.Sm
+                        vertical = AppSpacing.Xs
                     ),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -366,22 +344,13 @@ private fun MergedCcGalleryHeader(
                     isWatch = isWatch
                 )
 
-                // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索；
-                // 设置关闭档案切换按钮时同样收起（HeaderRevealExit），搜索按钮自动靠右补位
-                // 过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致
-                AnimatedVisibility(
-                    visible = !isSearchExpanded && showArchiveSwitcher,
-                    enter = HeaderRevealEnter,
-                    exit = HeaderRevealExit
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Spacer(modifier = Modifier.width(AppSpacing.Md))
-                        CompactArchiveSwitcher(
-                            archiveType = archiveType,
-                            onSwitchArchive = onSwitchArchive
-                        )
-                    }
-                }
+                // 档案切换器 — 两风格共用的收放槽位（可见性规则见组件文档）
+                ArchiveSwitcherSlot(
+                    showArchiveSwitcher = showArchiveSwitcher,
+                    isSearchExpanded = isSearchExpanded,
+                    archiveType = archiveType,
+                    onSwitchArchive = onSwitchArchive
+                )
             }
         }
 
@@ -409,7 +378,7 @@ private fun MergedCcGalleryHeader(
  * 左侧自适应区最小高度（兜底值）
  *
  * 高度锚点本体是常驻组合的标题块（自然高度 ≈ `TitleLarge` 28sp + `LabelLarge` 20sp = 48dp，
- * 高于搜索胶囊 44dp，且随系统字体缩放自适应）。区域高度全程等于标题块自然高度，
+ * 高于搜索胶囊与筛选/切换按钮的 40dp，且随系统字体缩放自适应）。区域高度全程等于标题块自然高度，
  * 此下限仅作兜底，防止极端情况下区域高度低于行高预期。
  */
 private val HeaderAdaptiveRegionMinHeight = 50.dp
@@ -608,9 +577,17 @@ private fun GallerySearchFieldContent(
 ) {
     val isDark = LocalIsDark.current
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val focusInput: () -> Unit = {
         searchFocusRequester.requestFocus()
         keyboardController?.show()
+    }
+    // 统一提交出口：提交后收起键盘并清除焦点（触发失焦 → 下拉面板收起、展开态自动折叠），
+    // 与右上角搜索按钮的提交路径行为完全一致
+    val submitSearch: () -> Unit = {
+        onSubmitSearch(searchInput)
+        keyboardController?.hide()
+        focusManager.clearFocus()
     }
     val capsuleShape = RoundedCornerShape(AppSpacing.Corner.Full)
 
@@ -646,7 +623,9 @@ private fun GallerySearchFieldContent(
 
     Row(
         modifier = modifier
-            .height(if (isWatch) 36.dp else 44.dp)
+            // 与筛选/搜索切换按钮同高（40dp），展开态内操作件上下对齐；
+            // 卡片高度仍由左侧常驻标题块锁定，两态外框恒定
+            .height(if (isWatch) 36.dp else 40.dp)
             .clip(capsuleShape)
             .background(containerColor)
             .border(AppSpacing.Border.Thin, borderColor, capsuleShape)
@@ -654,21 +633,27 @@ private fun GallerySearchFieldContent(
         verticalAlignment = Alignment.CenterVertically
     ) {
         // 搜索图标 — 空文字时点击聚焦，有文字时点击提交
-        Icon(
-            imageVector = Icons.Default.Search,
-            contentDescription = if (searchInput.isEmpty()) "搜索" else "搜索$searchInput",
-            tint = if (isFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        // 命中区扩大到 40dp（手表 32dp），视觉尺寸不变，满足无障碍触控目标
+        Box(
             modifier = Modifier
-                .size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
+                .size(if (isWatch) 32.dp else 40.dp)
+                .clip(capsuleShape)
                 .clickable {
                     if (searchInput.isEmpty()) {
                         focusInput()
                     } else {
-                        onSubmitSearch(searchInput)
-                        keyboardController?.hide()
+                        submitSearch()
                     }
-                }
-        )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = if (searchInput.isEmpty()) "搜索" else "搜索$searchInput",
+                tint = if (isFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(if (isWatch) AppSpacing.Icon.Sm else AppSpacing.Icon.Md)
+            )
+        }
 
         Spacer(modifier = Modifier.width(AppSpacing.Sm))
 
@@ -702,12 +687,12 @@ private fun GallerySearchFieldContent(
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(
-                    onSearch = { onSubmitSearch(searchInput) }
+                    onSearch = { submitSearch() }
                 )
             )
         }
 
-        // 清除按钮 — 带动画进出
+        // 清除按钮 — 带动画进出；命中区 40dp（手表 32dp），视觉图标不变
         AnimatedVisibility(
             visible = searchInput.isNotEmpty(),
             enter = fadeIn() + expandHorizontally(),
@@ -716,7 +701,7 @@ private fun GallerySearchFieldContent(
             Box(
                 modifier = Modifier
                     .padding(start = AppSpacing.Xs)
-                    .size(if (isWatch) 22.dp else 26.dp)
+                    .size(if (isWatch) 32.dp else 40.dp)
                     .clip(CircleShape)
                     .clickable {
                         onSearchInputChange("")
@@ -767,7 +752,7 @@ private fun ClassicGallerySearchBar(
     onSubmitSearch: (String) -> Unit,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType = com.azurlane.blyy.viewmodel.ArchiveType.DOCK,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
-    showArchiveSwitcher: Boolean = true,
+    showArchiveSwitcher: Boolean? = true,
     entityLabel: String = "舰娘",
     isSearchExpanded: Boolean = false,
     onSearchToggle: () -> Unit = {}
@@ -783,10 +768,12 @@ private fun ClassicGallerySearchBar(
     )
 
     // 合并卡片 — surfaceContainerHigh 背景 + 主色描边过渡 + 档案切换器
+    // 无阴影设计：层级与边界感完全由描边和背景色阶承担，避免浅色主题下阴影发白产生光晕
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Screen.Horizontal),
+            // top 外边距：与 CC 风格一致，沉浸式隐藏状态栏时不紧贴设备上边缘
+            .padding(start = AppSpacing.Screen.Horizontal, top = AppSpacing.Sm, end = AppSpacing.Screen.Horizontal),
         shape = RoundedCornerShape(AppSpacing.Corner.Lg),
         // 全不透明：半透明卡片叠在 surfaceContainer 灰背景上会发浑，
         // 且网格滚动时卡片从顶栏后方穿过会透出"脏色"
@@ -798,15 +785,14 @@ private fun ClassicGallerySearchBar(
                 MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
                 searchBorderAlpha
             )
-        ),
-        shadowElevation = if (isSearchFocused) AppSpacing.Elevation.Md else AppSpacing.Elevation.Sm
+        )
     ) {
         // 行高由左侧自适应区的最小高度锁定（见 GalleryLeftAdaptiveRegion），
         // 此处仅留内边距，保证切换全程卡片高度恒定、内容区不发生上下位移
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Md),
+                .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Sm),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // ── 左侧自适应区 ──
@@ -861,22 +847,13 @@ private fun ClassicGallerySearchBar(
                 isWatch = isWatch
             )
 
-            // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索；
-            // 设置关闭档案切换按钮时同样收起（HeaderRevealExit），搜索按钮自动靠右补位
-            // 过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致
-            AnimatedVisibility(
-                visible = !isSearchExpanded && showArchiveSwitcher,
-                enter = HeaderRevealEnter,
-                exit = HeaderRevealExit
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Spacer(modifier = Modifier.width(AppSpacing.Md))
-                    CompactArchiveSwitcher(
-                        archiveType = archiveType,
-                        onSwitchArchive = onSwitchArchive
-                    )
-                }
-            }
+            // 档案切换器 — 两风格共用的收放槽位（可见性规则见组件文档）
+            ArchiveSwitcherSlot(
+                showArchiveSwitcher = showArchiveSwitcher,
+                isSearchExpanded = isSearchExpanded,
+                archiveType = archiveType,
+                onSwitchArchive = onSwitchArchive
+            )
         }
     }
 }
@@ -1271,6 +1248,39 @@ internal fun rememberSearchHistory(
         )
     }
 }
+/**
+ * 顶部栏档案切换器收放槽位 — Command Center / Classic 两风格共用
+ *
+ * 可见性规则（过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致）：
+ * - 搜索展开时向右水平收起让位于搜索，收起时弹回
+ * - 设置关闭档案切换按钮（false）时同样收起，搜索按钮自动靠右补位
+ * - null=设置未加载完成：不参与首组合，AnimatedVisibility 初组即最终值，
+ *   避免冷启动幽灵默认值 true→false 重播收拢动画
+ */
+@Composable
+private fun ArchiveSwitcherSlot(
+    showArchiveSwitcher: Boolean?,
+    isSearchExpanded: Boolean,
+    archiveType: com.azurlane.blyy.viewmodel.ArchiveType,
+    onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit
+) {
+    if (showArchiveSwitcher != null) {
+        AnimatedVisibility(
+            visible = !isSearchExpanded && showArchiveSwitcher == true,
+            enter = HeaderRevealEnter,
+            exit = HeaderRevealExit
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Spacer(modifier = Modifier.width(AppSpacing.Md))
+                CompactArchiveSwitcher(
+                    archiveType = archiveType,
+                    onSwitchArchive = onSwitchArchive
+                )
+            }
+        }
+    }
+}
+
 /**
  * 紧凑型档案切换器 — 整合到顶部栏 actions 中
  *

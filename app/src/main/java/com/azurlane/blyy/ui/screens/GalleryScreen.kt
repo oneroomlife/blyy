@@ -93,8 +93,11 @@ fun GalleryScreen(
     animatedContentScope: AnimatedContentScope,
     onShipClick: (Ship) -> Unit,
     onShowGallery: (Ship) -> Unit,
-    /** 船坞顶栏「舰娘/学生」档案切换按钮开关（设置页控制），false 时隐藏切换器 */
-    showArchiveSwitcher: Boolean = true,
+    /**
+     * 船坞顶栏「舰娘/学生」档案切换按钮开关（设置页控制）。
+     * null=设置尚未加载完成：切换器跳过首组合（不播动画），避免冷启动重播收拢动画
+     */
+    showArchiveSwitcher: Boolean? = true,
     onScrollStateChange: (isScrolling: Boolean) -> Unit = { _ -> }
 ) {
     val context = LocalContext.current
@@ -157,7 +160,9 @@ fun GalleryScreen(
             Triple(gridState.firstVisibleItemScrollOffset, gridState.firstVisibleItemIndex, gridState.isScrollInProgress)
         }.collectLatest { (offset, index, isScrolling) ->
             val isAtTop = index == 0 && offset < 50
-            if (isScrolling && !isAtTop) {
+            // 搜索聚焦期间不隐藏顶栏：输入到一半顶栏滑出屏幕（键盘还开着、下拉面板
+            // 因 isTopBarVisible 条件一同消失）是明显的状态错乱；键盘自然占据输入空间
+            if (isScrolling && !isAtTop && !isSearchFocused) {
                 if (isTopBarVisible) isTopBarVisible = false
                 if (!lastIsScrollingState) {
                     onScrollStateChange(true)
