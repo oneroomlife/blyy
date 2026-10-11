@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.annotation.RequiresApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -74,6 +75,11 @@ object MediaDownloader {
         }
     }
 
+    /**
+     * 写入 MediaStore Downloads（API 29+ scoped storage）。
+     * 标注 [RequiresApi] 供 lint 校验：唯一调用点已由 SDK_INT >= Q 守卫。
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun saveViaMediaStore(
         context: Context,
         bytes: ByteArray,

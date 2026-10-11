@@ -2,6 +2,7 @@ package com.azurlane.blyy.ui.screens
 
 import android.app.Activity
 import android.content.pm.ActivityInfo
+import android.os.Build
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -137,13 +138,19 @@ private suspend fun loadVideoThumbnail(videoUrl: String): Bitmap? {
             val headers = mapOf("Referer" to "https://www.gamekee.com/")
             retriever.setDataSource(videoUrl, headers)
             // 降采样后缓存：原分辨率首帧单帧可达数 MB，缓存无界时是明确的 OOM 风险
-            val bitmap = try {
-                retriever.getScaledFrameAtTime(
-                    0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    VIDEO_THUMB_MAX_DIMEN, VIDEO_THUMB_MAX_DIMEN
-                )
-            } catch (e: Exception) {
-                // 部分机型/视频流不支持 getScaledFrameAtTime，回退到原接口
+            // getScaledFrameAtTime 为 API 27+ 接口；低版本直接走 getFrameAtTime（NoSuchMethodError 是
+            // Error 而非 Exception，下方 catch 捕获不到，必须先用 SDK_INT 守卫）
+            val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                try {
+                    retriever.getScaledFrameAtTime(
+                        0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                        VIDEO_THUMB_MAX_DIMEN, VIDEO_THUMB_MAX_DIMEN
+                    )
+                } catch (e: Exception) {
+                    // 部分机型/视频流不支持 getScaledFrameAtTime，回退到原接口
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                }
+            } else {
                 retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             }
             videoThumbnailCache.put(

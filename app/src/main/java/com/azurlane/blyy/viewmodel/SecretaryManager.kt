@@ -2,6 +2,7 @@ package com.azurlane.blyy.viewmodel
 
 import android.content.Context
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
@@ -47,6 +48,9 @@ data class SecretaryManagerState(
 )
 
 @Singleton
+// 注入的 PlaybackServiceConnection 标注 @UnstableApi（media3 非稳定 API），此处显式 opt-in，
+// 不向上游（SecretaryManager 的注入方）传播不稳定性
+@OptIn(UnstableApi::class)
 class SecretaryManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val settingsDataStore: PlayerSettingsDataStore,

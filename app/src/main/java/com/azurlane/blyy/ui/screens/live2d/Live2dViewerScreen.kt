@@ -1,5 +1,6 @@
 package com.azurlane.blyy.ui.screens.live2d
 
+import android.annotation.SuppressLint
 import android.content.pm.ActivityInfo
 import android.util.Base64
 import android.util.Log
@@ -179,8 +180,12 @@ private fun parseBridgeMessage(json: String): BridgeMessage? = runCatching {
  * 回调运行在 WebView 的 JavaBridge 线程，接收方自行保证线程安全。
  */
 private class Live2dJsBridge(val onMessage: (String) -> Unit) {
+    // 注意：必须用块体而非表达式体（= onMessage(json)），否则 lint 无法识别
+    // @JavascriptInterface 注解并误报 JavascriptInterface 错误
     @JavascriptInterface
-    fun postMessage(json: String) = onMessage(json)
+    fun postMessage(json: String) {
+        onMessage(json)
+    }
 }
 
 /**
@@ -190,6 +195,9 @@ private class Live2dJsBridge(val onMessage: (String) -> Unit) {
  * Compose 层负责主题背景、控制条、动作/表情弹层与加载/错误态。
  */
 @OptIn(ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+// suppress JavascriptInterface：postMessage 已标注 @JavascriptInterface（见 Live2dJsBridge），
+// lint 经 remember 内联泛型解析 bridge 实参类型时得到类型变量 T 而误报（加显式声明类型亦无效）
+@SuppressLint("JavascriptInterface")
 @Composable
 fun Live2dViewerScreen(
     onBack: () -> Unit
@@ -226,7 +234,9 @@ fun Live2dViewerScreen(
     // 供拦截器在后台线程读取当前模型信息（rememberUpdatedState 保证拿到最新值）
     val currentInfo by rememberUpdatedState(state.info)
 
-    val bridge = remember {
+    // 显式声明类型：经 remember 内联泛型返回时 lint 会把实参类型解析成类型变量 T，
+    // 导致 JavascriptInterface 检查看不到 @JavascriptInterface 注解而误报
+    val bridge: Live2dJsBridge = remember {
         Live2dJsBridge { json ->
             when (val msg = parseBridgeMessage(json)) {
                 is BridgeMessage.Loaded -> phase = ViewerPhase.READY

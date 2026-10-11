@@ -612,12 +612,23 @@ class SecretaryOverlayService : Service() {
             manager?.createNotificationChannel(channel)
         }
 
-        val notification = android.app.Notification.Builder(this, channelId)
-            .setContentTitle("秘书舰陪伴中")
-            .setContentText("秘书舰正在屏幕上")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setOngoing(true)
-            .build()
+        // Notification.Builder(Context, channelId) 为 API 26+ 接口，24-25 回退旧构造器
+        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            android.app.Notification.Builder(this, channelId)
+                .setContentTitle("秘书舰陪伴中")
+                .setContentText("秘书舰正在屏幕上")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setOngoing(true)
+                .build()
+        } else {
+            @Suppress("DEPRECATION")
+            android.app.Notification.Builder(this)
+                .setContentTitle("秘书舰陪伴中")
+                .setContentText("秘书舰正在屏幕上")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setOngoing(true)
+                .build()
+        }
 
         // Android 14+ 必须显式传入与 Manifest 声明匹配的 foregroundServiceType
         // 不再 try/catch 吞异常：失败应立即 stopSelf，避免 5 秒未 startForeground 崩溃

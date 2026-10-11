@@ -388,6 +388,7 @@ internal fun CollapsedPlayerBar(
     }
 }
 
+@UnstableApi
 @Composable
 internal fun ExpandedPlayerBar(
     playerState: PlayerUiState,

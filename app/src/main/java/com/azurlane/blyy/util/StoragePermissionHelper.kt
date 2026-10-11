@@ -3,6 +3,7 @@ package com.azurlane.blyy.util
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import android.util.Log
 
@@ -147,6 +148,8 @@ object StoragePermissionHelper {
      * 仅用于检测旧版用户已授权的情况，不再主动请求该权限。
      */
     private fun hasLegacyAllFilesAccess(): Boolean {
+        // isExternalStorageManager 仅存在于 API 30+；低版本不存在"所有文件访问"授权，视为无
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
         return android.os.Environment.isExternalStorageManager()
     }
 
