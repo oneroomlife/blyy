@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -97,6 +98,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -316,11 +318,12 @@ private fun RowScope.ModernNavigationItem(
         color = Color.Transparent,
         shape = RoundedCornerShape(AppSpacing.Corner.Lg)
     ) {
-        // 标签常显 + 颜色过渡：消除旧"选中才展开文字"造成的图标上下跳变，
-        // 未选中项文字同时保证可发现性；高度恒定无布局位移。
+        // 常显文字 + 填满高度垂直居中：内容实际高度 ≈58dp < Row 72dp。
+        // 此前列改为「内边距 + 固有高度」（8×2+44+2+19≈81dp），超出 Row 定高被
+        // clip(navShape) 裁剪，标签底部被削掉——文字显示不全的根因
         Column(
             modifier = Modifier
-                .padding(vertical = if (isWatch) AppSpacing.Xs else AppSpacing.Sm)
+                .fillMaxHeight()
                 .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
@@ -379,7 +382,9 @@ private fun RowScope.ModernNavigationItem(
                 style = if (isWatch) AppTypography.NavigationLabel.copy(fontSize = 9.sp) else AppTypography.NavigationLabel,
                 color = iconTint,
                 maxLines = 1,
-                modifier = Modifier.padding(horizontal = AppSpacing.Sm)
+                // 大字体缩放下的兜底：极窄条目省略号而非硬裁剪
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = AppSpacing.Xs)
             )
         }
     }
