@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.PersonSearch
 import androidx.compose.material.icons.rounded.AppShortcut
 import androidx.compose.material.icons.rounded.Sailing
 import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -74,6 +75,7 @@ fun SettingsScreen(
     val forceDark by viewModel.forceDarkTheme.collectAsStateWithLifecycle()
     val dynamicColor by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
     val hideStatusBar by viewModel.hideStatusBar.collectAsStateWithLifecycle()
+    val showArchiveSwitcher by viewModel.showArchiveSwitcher.collectAsStateWithLifecycle()
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
@@ -155,6 +157,17 @@ fun SettingsScreen(
                             },
                             checked = hideStatusBar,
                             onCheckedChange = viewModel::setHideStatusBar
+                        )
+                        BlyySettingsRow(
+                            icon = Icons.Rounded.SwapHoriz,
+                            title = "档案切换按钮",
+                            description = if (showArchiveSwitcher) {
+                                "在船坞顶栏显示舰娘/学生切换按钮"
+                            } else {
+                                "已隐藏，船坞顶栏自动回收按钮空间"
+                            },
+                            checked = showArchiveSwitcher,
+                            onCheckedChange = viewModel::setShowArchiveSwitcher
                         )
                     }
                 }

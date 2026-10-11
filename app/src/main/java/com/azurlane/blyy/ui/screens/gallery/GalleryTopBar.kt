@@ -120,6 +120,8 @@ internal fun AdaptiveGalleryTopBar(
     activeFilterCount: Int,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType = com.azurlane.blyy.viewmodel.ArchiveType.DOCK,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
+    /** 档案切换按钮开关：false 时隐藏右上角「舰娘/学生」切换器，顶栏自动回收其空间 */
+    showArchiveSwitcher: Boolean = true,
     isRefreshing: Boolean = false,
     isCacheHit: Boolean = false,
     cacheTimestamp: Long = 0L,
@@ -174,6 +176,7 @@ internal fun AdaptiveGalleryTopBar(
                     onSubmitSearch = onSubmitSearch,
                     archiveType = archiveType,
                     onSwitchArchive = onSwitchArchive,
+                    showArchiveSwitcher = showArchiveSwitcher,
                     entityLabel = entityLabel,
                     isSearchExpanded = isSearchExpanded,
                     onSearchToggle = onSearchToggle
@@ -197,6 +200,7 @@ internal fun AdaptiveGalleryTopBar(
                     onSubmitSearch = onSubmitSearch,
                     archiveType = archiveType,
                     onSwitchArchive = onSwitchArchive,
+                    showArchiveSwitcher = showArchiveSwitcher,
                     entityLabel = entityLabel,
                     isSearchExpanded = isSearchExpanded,
                     onSearchToggle = onSearchToggle
@@ -262,6 +266,7 @@ private fun MergedCcGalleryHeader(
     onSubmitSearch: (String) -> Unit,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit,
+    showArchiveSwitcher: Boolean = true,
     entityLabel: String = "舰娘",
     isSearchExpanded: Boolean = false,
     onSearchToggle: () -> Unit = {}
@@ -361,10 +366,11 @@ private fun MergedCcGalleryHeader(
                     isWatch = isWatch
                 )
 
-                // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索
+                // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索；
+                // 设置关闭档案切换按钮时同样收起（HeaderRevealExit），搜索按钮自动靠右补位
                 // 过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致
                 AnimatedVisibility(
-                    visible = !isSearchExpanded,
+                    visible = !isSearchExpanded && showArchiveSwitcher,
                     enter = HeaderRevealEnter,
                     exit = HeaderRevealExit
                 ) {
@@ -761,6 +767,7 @@ private fun ClassicGallerySearchBar(
     onSubmitSearch: (String) -> Unit,
     archiveType: com.azurlane.blyy.viewmodel.ArchiveType = com.azurlane.blyy.viewmodel.ArchiveType.DOCK,
     onSwitchArchive: (com.azurlane.blyy.viewmodel.ArchiveType) -> Unit = {},
+    showArchiveSwitcher: Boolean = true,
     entityLabel: String = "舰娘",
     isSearchExpanded: Boolean = false,
     onSearchToggle: () -> Unit = {}
@@ -854,10 +861,11 @@ private fun ClassicGallerySearchBar(
                 isWatch = isWatch
             )
 
-            // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索
+            // 档案切换器 — 仅收起态显示，展开时向右水平收起让位于搜索；
+            // 设置关闭档案切换按钮时同样收起（HeaderRevealExit），搜索按钮自动靠右补位
             // 过渡与左侧区域共用 HeaderRevealEnter/Exit，动画曲线与时长完全一致
             AnimatedVisibility(
-                visible = !isSearchExpanded,
+                visible = !isSearchExpanded && showArchiveSwitcher,
                 enter = HeaderRevealEnter,
                 exit = HeaderRevealExit
             ) {

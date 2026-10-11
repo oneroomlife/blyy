@@ -93,6 +93,8 @@ fun GalleryScreen(
     animatedContentScope: AnimatedContentScope,
     onShipClick: (Ship) -> Unit,
     onShowGallery: (Ship) -> Unit,
+    /** 船坞顶栏「舰娘/学生」档案切换按钮开关（设置页控制），false 时隐藏切换器 */
+    showArchiveSwitcher: Boolean = true,
     onScrollStateChange: (isScrolling: Boolean) -> Unit = { _ -> }
 ) {
     val context = LocalContext.current
@@ -434,6 +436,7 @@ fun GalleryScreen(
                     haptic(BlyyHaptic.Tick)
                     onIntent(GalleryIntent.SwitchArchive(newType))
                 },
+                showArchiveSwitcher = showArchiveSwitcher,
                 isRefreshing = state.isRefreshing,
                 isCacheHit = state.isCacheHit,
                 cacheTimestamp = state.cacheTimestamp,

@@ -62,6 +62,10 @@ class SettingsViewModel @Inject constructor(
     val hideStatusBar: StateFlow<Boolean> = settings.hideStatusBar
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
+    /** 船坞顶栏「舰娘/学生」档案切换按钮开关，默认开启 */
+    val showArchiveSwitcher: StateFlow<Boolean> = settings.showArchiveSwitcher
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     val autoCheckUpdateEnabled: StateFlow<Boolean> = settings.autoCheckUpdateEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
@@ -97,6 +101,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setHideStatusBar(hide: Boolean) {
         viewModelScope.launch { settings.setHideStatusBar(hide) }
+    }
+
+    fun setShowArchiveSwitcher(enabled: Boolean) {
+        viewModelScope.launch { settings.setShowArchiveSwitcher(enabled) }
     }
 
     fun setAutoCheckUpdateEnabled(enabled: Boolean) {

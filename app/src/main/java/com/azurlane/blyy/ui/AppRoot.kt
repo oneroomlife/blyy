@@ -159,6 +159,7 @@ import com.azurlane.blyy.util.AppUpdateChecker
 import com.azurlane.blyy.util.UpdateInfo
 import com.azurlane.blyy.viewmodel.ArchiveType
 import com.azurlane.blyy.viewmodel.GalleryViewModel
+import com.azurlane.blyy.viewmodel.SettingsViewModel
 import com.azurlane.blyy.viewmodel.GuessShipViewModel
 import com.azurlane.blyy.viewmodel.HomeViewModel
 import com.azurlane.blyy.viewmodel.SecretaryShipIntent
@@ -463,6 +464,9 @@ fun AppContent() {
                         val viewModel: GalleryViewModel = hiltViewModel()
                         val state by viewModel.state.collectAsStateWithLifecycle()
                         val filteredShips by viewModel.filteredShips.collectAsStateWithLifecycle()
+                        // 档案切换按钮开关（设置页「显示」区），关闭后船坞顶栏隐藏「舰娘/学生」切换器
+                        val settingsViewModel: SettingsViewModel = hiltViewModel()
+                        val showArchiveSwitcher by settingsViewModel.showArchiveSwitcher.collectAsStateWithLifecycle()
                         // 档案类型变化时同步底部导航标签：DOCK→"船坞"，STUDENT→"成员"
                         LaunchedEffect(state.archiveType) {
                             galleryLabel = when (state.archiveType) {
@@ -490,7 +494,8 @@ fun AppContent() {
                             },
                             onScrollStateChange = { isScrolling ->
                                 isBottomBarVisible = !isScrolling
-                            }
+                            },
+                            showArchiveSwitcher = showArchiveSwitcher
                         )
                     }
                     composable(
