@@ -103,7 +103,9 @@
 
 | 船坞界面 | 后宅界面 | 语音播放界面 |
 |:-------:|:-------:|:-----------:|
-| ![船坞](docs/screenshots/gallery.png) | ![后宅](docs/screenshots/home.png) | ![语音](docs/screenshots/voice.png) |
+| ![船坞](docs/screenshots/船坞.png) | ![后宅](docs/screenshots/首页.png) | ![语音播放](docs/screenshots/语音播放.png) |
+| **啾信（AI 对话）** | **看图识舰娘** | **听音识舰娘** |
+| ![啾信](docs/screenshots/啾信.png) | ![看图识舰娘](docs/screenshots/看图识舰娘.png) | ![听音识舰娘](docs/screenshots/听音识舰娘.png) |
 
 > 注：截图位于 `docs/screenshots/` 目录；如截图与最新版本不一致，请提交 Issue 提醒更新。
 
