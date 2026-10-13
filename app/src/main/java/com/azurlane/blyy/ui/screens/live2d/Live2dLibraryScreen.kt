@@ -7,6 +7,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -63,6 +64,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -85,6 +87,7 @@ import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dModelInfo
@@ -502,6 +505,22 @@ fun Live2dLibraryScreen(
 
 // ---------- 网格卡片 ----------
 
+/**
+ * 次级文字色：暗色下 onSurfaceVariant（#94A8BE）在深蓝卡片（#1A3050）上对比仅 ~5.4:1，
+ * 9-12sp 小字号观感偏暗 → 向 onSurface 混合 45% 提亮至 ~7.6:1；浅色保持原色。
+ * 按 onSurface/onSurfaceVariant 动态混合，Command Center 与 Classic 两套主题自动适配。
+ */
+@Composable
+private fun secondaryTextColor(): Color = if (LocalIsDark.current) {
+    lerp(
+        MaterialTheme.colorScheme.onSurfaceVariant,
+        MaterialTheme.colorScheme.onSurface,
+        0.45f
+    )
+} else {
+    MaterialTheme.colorScheme.onSurfaceVariant
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Live2dModelCard(
@@ -510,13 +529,22 @@ private fun Live2dModelCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val isDark = LocalIsDark.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(AppSpacing.Corner.Lg),
         color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
-        tonalElevation = AppElevation.Level2
+        // color 加了 alpha 后 contentColorFor 无法按值匹配，必须显式指定内容色，
+        // 否则标题回落到外层继承的暗灰内容色（暗色下可读性差）
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = AppElevation.Level2,
+        // 暗色下深灰卡片与近黑背景对比低，亮描边勾出轮廓（浅色淡描边统一设计语言）
+        border = BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.4f)
+        )
     ) {
         Column {
             // 封面：捕获缩略图 > 内置舰娘头像 > 渐变占位
@@ -562,7 +590,9 @@ private fun Live2dModelCard(
                         .align(Alignment.TopEnd)
                         .padding(AppSpacing.Sm),
                     shape = RoundedCornerShape(AppSpacing.Corner.Full),
-                    color = Color(0xCC0F1826)
+                    color = Color(0xCC0F1826),
+                    // 角标底色与封面渐变同色系，加细亮描边避免胶囊边界消失
+                    border = BorderStroke(AppSpacing.Border.Thin, Color.White.copy(alpha = 0.22f))
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
@@ -596,7 +626,7 @@ private fun Live2dModelCard(
                 Text(
                     text = formatSize(model.sizeBytes),
                     style = AppTypography.CaptionSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = secondaryTextColor()
                 )
             }
         }
@@ -610,13 +640,19 @@ private fun ImportProgressCard(
     progress: Live2dImporter.ImportProgress,
     onCancel: () -> Unit
 ) {
+    val isDark = LocalIsDark.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Sm),
         shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
-        tonalElevation = AppElevation.Level2
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.97f else 0.95f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = AppElevation.Level2,
+        border = BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.4f)
+        )
     ) {
         Column(Modifier.padding(AppSpacing.Md)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -648,7 +684,7 @@ private fun ImportProgressCard(
                         append("${progress.copiedFiles}/${progress.totalFiles} 个文件")
                     },
                     style = AppTypography.CaptionSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = secondaryTextColor()
                 )
             } else {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -730,14 +766,20 @@ private fun ImportOptionCard(
     enabled: Boolean,
     onClick: () -> Unit
 ) {
+    val isDark = LocalIsDark.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
             .combinedClickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.9f),
-        tonalElevation = AppElevation.Level1
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.97f else 0.9f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = AppElevation.Level1,
+        border = BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.4f)
+        )
     ) {
         Row(
             modifier = Modifier.padding(AppSpacing.Md),
@@ -762,7 +804,7 @@ private fun ImportOptionCard(
                 Text(
                     description,
                     style = AppTypography.CaptionSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = secondaryTextColor()
                 )
             }
         }
@@ -793,7 +835,7 @@ private fun ModelDetailSheet(
         Text(
             model.id,
             style = AppTypography.CaptionSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = secondaryTextColor(),
             modifier = Modifier.padding(bottom = AppSpacing.Md)
         )
 
@@ -843,7 +885,7 @@ private fun DetailRow(label: String, value: String) {
         Text(
             label,
             style = AppTypography.BodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = secondaryTextColor()
         )
         Text(
             value,
