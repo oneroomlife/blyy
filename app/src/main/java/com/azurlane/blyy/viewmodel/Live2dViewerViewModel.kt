@@ -21,6 +21,8 @@ import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import com.azurlane.blyy.util.Live2dWebViewClient
 import com.azurlane.blyy.util.SkinVoiceIndex
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -65,12 +67,24 @@ class Live2dViewerViewModel @Inject constructor(
         val error: String? = null,
         /** 互动语音开关（持久化） */
         val voiceEnabled: Boolean = true,
+        /** 语音台词气泡开关（持久化，独立于语音开关） */
+        val bubbleEnabled: Boolean = true,
         /** 语音台词加载中（与模型加载 loading 分离，避免互相阻塞） */
         val voiceLoading: Boolean = false,
         /** 语音台词是否已加载完成 */
         val voiceLoaded: Boolean = false,
         /** 可播放的台词（空 = 该舰无语音数据，功能静默降级） */
-        val voiceLines: List<VoiceLine> = emptyList()
+        val voiceLines: List<VoiceLine> = emptyList(),
+        /** 当前展示的台词气泡（null = 隐藏） */
+        val voiceBubble: VoiceBubble? = null
+    )
+
+    /** 语音台词气泡：随互动语音同步显示，超时/点按/关闭后消失 */
+    data class VoiceBubble(
+        val dialogue: String,
+        val scene: String,
+        /** 显示时间戳：同一台词重复触发时也能重放入场动画 */
+        val shownAt: Long = System.currentTimeMillis()
     )
 
     private val _state = MutableStateFlow(State())
@@ -93,7 +107,13 @@ class Live2dViewerViewModel @Inject constructor(
         viewModelScope.launch {
             settingsDataStore.live2dVoiceEnabled.collect { enabled ->
                 _state.update { it.copy(voiceEnabled = enabled) }
-                if (enabled) ensureVoicesLoaded()
+                if (enabled) ensureVoicesLoaded() else dismissVoiceBubble()
+            }
+        }
+        viewModelScope.launch {
+            settingsDataStore.live2dBubbleEnabled.collect { enabled ->
+                _state.update { it.copy(bubbleEnabled = enabled) }
+                if (!enabled) dismissVoiceBubble()
             }
         }
         // 舰名反查就绪后补拉台词（查台词用的舰名此时才可解析）
@@ -174,6 +194,41 @@ class Live2dViewerViewModel @Inject constructor(
         }
     }
 
+    /** 切换台词气泡显示开关（持久化；关闭时立即收起当前气泡） */
+    fun setBubbleEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsDataStore.setLive2dBubbleEnabled(enabled)
+        }
+    }
+
+    /** 点按气泡立即收起 */
+    fun dismissVoiceBubble() {
+        bubbleHideJob?.cancel()
+        bubbleHideJob = null
+        if (_state.value.voiceBubble != null) {
+            _state.update { it.copy(voiceBubble = null) }
+        }
+    }
+
+    /** 气泡自动消失任务（新气泡出现时顶替旧任务） */
+    private var bubbleHideJob: Job? = null
+
+    /** 语音触发 → 同步弹出台词气泡；显示时长随文本长度伸缩，超时自动收起 */
+    private fun showVoiceBubble(line: VoiceLine) {
+        if (!_state.value.bubbleEnabled) return
+        bubbleHideJob?.cancel()
+        val bubble = VoiceBubble(
+            dialogue = line.dialogue.replace("\n", " ").replace("\r", "").trim(),
+            scene = line.scene
+        )
+        _state.update { it.copy(voiceBubble = bubble) }
+        bubbleHideJob = viewModelScope.launch {
+            // 基础 3.2s + 每字 85ms（照顾长句阅读），上限 8.5s
+            delay((3200 + bubble.dialogue.length * 85L).coerceAtMost(8500))
+            _state.update { if (it.voiceBubble === bubble) it.copy(voiceBubble = null) else it }
+        }
+    }
+
     /**
      * 点击皮肤/播放动作时的语音入口：按动作组映射场景关键词挑一条台词播放。
      * 开关关闭、该动作组无对应场景（如待机）时静默跳过；
@@ -187,6 +242,8 @@ class Live2dViewerViewModel @Inject constructor(
             return
         }
         val line = pickVoice(st.voiceLines, motionGroup) ?: return
+        // 气泡与语音同步弹出（台词选择成功即显示，不等待音频就绪）
+        showVoiceBubble(line)
         viewModelScope.launch {
             val language = settingsDataStore.voiceLanguage.first()
             playLine(line, language)

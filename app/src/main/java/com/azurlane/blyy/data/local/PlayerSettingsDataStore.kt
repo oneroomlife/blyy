@@ -89,6 +89,9 @@ class PlayerSettingsDataStore @Inject constructor(
         // Live2D 查看器互动语音开关
         private val LIVE2D_VOICE_ENABLED_KEY = booleanPreferencesKey("live2d_voice_enabled")
 
+        // Live2D 查看器语音台词气泡开关
+        private val LIVE2D_BUBBLE_ENABLED_KEY = booleanPreferencesKey("live2d_bubble_enabled")
+
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
@@ -291,6 +294,9 @@ class PlayerSettingsDataStore @Inject constructor(
     /** Live2D 查看器：点击皮肤互动时播放对应语音，默认开启 */
     val live2dVoiceEnabled: Flow<Boolean> = safeData.map { it[LIVE2D_VOICE_ENABLED_KEY] ?: true }
 
+    /** Live2D 查看器：语音播放时同步显示台词气泡，默认开启 */
+    val live2dBubbleEnabled: Flow<Boolean> = safeData.map { it[LIVE2D_BUBBLE_ENABLED_KEY] ?: true }
+
     /** 自动检测更新开关，默认开启 */
     val autoCheckUpdateEnabled: Flow<Boolean> = safeData.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
 
@@ -412,6 +418,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setLive2dVoiceEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[LIVE2D_VOICE_ENABLED_KEY] = enabled
+        }
+    }
+
+    suspend fun setLive2dBubbleEnabled(enabled: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[LIVE2D_BUBBLE_ENABLED_KEY] = enabled
         }
     }
 

@@ -10,6 +10,7 @@ import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.systemGestureExclusion
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,7 +38,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
 import androidx.compose.material.icons.rounded.CenterFocusWeak
+import androidx.compose.material.icons.rounded.ChatBubble
+import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Mood
@@ -58,6 +63,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -70,14 +76,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
+import androidx.compose.ui.graphics.Shape
 
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.LocalActivity
@@ -350,8 +367,11 @@ fun Live2dViewerScreen(
         }
 
         // ── 顶部信息栏（渐变衬底保证可读性） ──
+        // 暗色下立绘常顶到上半屏，两段直落渐变对浅色发饰遮蔽不足 → 三段更实更平滑
         val topScrim = if (isDark) {
-            Brush.verticalGradient(listOf(Color(0xCC0B1220), Color.Transparent))
+            Brush.verticalGradient(
+                listOf(Color(0xE60B1220), Color(0x8C0B1220), Color.Transparent)
+            )
         } else {
             Brush.verticalGradient(listOf(Color(0xB3FFFFFF), Color.Transparent))
         }
@@ -398,7 +418,8 @@ fun Live2dViewerScreen(
                             }
                         },
                         style = AppTypography.CaptionSmall,
-                        color = (if (isDark) Color.White else Color(0xFF1B2735)).copy(alpha = 0.6f),
+                        color = (if (isDark) Color.White else Color(0xFF1B2735))
+                            .copy(alpha = if (isDark) 0.78f else 0.6f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -406,7 +427,35 @@ fun Live2dViewerScreen(
             }
         }
 
+        // ── 语音台词气泡（顶部左侧：模型水平居中且头部偏上，角落最不易遮挡立绘；点按即收起） ──
+        val voiceBubble = state.voiceBubble
+        // 退出动画期间保留最后一条台词内容，避免气泡瞬移消失
+        val shownBubble = remember { mutableStateOf<Live2dViewerViewModel.VoiceBubble?>(null) }
+        SideEffect { if (voiceBubble != null) shownBubble.value = voiceBubble }
+        AnimatedVisibility(
+            visible = voiceBubble != null,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(top = 72.dp, start = AppSpacing.Md),
+            enter = fadeIn(tween(180)) +
+                scaleIn(initialScale = 0.85f, animationSpec = tween(180)) +
+                slideInVertically(initialOffsetY = { -it / 4 }, animationSpec = tween(180)),
+            exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.92f, animationSpec = tween(140))
+        ) {
+            shownBubble.value?.let { bubble ->
+                VoiceBubbleCard(
+                    dialogue = bubble.dialogue,
+                    scene = bubble.scene,
+                    onDismiss = { viewModel.dismissVoiceBubble() }
+                )
+            }
+        }
+
         // ── 底部控制条（可收起：手动收起 / 5 秒无操作自动收起，仅剩迷你浮标） ──
+        // 暗色下背景近乎纯黑：浮层更实、边框更亮才能与背景拉开层次
+        val overlayAlpha = if (isDark) 0.97f else 0.94f
+        val overlayBorderAlpha = if (isDark) 0.55f else 0.4f
         val info = state.info
         val controlsGate = phase == ViewerPhase.READY && info != null
         AnimatedVisibility(
@@ -422,11 +471,11 @@ fun Live2dViewerScreen(
                     .clip(RoundedCornerShape(28.dp))
                     .border(
                         width = AppSpacing.Border.Thin,
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = overlayBorderAlpha),
                         shape = RoundedCornerShape(28.dp)
                     ),
                 shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = overlayAlpha),
                 tonalElevation = AppElevation.Level2
             ) {
                 Row(
@@ -445,6 +494,17 @@ fun Live2dViewerScreen(
                             haptic(BlyyHaptic.Tick)
                             controlsTick++
                             viewModel.setVoiceEnabled(!state.voiceEnabled)
+                        }
+                    )
+                    // 台词气泡开关（图标式，随开关切换 实心/描边 气泡图标）
+                    ViewerControlPill(
+                        icon = if (state.bubbleEnabled) Icons.Rounded.ChatBubble else Icons.Rounded.ChatBubbleOutline,
+                        label = null,
+                        contentDescription = if (state.bubbleEnabled) "隐藏台词气泡" else "显示台词气泡",
+                        onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            controlsTick++
+                            viewModel.setBubbleEnabled(!state.bubbleEnabled)
                         }
                     )
                     ViewerControlPill(
@@ -531,18 +591,18 @@ fun Live2dViewerScreen(
                         controlsTick++
                     },
                 shape = RoundedCornerShape(AppSpacing.Corner.Full),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.45f),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.62f else 0.45f),
                 tonalElevation = AppElevation.Level1,
                 border = androidx.compose.foundation.BorderStroke(
                     width = AppSpacing.Border.Thin,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.5f else 0.35f)
                 )
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Rounded.KeyboardArrowUp,
                         contentDescription = "展开控制条",
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.85f else 0.75f),
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -755,6 +815,116 @@ private fun ViewerControlPill(
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
+    }
+}
+
+/** 台词气泡卡片：圆角主体 + 左下尖角尾巴（一体成型外形，描边同样贴合尾巴轮廓） */
+@Composable
+private fun VoiceBubbleCard(
+    dialogue: String,
+    scene: String,
+    onDismiss: () -> Unit
+) {
+    val isDark = LocalIsDark.current
+    val density = LocalDensity.current
+    val shape = remember(density) {
+        with(density) {
+            SpeechBubbleShape(
+                cornerRadius = 18.dp.toPx(),
+                tailWidth = 16.dp.toPx(),
+                tailHeight = 9.dp.toPx(),
+                tailOffset = 22.dp.toPx()
+            )
+        }
+    }
+    Surface(
+        modifier = Modifier
+            .widthIn(max = 264.dp)
+            .clickable(onClick = onDismiss),
+        shape = shape,
+        // 暗色下背景近黑：容器更实 + 更亮描边 + 轻抬升，保证台词可读与浮层层次
+        color = MaterialTheme.colorScheme.surfaceContainerHigh
+            .copy(alpha = if (isDark) 0.97f else 0.94f),
+        tonalElevation = if (isDark) AppElevation.Level1 else 0.dp,
+        border = BorderStroke(
+            width = AppSpacing.Border.Thin,
+            color = MaterialTheme.colorScheme.outlineVariant
+                .copy(alpha = if (isDark) 0.55f else 0.4f)
+        )
+    ) {
+        // 底部内边距额外加上尾巴高度，避免文字压到尾巴区域
+        Column(
+            modifier = Modifier.padding(
+                start = 14.dp, end = 14.dp,
+                top = 10.dp, bottom = (10.dp + 9.dp)
+            )
+        ) {
+            if (scene.isNotBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.GraphicEq,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = scene,
+                        style = AppTypography.LabelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(Modifier.height(3.dp))
+            }
+            Text(
+                text = dialogue,
+                style = AppTypography.BodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 6,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * 台词气泡外形：圆角矩形主体 + 左下角指向模型的尖角尾巴。
+ * 尾巴与主体经 Union 合并为单一路径，Surface 的填充与描边都沿合并后的轮廓绘制。
+ */
+private class SpeechBubbleShape(
+    private val cornerRadius: Float,
+    private val tailWidth: Float,
+    private val tailHeight: Float,
+    private val tailOffset: Float
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val bodyHeight = size.height - tailHeight
+        val body = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    rect = Rect(0f, 0f, size.width, bodyHeight),
+                    cornerRadius = CornerRadius(cornerRadius)
+                )
+            )
+        }
+        // 尾巴顶边上移 0.5px 与主体略微重叠，避免接缝；尖角收在左下方指向模型
+        val overlap = bodyHeight - 0.5f
+        val tail = Path().apply {
+            moveTo(tailOffset, overlap)
+            lineTo(tailOffset + tailWidth, overlap)
+            lineTo(tailOffset + 1.5f, size.height)
+            close()
+        }
+        body.op(body, tail, PathOperation.Union)
+        return Outline.Generic(body)
     }
 }
 
