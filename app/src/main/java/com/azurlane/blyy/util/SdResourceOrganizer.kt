@@ -102,6 +102,16 @@ object SdResourceOrganizer {
     /** 跳过的非舰娘资源（工具图标等），统一小写比较 */
     private val SKIP_NAMES = setOf("loader", "redcar")
 
+    /**
+     * 源目录最大递归扫描深度。
+     *
+     * 用户选择的源目录可能并非资源文件的直接父目录，例如选择上一级时实际结构为
+     * `<选中>/blhx_sd/<舰娘>/<皮肤>/xxx.skel`（资源在第 3 层目录）。
+     * 旧版 maxDepth=2 扫不到第 3 层及更深的 .skel，导致"选择正确文件夹后导入失败"。
+     * 取 5 层可覆盖常见嵌套结构（根目录 → 资源根 → 舰娘 → 皮肤 → 文件）。
+     */
+    private const val MAX_SCAN_DEPTH = 5
+
     /** 皮肤后缀 → 分类名映射 */
     private val SKIN_SUFFIX_MAP = mapOf(
         "g" to "gai",        // 改造
@@ -112,6 +122,31 @@ object SdResourceOrganizer {
         "l" to "left",       // 左半身（默认跳过）
         "r" to "right"       // 右半身（默认跳过）
     )
+
+    /**
+     * 皮肤目录名 → 分类名映射（目录名归一化已统一小写）。
+     *
+     * 覆盖常见整理包的皮肤子目录命名（gai/huan/... 及 skinN）；
+     * 未列出的目录名（如舰娘名目录）不算皮肤目录，回退文件名后缀分类。
+     */
+    private val SKIN_DIR_NAME_MAP = mapOf(
+        "gai" to "gai",
+        "huan" to "huan",
+        "huangxiang" to "huangxiang",
+        "hx" to "huangxiang",
+        "doa" to "doa",
+        "teyao" to "teyao",
+        "mirror" to "mirror",
+        "left" to "left",
+        "right" to "right",
+        "alter" to "alter",
+        "idol" to "idol",
+        "younv" to "younv",
+        "super" to "super"
+    )
+
+    /** skinN 目录名（skin2 / skin3 …） */
+    private val SKIN_DIR_RE = Regex("^skin\\d+$")
 
     // 皮肤后缀正则：匹配 _数字 / _g / _h / _hx / _L / _R / _doa / _y
     private val SKIN_SUFFIX_RE = Regex("^(.+?)(?:_([0-9]+|g|h|hx|L|R|doa|y))?$", RegexOption.IGNORE_CASE)
@@ -168,13 +203,16 @@ object SdResourceOrganizer {
             return@withContext OrganizeResult(0, 0, 0, 0, "源目录无效或不可访问")
         }
         val treeUri = DocumentsContract.buildDocumentUriUsingTree(sourceTreeUri, treeDocId)
+        // 宽松校验：部分文档提供器对 tree 根目录查询返回空游标（无元数据行），
+        // 此时不能判定"源目录无效"，交由扫描阶段判断（能扫到文件即有效）。
+        // 仅在明确返回"非目录"或查询异常时才判定无效。
         val isDir = try {
             resolver.query(
                 treeUri,
                 arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
                 null, null, null
             )?.use { c ->
-                c.moveToFirst() && c.getString(0) == DocumentsContract.Document.MIME_TYPE_DIR
+                !c.moveToFirst() || c.getString(0) == DocumentsContract.Document.MIME_TYPE_DIR
             } == true
         } catch (e: Exception) {
             false
@@ -184,9 +222,9 @@ object SdResourceOrganizer {
             return@withContext OrganizeResult(0, 0, 0, 0, "源目录无效或不可访问")
         }
 
-        // 1. 扫描源目录（含 TextAsset/Texture2D 子目录，向后兼容旧脚本结构）
+        // 1. 扫描源目录（含 TextAsset/Texture2D 子目录、舰娘/皮肤嵌套目录等）
         onProgress(OrganizeProgress(OrganizePhase.SCANNING, message = "正在扫描源目录…"))
-        val groups = try {
+        val scan = try {
             scanSource(resolver, sourceTreeUri, treeUri, includeLeftRight) { scanned, ships, skins ->
                 onProgress(OrganizeProgress(
                     OrganizePhase.SCANNING,
@@ -201,10 +239,14 @@ object SdResourceOrganizer {
             onProgress(OrganizeProgress(OrganizePhase.ERROR, message = "扫描失败：${e.message}"))
             return@withContext OrganizeResult(0, 0, 0, 0, "扫描失败：${e.message}")
         }
+        val groups = scan.ships
 
         if (groups.isEmpty()) {
-            onProgress(OrganizeProgress(OrganizePhase.ERROR, message = "未在源目录中发现任何 SD 资源（.skel 文件）"))
-            return@withContext OrganizeResult(0, 0, 0, 0, "未在源目录中发现任何 SD 资源（.skel 文件）")
+            // 附带扫描文件数便于排查：区分"目录真的没有资源"和"扫到了文件但都不含 .skel"
+            val msg = "未在源目录中发现任何 SD 资源（.skel 文件），共扫描 ${scan.scannedCount} 个文件；" +
+                "请确认文件夹内包含 .skel/.atlas/.png 资源，或直接选择资源所在文件夹"
+            onProgress(OrganizeProgress(OrganizePhase.ERROR, message = msg))
+            return@withContext OrganizeResult(0, 0, 0, 0, msg)
         }
 
         val totalSkins = groups.values.sumOf { skins -> skins.count { it.value.isUsable() } }
@@ -268,13 +310,39 @@ object SdResourceOrganizer {
     }
 
     /**
+     * 扫描到的源文件（含相对目录信息，用于目录名皮肤识别）。
+     *
+     * @property uri 文件 URI（SAF 读取用）
+     * @property name 文件显示名
+     * @property relDir 相对源根目录的路径（如 "blhx_sd/boge/gai"），根目录直下为 ""
+     */
+    private class SourceFile(
+        val uri: Uri,
+        val name: String,
+        val relDir: String
+    )
+
+    /**
+     * 扫描结果。
+     *
+     * @property ships (舰娘 → 皮肤 → 文件集合) 分组
+     * @property scannedCount 实际扫描到的文件总数（用于空结果错误提示排查）
+     */
+    private class ScanResult(
+        val ships: MutableMap<String, MutableMap<String, SkinFiles>>,
+        val scannedCount: Int
+    )
+
+    /**
      * 扫描源目录，按 (舰娘, 皮肤) 二级分组。
      *
-     * 兼容两种源结构：
+     * 兼容多种源结构：
      * 1. organize_sd.py 期望的结构：TextAsset/ 和 Texture2D/ 子目录
      * 2. 直接平铺：源目录下直接是 .skel/.atlas/.png 文件
+     * 3. 整理包嵌套结构：`<选中>/blhx_sd/<舰娘>/<皮肤>/xxx.skel`
      *
-     * 自动遍历源目录及其所有子目录（最多 2 层）。
+     * 递归遍历源目录及其所有子目录（最多 [MAX_SCAN_DEPTH] 层）。
+     * 皮肤分类优先用父目录名（目录为皮肤目录时），否则回退文件名后缀分类。
      * 不依赖 DocumentFile，直接用 ContentResolver + DocumentsContract 查询。
      */
     private suspend fun scanSource(
@@ -283,44 +351,43 @@ object SdResourceOrganizer {
         rootDocUri: Uri,
         includeLeftRight: Boolean,
         onProgress: (scanned: Int, ships: Int, skins: Int) -> Unit
-    ): MutableMap<String, MutableMap<String, SkinFiles>> {
-        // 收集所有文件（递归一层子目录，兼容 TextAsset/Texture2D 结构）
-        val allFiles = mutableListOf<Pair<Uri, String>>()
-        collectFiles(resolver, treeUri, rootDocUri, allFiles, maxDepth = 2)
+    ): ScanResult {
+        val allFiles = mutableListOf<SourceFile>()
+        collectFiles(resolver, treeUri, rootDocUri, allFiles, relDir = "", maxDepth = MAX_SCAN_DEPTH)
 
         val ships: MutableMap<String, MutableMap<String, SkinFiles>> = mutableMapOf()
         var scanned = 0
 
         // Pass 1: 注册皮肤（每个 .skel 定义一个皮肤）
-        for ((uri, fileName) in allFiles) {
+        for (file in allFiles) {
             coroutineContext.ensureActive()
             scanned++
 
-            val ext = fileExt(fileName)
+            val ext = fileExt(file.name)
             if (ext != "skel") {
                 continue
             }
-            val base = extractBaseName(fileName)
+            val base = extractBaseName(file.name)
             if (base.isEmpty() || base.lowercase() in SKIP_NAMES) continue
-            val skin = classifySkin(fileName)
+            val skin = resolveSkin(file.name, file.relDir)
             if (skin in setOf("left", "right") && !includeLeftRight) continue
 
             val skinMap = ships.getOrPut(base) { mutableMapOf() }
             val files = skinMap.getOrPut(skin) { SkinFiles() }
-            files.skelUri = uri
-            files.skelName = fileName
+            files.skelUri = file.uri
+            files.skelName = file.name
 
             onProgress(scanned, ships.size, ships.values.sumOf { m -> m.count { it.value.isUsable() } })
         }
 
         // Pass 2: 分配 .atlas 和 .png 到皮肤
-        for ((uri, fileName) in allFiles) {
+        for (file in allFiles) {
             coroutineContext.ensureActive()
-            val ext = fileExt(fileName)
+            val ext = fileExt(file.name)
             if (ext != "atlas" && ext != "png") continue
-            val base = extractBaseName(fileName)
+            val base = extractBaseName(file.name)
             if (base.isEmpty() || base.lowercase() in SKIP_NAMES) continue
-            val skin = classifySkin(fileName)
+            val skin = resolveSkin(file.name, file.relDir)
             if (skin in setOf("left", "right") && !includeLeftRight) continue
 
             val skinMap = ships[base] ?: continue
@@ -328,28 +395,28 @@ object SdResourceOrganizer {
             if (files != null && files.skelUri != null) {
                 // 该皮肤已有 .skel：直接分配
                 if (ext == "atlas" && files.atlasUri == null) {
-                    files.atlasUri = uri
-                    files.atlasName = fileName
+                    files.atlasUri = file.uri
+                    files.atlasName = file.name
                 } else if (ext == "png") {
                     if (files.pngUri == null) {
-                        files.pngUri = uri
-                        files.pngName = fileName
+                        files.pngUri = file.uri
+                        files.pngName = file.name
                     } else {
-                        files.extraPngs.add(Pair(uri, fileName))
+                        files.extraPngs.add(Pair(file.uri, file.name))
                     }
                 }
             } else {
                 // 孤儿文件：归入 default
                 val default = skinMap.getOrPut("default") { SkinFiles() }
                 if (ext == "atlas" && default.atlasUri == null) {
-                    default.atlasUri = uri
-                    default.atlasName = fileName
+                    default.atlasUri = file.uri
+                    default.atlasName = file.name
                 } else if (ext == "png") {
                     if (default.pngUri == null) {
-                        default.pngUri = uri
-                        default.pngName = fileName
+                        default.pngUri = file.uri
+                        default.pngName = file.name
                     } else {
-                        default.extraPngs.add(Pair(uri, fileName))
+                        default.extraPngs.add(Pair(file.uri, file.name))
                     }
                 }
             }
@@ -385,17 +452,20 @@ object SdResourceOrganizer {
             }
         }
 
-        return ships
+        return ScanResult(ships, scanned)
     }
 
     /**
      * 递归收集目录下的所有文件（用 ContentResolver 查询 DocumentsContract，限制最大深度）。
+     *
+     * @param relDir 当前目录相对源根目录的路径（根目录传 ""，子目录拼接 "<relDir>/<目录名>"）
      */
     private fun collectFiles(
         resolver: android.content.ContentResolver,
         treeUri: Uri,
         docUri: Uri,
-        out: MutableList<Pair<Uri, String>>,
+        out: MutableList<SourceFile>,
+        relDir: String,
         maxDepth: Int
     ) {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getDocumentId(docUri))
@@ -419,10 +489,11 @@ object SdResourceOrganizer {
                 val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                     if (maxDepth > 0) {
-                        collectFiles(resolver, treeUri, childUri, out, maxDepth - 1)
+                        val childRelDir = if (relDir.isEmpty()) name else "$relDir/$name"
+                        collectFiles(resolver, treeUri, childUri, out, childRelDir, maxDepth - 1)
                     }
                 } else {
-                    out.add(Pair(childUri, name))
+                    out.add(SourceFile(childUri, name, relDir))
                 }
             }
         }
@@ -708,6 +779,38 @@ object SdResourceOrganizer {
         SKIN_SUFFIX_MAP[suffix]?.let { return it }
         if (suffix.all { it.isDigit() }) return "skin$suffix"
         return "default"
+    }
+
+    /**
+     * 解析皮肤分类：文件所在父目录为皮肤目录时目录名优先，否则回退文件名后缀分类。
+     *
+     * 目录优先解决整理包嵌套结构的误分类：如 `<舰娘>/skin2/boge.skel` 中文件名
+     * 无皮肤后缀会被文件名分类归为 default，实际应归属 skin2（目录已标明皮肤）。
+     * 目录名不是皮肤目录时（如 TextAsset/、舰娘名目录）不受影响。
+     */
+    private fun resolveSkin(fileName: String, relDir: String): String {
+        val parent = relDir.substringAfterLast('/', "")
+        if (parent.isNotEmpty()) {
+            normalizeSkinDirName(parent)?.let { return it }
+        }
+        return classifySkin(fileName)
+    }
+
+    /**
+     * 判断目录名是否为皮肤目录并归一化为皮肤名；非皮肤目录返回 null。
+     *
+     * 识别范围：default / SKIN_DIR_NAME_MAP 中列出的皮肤目录名 /
+     * skinN（skin2、skin3…）/ 纯数字（"2" → skin2）。
+     */
+    private fun normalizeSkinDirName(name: String): String? {
+        val lower = name.lowercase()
+        return when {
+            lower == "default" -> "default"
+            SKIN_DIR_NAME_MAP.containsKey(lower) -> SKIN_DIR_NAME_MAP[lower]
+            SKIN_DIR_RE.matches(lower) -> lower
+            lower.isNotEmpty() && lower.all { it.isDigit() } -> "skin$lower"
+            else -> null
+        }
     }
 
     /** 返回扩展名类型: "skel" / "atlas" / "png" / "" */

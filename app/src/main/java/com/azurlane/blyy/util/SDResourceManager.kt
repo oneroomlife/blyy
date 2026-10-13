@@ -37,6 +37,15 @@ object SDResourceManager {
     /** 自定义资源存放子目录名 */
     private const val CUSTOM_DIR = "custom"
 
+    /**
+     * 自定义资源导入的最大递归扫描深度。
+     *
+     * 用户选择的源目录可能并非资源文件的直接父目录（如选择了上一级目录，
+     * 资源在 `<选中>/xxx/<舰娘>/<皮肤>/` 第 3 层），旧版 maxDepth=3 扫不到更深的
+     * .skel 导致"选择正确文件夹后导入失败"。取 5 层覆盖常见嵌套结构。
+     */
+    private const val MAX_IMPORT_DEPTH = 5
+
     /** manifest.json 中可声明的资源元数据文件名 */
     private const val META_FILE = "meta.json"
 
@@ -183,7 +192,7 @@ object SDResourceManager {
      * 导入自定义 SD 资源。
      *
      * 从用户通过 SAF 选择的源目录中扫描 .skel/.atlas/.png 文件，
-     * 按原文件名复制到 `blhx_sd/custom/<resourceName>/` 目录。
+     * 按原始目录结构复制到 `blhx_sd/custom/<resourceName>/` 目录。
      *
      * 与 [SdResourceOrganizer] 不同：
      * - 不做舰名拼音分类
@@ -214,17 +223,21 @@ object SDResourceManager {
         }
         val treeUri = DocumentsContract.buildDocumentUriUsingTree(sourceTreeUri, treeDocId)
 
-        // 1. 扫描源目录收集文件
-        val allFiles = mutableListOf<Pair<Uri, String>>()
-        collectFiles(resolver, sourceTreeUri, treeUri, allFiles, maxDepth = 3)
+        // 1. 扫描源目录收集文件（保留相对路径，按原始目录结构复制）
+        val allFiles = mutableListOf<ImportFile>()
+        collectFiles(resolver, sourceTreeUri, treeUri, allFiles, relDir = "", maxDepth = MAX_IMPORT_DEPTH)
 
         // 2. 筛选有效 SD 资源文件（.skel / .atlas / .png / .webp / .jpg）
-        val sdFiles = allFiles.filter { (uri, name) ->
-            isSkelFile(name) || isAtlasFile(name) || isImageFile(name)
+        val sdFiles = allFiles.filter { file ->
+            isSkelFile(file.name) || isAtlasFile(file.name) || isImageFile(file.name)
         }
 
         if (sdFiles.isEmpty()) {
-            return@withContext ImportResult(false, "未在源目录中发现任何 SD 资源文件（.skel/.atlas/.png）")
+            return@withContext ImportResult(
+                false,
+                "未在源目录中发现任何 SD 资源文件（.skel/.atlas/.png），共扫描 ${allFiles.size} 个文件；" +
+                    "请确认文件夹内包含资源文件，或直接选择资源所在文件夹"
+            )
         }
 
         Log.i(TAG, "importCustomResource: 发现 ${sdFiles.size} 个资源文件")
@@ -241,26 +254,28 @@ object SDResourceManager {
             return@withContext ImportResult(false, "无法创建目录：$destDir")
         }
 
-        // 4. 复制文件
+        // 4. 复制文件（保留相对目录结构）
         var copied = 0
         val total = sdFiles.size
-        for ((uri, fileName) in sdFiles) {
+        for (file in sdFiles) {
             coroutineContext.ensureActive()
-            val dstFile = File(destDir, fileName)
+            // 按原始相对路径复制，不平铺：atlas 以相对路径引用 png，平铺会破坏引用关系；
+            // 嵌套结构（资源/皮肤/文件）也需保留，LocalSdResolver 才能识别皮肤子目录
+            val dstFile = File(destDir, file.relPath)
             dstFile.parentFile?.mkdirs()
             try {
-                resolver.openInputStream(uri)?.use { input ->
+                resolver.openInputStream(file.uri)?.use { input ->
                     dstFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
                 } ?: run {
-                    Log.w(TAG, "importCustomResource: 无法打开输入流 $uri")
+                    Log.w(TAG, "importCustomResource: 无法打开输入流 ${file.uri}")
                     continue
                 }
                 copied++
                 onProgress(copied, total)
             } catch (e: Exception) {
-                Log.e(TAG, "importCustomResource: 复制失败 $fileName", e)
+                Log.e(TAG, "importCustomResource: 复制失败 ${file.relPath}", e)
             }
         }
 
@@ -517,13 +532,16 @@ object SDResourceManager {
     }
 
     /**
-     * 递归收集目录下的所有文件（SAF 版本）。
+     * 递归收集目录下的所有文件（SAF 版本，记录相对路径）。
+     *
+     * @param relDir 当前目录相对源根目录的路径（根目录传 ""，子目录拼接 "<relDir>/<目录名>"）
      */
     private fun collectFiles(
         resolver: android.content.ContentResolver,
         treeUri: Uri,
         docUri: Uri,
-        out: MutableList<Pair<Uri, String>>,
+        out: MutableList<ImportFile>,
+        relDir: String,
         maxDepth: Int
     ) {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -549,14 +567,31 @@ object SDResourceManager {
                 val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                     if (maxDepth > 0) {
-                        collectFiles(resolver, treeUri, childUri, out, maxDepth - 1)
+                        val childRelDir = if (relDir.isEmpty()) name else "$relDir/$name"
+                        collectFiles(resolver, treeUri, childUri, out, childRelDir, maxDepth - 1)
                     }
                 } else {
-                    out.add(Pair(childUri, name))
+                    out.add(ImportFile(childUri, name, relDir))
                 }
             }
         }
     }
+}
+
+/**
+ * 自定义资源导入扫描到的源文件。
+ *
+ * @property uri 文件 URI（SAF 读取用）
+ * @property name 文件显示名
+ * @property relDir 相对源根目录的目录路径（根目录直下为 ""）
+ */
+private data class ImportFile(
+    val uri: Uri,
+    val name: String,
+    val relDir: String
+) {
+    /** 相对源根目录的完整路径（复制时保留原始目录结构） */
+    val relPath: String get() = if (relDir.isEmpty()) name else "$relDir/$name"
 }
 
 /** 自定义资源导入结果 */
