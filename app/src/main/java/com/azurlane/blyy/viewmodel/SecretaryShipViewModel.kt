@@ -36,6 +36,9 @@ data class SecretaryShipState(
     val sdScale: Float = 1.0f,
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源） */
     val sdResourceId: String = "",
+    /** wiki 网页端 Q版小人（SD 静态图）URL：本地 SD 资源未匹配时的回退显示图，
+     *  优先取「查看立绘」中用户选择的 SD 小人，跟随其皮肤选择 */
+    val webChibiUrl: String = "",
     /** 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互） */
     val overlayTouchPassthrough: Boolean = false
 )
@@ -155,6 +158,7 @@ class SecretaryShipViewModel @Inject constructor(
             sdSkin = managerState.sdSkin,
             sdScale = managerState.sdScale,
             sdResourceId = managerState.sdResourceId,
+            webChibiUrl = managerState.webChibiUrl,
             overlayTouchPassthrough = managerState.overlayTouchPassthrough
         )
     }.stateIn(

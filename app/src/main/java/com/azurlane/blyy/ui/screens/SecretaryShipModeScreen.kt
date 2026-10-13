@@ -675,61 +675,66 @@ private fun SdSkinSelector(
         }
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text("皮肤切换", style = AppTypography.BodySmall)
-        TextButton(onClick = {
-            LocalSdResolver.refreshIndex()
-            refreshTrigger++
-        }) {
-            Icon(
-                imageVector = Icons.Rounded.Refresh,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp)
-            )
-            Spacer(modifier = Modifier.size(AppSpacing.Xs))
-            Text("刷新")
-        }
-    }
-
-    if (skins.isNotEmpty()) {
-        FlowRow(
-            modifier = Modifier.padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs),
-            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+    // 【UI 重叠修复】BlyyPanel 的内容容器是 Box（非 Column），
+    // 此处必须用 Column 包裹所有子元素：旧实现把"皮肤切换"Row 与皮肤 chips
+    // FlowRow 作为两个兄弟节点直接 emit 进 Box，两者叠放在同一起点造成 UI 重叠。
+    Column(modifier = Modifier.padding(vertical = AppSpacing.Xs)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Lg),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            val currentSkin = selectedSkin.ifEmpty { "default" }
-            skins.forEach { skin ->
-                BlyyChip(
-                    label = skinDisplayName(skin),
-                    selected = currentSkin == skin,
-                    onClick = { onSetSdSkin(skin) }
+            Text("皮肤切换", style = AppTypography.BodySmall)
+            TextButton(onClick = {
+                LocalSdResolver.refreshIndex()
+                refreshTrigger++
+            }) {
+                Icon(
+                    imageVector = Icons.Rounded.Refresh,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
                 )
+                Spacer(modifier = Modifier.size(AppSpacing.Xs))
+                Text("刷新")
             }
         }
-    } else {
-        Column(modifier = Modifier.padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)) {
-            Text(
-                if (shipName.isNotBlank()) "未找到「$shipName」的 SD 资源" else "未选择秘书舰",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "导入方法：将 SD 三件套（.skel + .atlas + .png）放入以下目录的舰娘拼音子文件夹中：",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "Download/BLYY/blhx_sd/<舰娘拼音>/",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Medium
-            )
+
+        if (skins.isNotEmpty()) {
+            FlowRow(
+                modifier = Modifier.padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs),
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+            ) {
+                val currentSkin = selectedSkin.ifEmpty { "default" }
+                skins.forEach { skin ->
+                    BlyyChip(
+                        label = skinDisplayName(skin),
+                        selected = currentSkin == skin,
+                        onClick = { onSetSdSkin(skin) }
+                    )
+                }
+            }
+        } else {
+            Column(modifier = Modifier.padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)) {
+                Text(
+                    if (shipName.isNotBlank()) "未找到「$shipName」的 SD 资源" else "未选择秘书舰",
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "导入方法：将 SD 三件套（.skel + .atlas + .png）放入以下目录的舰娘拼音子文件夹中：",
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    "Download/BLYY/blhx_sd/<舰娘拼音>/",
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium
+                )
+            }
         }
     }
 }

@@ -345,9 +345,9 @@ class VoiceViewModel @OptIn(UnstableApi::class)
             }
 
             try {
-                val result = getVoicesUseCase(shipName)
-                _voices.value = result.first
-                _figureUrl.value = result.second
+                val (voices, defaultFigureUrl, _) = getVoicesUseCase(shipName)
+                _voices.value = voices
+                _figureUrl.value = defaultFigureUrl ?: ""
                 // Uri.encode 而非 URLEncoder.encode：后者会把空格编码为 "+"（表单编码），
                 // 出现在 URL 路径中会被服务器拒绝；Uri.encode 编码为 "%20" 才是路径编码
                 _wikiUrl.value = "https://wiki.biligame.com/blhx/${android.net.Uri.encode(shipName)}"

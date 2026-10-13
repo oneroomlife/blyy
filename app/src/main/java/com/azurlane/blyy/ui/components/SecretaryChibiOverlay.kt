@@ -146,6 +146,9 @@ fun SecretaryChibiOverlay(
     sdScale: Float = 1.0f,
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
     sdResourceId: String = "",
+    /** wiki 网页端 Q版小人（SD 静态图）URL：本地 SD 资源未匹配时的回退显示图，
+     *  优先取「查看立绘」中用户选择的 SD 小人，跟随其皮肤选择；为空时回退 figureUrl（完整立绘） */
+    webChibiUrl: String = "",
     /**
      * 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互）。
      *
@@ -163,11 +166,11 @@ fun SecretaryChibiOverlay(
      */
     onDragStateChanged: ((Boolean) -> Unit)? = null
 ) {
-    // 同时检查 figureUrl 和 sdResourceId：
-    // - 两者都空 → 无任何可渲染内容，提前返回
-    // - figureUrl 空 + sdResourceId 非空 → 有 SD 资源，继续渲染（Spine/静态图片不依赖 figureUrl）
-    // - figureUrl 非空 → 有网络立绘回退，继续渲染
-    if (figureUrl.isEmpty() && sdResourceId.isEmpty()) return
+    // 同时检查 figureUrl / webChibiUrl / sdResourceId：
+    // - 三者都空 → 无任何可渲染内容，提前返回
+    // - figureUrl 空 + webChibiUrl 空 + sdResourceId 非空 → 有 SD 资源，继续渲染（Spine/静态图片不依赖 figureUrl）
+    // - figureUrl 或 webChibiUrl 非空 → 有静态回退图（网页 Q版小人 / 网络立绘），继续渲染
+    if (figureUrl.isEmpty() && webChibiUrl.isEmpty() && sdResourceId.isEmpty()) return
 
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
@@ -299,9 +302,12 @@ fun SecretaryChibiOverlay(
                     }
                 )
             } else {
-                // ── 静态图片资源 / 网络立绘回退 ──
-                // 静态图片资源用 asset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
-                // SD 解析未完成期间 imageModel = null：先不渲染，避免网络立绘→SD 小人的闪烁。
+                // ── 静态图片资源 / 网页 Q版小人 / 网络立绘回退 ──
+                // 回退优先级：本地静态资源 → 网页 Q版小人（跟随「查看立绘」选择）→ 网络立绘。
+                // 静态图片资源用 asset.imageFilePath（本地文件）；
+                // 本地 SD 资源未匹配时优先用 webChibiUrl（wiki 静态小人，比完整立绘视觉更贴合 SD 场景）；
+                // 无小人图时最终回退 figureUrl（网络立绘 URL）。
+                // SD 解析未完成期间 imageModel = null：先不渲染，避免立绘→SD 小人的闪烁。
                 // 交互区域 = 图片实际显示矩形（Fit 后），不再整个窗口拦截触摸——
                 // 此前整个窗口挂 pointerInput，ContentScale.Fit 四周的透明区域
                 // 在悬浮窗场景会挡住下层 App 的触摸操作。
@@ -309,12 +315,16 @@ fun SecretaryChibiOverlay(
                 val imageModel = when {
                     !sdResolved -> null
                     imagePath != null -> imagePath
+                    webChibiUrl.isNotEmpty() -> webChibiUrl
                     else -> figureUrl
                 }
+                // 图源降级链：wiki 小人/本地静态图加载失败时回退完整立绘 figureUrl
+                val fallbackModel = figureUrl.takeIf { it.isNotEmpty() && it != imageModel }
                 InteractiveStaticFigure(
                     containerWidthPx = with(density) { overlayWidth.toPx() },
                     containerHeightPx = with(density) { overlayHeight.toPx() },
                     imageModel = imageModel,
+                    fallbackModel = fallbackModel,
                     contentDescription = "秘书舰 $shipName",
                     onTap = {
                         isTapped = true
@@ -498,9 +508,12 @@ fun SecretaryChibiOverlay(
                     onDragEnd = { isDragging = false }
                 )
             } else {
-                // ── 静态图片资源 / 网络立绘回退 ──
-                // 静态图片资源用 asset.imageFilePath（本地文件），无资源时回退 figureUrl（网络 URL）。
-                // SD 解析未完成期间 imageModel = null：先不渲染，避免网络立绘→SD 小人的闪烁
+                // ── 静态图片资源 / 网页 Q版小人 / 网络立绘回退 ──
+                // 回退优先级：本地静态资源 → 网页 Q版小人（跟随「查看立绘」选择）→ 网络立绘。
+                // 静态图片资源用 asset.imageFilePath（本地文件）；
+                // 本地 SD 资源未匹配时优先用 webChibiUrl（wiki 静态小人，比完整立绘视觉更贴合 SD 场景）；
+                // 无小人图时最终回退 figureUrl（网络立绘 URL）。
+                // SD 解析未完成期间 imageModel = null：先不渲染，避免立绘→SD 小人的闪烁
                 // 仅在此场景使用 pointerInput + scale/alpha 动画
                 // 渲染层尺寸同 SD 小人场景，保证放大时渲染完整
                 // 同样使用 requiredSize 突破外层 Box 的尺寸约束（见上方 SD 小人注释）
@@ -508,8 +521,11 @@ fun SecretaryChibiOverlay(
                 val imageModel = when {
                     !sdResolved -> null
                     imagePath != null -> imagePath
+                    webChibiUrl.isNotEmpty() -> webChibiUrl
                     else -> figureUrl
                 }
+                // 图源降级链：wiki 小人/本地静态图加载失败时回退完整立绘 figureUrl
+                val fallbackModel = figureUrl.takeIf { it.isNotEmpty() && it != imageModel }
                 // 容器跟随放大 + 居中补偿的定位 Box 内放置交互层：
                 // 交互区域 = 图片实际显示矩形，四周透明区域的事件穿透到父级
                 // （不再挡住页面滚动等父级手势）
@@ -522,6 +538,7 @@ fun SecretaryChibiOverlay(
                         containerWidthPx = with(density) { renderWidth.toPx() },
                         containerHeightPx = with(density) { renderHeight.toPx() },
                         imageModel = imageModel,
+                        fallbackModel = fallbackModel,
                         contentDescription = "秘书舰 $shipName",
                         onTap = {
                             isTapped = true
@@ -686,45 +703,77 @@ private fun InteractiveStaticFigure(
     onDrag: (dx: Float, dy: Float) -> Unit,
     modifier: Modifier = Modifier,
     scale: Float = 1f,
-    alpha: Float = 1f
+    alpha: Float = 1f,
+    /**
+     * 主图源加载失败时的降级图源（如 wiki 小人 URL 失效 → 回退完整立绘 figureUrl）。
+     *
+     * 【空白修复】此前 Coil 加载失败时 imageAspect 永不写入 → fitRect 为 null →
+     * 整个组件直接不渲染任何内容，即使降级图源可用也表现为"什么都不显示"。
+     */
+    fallbackModel: Any? = null
 ) {
     // 图片宽高比：由 Coil 加载成功回调写入；模型变化时重置（切舰娘/皮肤后重新测量）
     var imageAspect by remember { mutableStateOf<Float?>(null) }
-    LaunchedEffect(imageModel) { imageAspect = null }
+    // 主图源加载失败 → 切换到降级图源重新加载（onError 幂等，重复触发不循环）
+    var loadFailed by remember(imageModel, fallbackModel) { mutableStateOf(false) }
+    val activeModel = if (loadFailed && fallbackModel != null) fallbackModel else imageModel
+    LaunchedEffect(activeModel) { imageAspect = null }
     val fitRect = remember(imageAspect, containerWidthPx, containerHeightPx) {
         computeFittedImageRect(imageAspect, containerWidthPx, containerHeightPx)
     }
-    if (imageModel == null || fitRect == null) return
+    // 无图可加载：不组合任何内容
+    if (activeModel == null) return
 
     val density = LocalDensity.current
+    // 【空白死锁修复】此前 fitRect == null 时整个组件提前 return，而 AsyncImage 位于
+    // return 之后——首次组合时 aspect 未知 → 组件直接返回 → 图片请求永不发出 →
+    // onSuccess 永不回调 → aspect 永远为 null → 表现为"什么都不显示"。
+    // 修复：AsyncImage 始终组合保证请求发出；aspect 未知期间以 alpha=0 的全尺寸布局
+    // 预加载（不可见、不可交互），写入后重新布局为 Fit 精确矩形并启用交互。
     Box(
         modifier = modifier
-            .offset { IntOffset(fitRect.left.roundToInt(), fitRect.top.roundToInt()) }
-            .size(
-                with(density) { fitRect.width().toDp() },
-                with(density) { fitRect.height().toDp() }
+            .then(
+                if (fitRect != null) {
+                    Modifier
+                        .offset { IntOffset(fitRect.left.roundToInt(), fitRect.top.roundToInt()) }
+                        .size(
+                            with(density) { fitRect.width().toDp() },
+                            with(density) { fitRect.height().toDp() }
+                        )
+                } else {
+                    Modifier.fillMaxSize()
+                }
             )
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
-                this.alpha = alpha
+                // fitRect 未知期间仅作预加载容器：完全透明，不干扰视觉
+                this.alpha = if (fitRect != null) alpha else 0f
             }
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { _ -> onTap() })
-            }
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDragStart = { _ -> onDragStart() },
-                    onDragEnd = onDragEnd,
-                    onDragCancel = onDragEnd
-                ) { change, dragAmount ->
-                    change.consume()
-                    onDrag(dragAmount.x, dragAmount.y)
+            .then(
+                if (fitRect != null) {
+                    Modifier
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = { _ -> onTap() })
+                        }
+                        .pointerInput(Unit) {
+                            detectDragGestures(
+                                onDragStart = { _ -> onDragStart() },
+                                onDragEnd = onDragEnd,
+                                onDragCancel = onDragEnd
+                            ) { change, dragAmount ->
+                                change.consume()
+                                onDrag(dragAmount.x, dragAmount.y)
+                            }
+                        }
+                } else {
+                    // aspect 未写入前不挂交互：加载失败/无图时不拦截触摸
+                    Modifier
                 }
-            }
+            )
     ) {
         AsyncImage(
-            model = imageModel,
+            model = activeModel,
             contentDescription = contentDescription,
             modifier = Modifier.fillMaxSize(),
             // 矩形尺寸 = 图片宽高比精确计算，FillBounds 不会引入变形
@@ -734,6 +783,9 @@ private fun InteractiveStaticFigure(
                 if (intrinsic.width > 0f && intrinsic.height > 0f) {
                     imageAspect = intrinsic.width / intrinsic.height
                 }
+            },
+            onError = {
+                if (fallbackModel != null) loadFailed = true
             }
         )
     }

@@ -801,9 +801,11 @@ fun AppContent() {
                 }
 
                 // 只有当悬浮窗未开启时才在应用内显示立绘
-                // 显示条件：figureUrl 非空（网络立绘回退）或 sdResourceId 非空（SD 资源直接渲染）
+                // 显示条件：figureUrl 非空（网络立绘回退）或 webChibiUrl 非空（网页 Q版小人回退）
+                // 或 sdResourceId 非空（SD 资源直接渲染）
                 val overlayEnabledForChibi by MainActivity.overlayState.collectAsState()
                 val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
+                    secretaryState.webChibiUrl.isNotEmpty() ||
                     secretaryState.sdResourceId.isNotEmpty()
                 if (hasChibiContent && !overlayEnabledForChibi) {
                     SecretaryChibiOverlay(
@@ -817,7 +819,8 @@ fun AppContent() {
                         },
                         selectedSkin = secretaryState.sdSkin,
                         sdScale = secretaryState.sdScale,
-                        sdResourceId = secretaryState.sdResourceId
+                        sdResourceId = secretaryState.sdResourceId,
+                        webChibiUrl = secretaryState.webChibiUrl
                     )
                 }
 

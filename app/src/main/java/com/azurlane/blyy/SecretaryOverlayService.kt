@@ -47,6 +47,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 秘书舰悬浮窗服务（双窗口架构）。
@@ -57,7 +59,7 @@ import javax.inject.Inject
  * 【优化后】双窗口架构：
  * 1. 主窗口（[composeView]）：尺寸 = baseSize × displayScale，仅含 SpineSdView。
  *    触摸区域紧贴小人实际显示范围，无透明区域拦截问题。
- *    sdScale 变化时动态调整尺寸并保持小人中心位置不变。
+ *    sdScale 变化时按"最小偏移锚定"策略动态调整尺寸（贴边停放时向空旷侧生长，不跳位）。
  *
  * 2. 辅助窗口（[auxComposeView]）：WRAP_CONTENT，紧贴主窗口上方。
  *    - 非拖动且有对话 → 显示气泡
@@ -160,9 +162,14 @@ class SecretaryOverlayService : Service() {
             // 基础尺寸与 SecretaryChibiOverlay 共用同一常量，保证双端渲染/交互范围一致
             val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
             val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
-            // 主窗口初始尺寸 = baseSize（sdScale 初始 1.0）；sdScale 变化后由 updateMainWindowSize 动态调整
-            val overlayWidthPx = baseWidthPx
-            val overlayHeightPx = baseHeightPx
+            // 【重启偏移修复】主窗口初始尺寸必须与持久化的 sdScale 一致。
+            // 旧实现固定按 baseSize（sdScale=1.0）建窗：用户上次放大后保存的位置是
+            // 大窗口左上角，先按小窗恢复、再由 updateMainWindowSize 以"小窗中心"为基准
+            // 缩放，最终小人中心整体向左上偏移 (新尺寸-旧尺寸)/2，表现为放大后
+            // 重启/重开悬浮窗时位置异常偏移。
+            val savedScale = playerSettings.secretarySdScale.first().coerceIn(0.3f, 2.0f)
+            val overlayWidthPx = (baseWidthPx * savedScale).toInt()
+            val overlayHeightPx = (baseHeightPx * savedScale).toInt()
 
             // 主窗口 LayoutParams：
             // - FLAG_NOT_FOCUSABLE：不抢占输入焦点
@@ -225,9 +232,11 @@ class SecretaryOverlayService : Service() {
                         }
 
                         // 监听对话/拖动/立绘状态变化：添加或移除辅助窗口
-                        // 显示条件：figureUrl 非空 或 sdResourceId 非空（SD 资源直接渲染时不依赖 figureUrl）
-                        LaunchedEffect(dialogue, isDragging, secretaryState.figureUrl, secretaryState.sdResourceId) {
+                        // 显示条件：figureUrl 非空 或 webChibiUrl 非空（网页 Q版小人回退）
+                        // 或 sdResourceId 非空（SD 资源直接渲染时不依赖 figureUrl）
+                        LaunchedEffect(dialogue, isDragging, secretaryState.figureUrl, secretaryState.webChibiUrl, secretaryState.sdResourceId) {
                             val hasContent = secretaryState.figureUrl.isNotEmpty() ||
+                                secretaryState.webChibiUrl.isNotEmpty() ||
                                 secretaryState.sdResourceId.isNotEmpty()
                             if (!hasContent) {
                                 hideAuxiliaryWindow()
@@ -239,6 +248,7 @@ class SecretaryOverlayService : Service() {
                         // 使用动画过渡效果
                         AnimatedVisibility(
                             visible = secretaryState.figureUrl.isNotEmpty() ||
+                                secretaryState.webChibiUrl.isNotEmpty() ||
                                 secretaryState.sdResourceId.isNotEmpty(),
                             enter = fadeIn(
                                 animationSpec = tween(ANIMATION_DURATION_MS, easing = FastOutSlowInEasing)
@@ -261,6 +271,7 @@ class SecretaryOverlayService : Service() {
                                 selectedSkin = secretaryState.sdSkin,
                                 sdScale = secretaryState.sdScale,
                                 sdResourceId = secretaryState.sdResourceId,
+                                webChibiUrl = secretaryState.webChibiUrl,
                                 onTap = {
                                     Log.d(TAG, "showOverlay: 悬浮窗被点击")
                                     if (secretaryState.shipName.isNotEmpty()) {
@@ -300,9 +311,11 @@ class SecretaryOverlayService : Service() {
     /**
      * 动态调整主窗口尺寸（sdScale 变化时调用）。
      *
-     * 保持小人中心位置不变：
-     * - 变化前中心 = (x + width/2, y + height/2)
-     * - 变化后位置 = 旧中心 - 新尺寸/2
+     * 【最小偏移锚定】从多候选锚定方案（左缘/右缘/顶缘/底缘/中心保持）中，
+     * 选择"边界 clamp 后小人中心相对旧中心偏移最小"的一个：
+     * - 屏幕中部的窗口等价于中心保持（clamp 不触发，中心不动）
+     * - 贴边停放的窗口向空旷侧生长，clamp 不触发，视觉零跳位
+     * 旧实现固定"中心保持"，贴边放大时新窗口越界被 clamp 反向推移，表现为放大跳位。
      *
      * 同步更新辅助窗口位置（紧贴新主窗口上方）。
      */
@@ -318,21 +331,45 @@ class SecretaryOverlayService : Service() {
 
         if (lp.width == newWidth && lp.height == newHeight) return
 
-        // 保持小人中心位置不变
-        val oldCenterX = lp.x + lp.width / 2
-        val oldCenterY = lp.y + lp.height / 2
+        val dm = resources.displayMetrics
+        val oldWidth = lp.width
+        val oldHeight = lp.height
+        val oldX = lp.x
+        val oldY = lp.y
+        val oldCenterX = oldX + oldWidth / 2f
+        val oldCenterY = oldY + oldHeight / 2f
         lp.width = newWidth
         lp.height = newHeight
-        lp.x = oldCenterX - newWidth / 2
-        lp.y = oldCenterY - newHeight / 2
 
-        // 边界检查：x 限制在屏幕内；y 允许向上溢出 CHIBI_DRAG_MARGIN_RATIO 比例
-        // 与 moveMainWindow 的边界限制保持一致，确保缩放后小人仍可位于屏幕上方区域
-        val dm = resources.displayMetrics
-        lp.x = lp.x.coerceIn(0, (dm.widthPixels - newWidth).coerceAtLeast(0))
-        val minY = -(newHeight * CHIBI_DRAG_MARGIN_RATIO).toInt()
+        // x 允许范围：限制在屏幕内（与 moveMainWindow 的边界限制一致）
+        val maxX = (dm.widthPixels - newWidth).coerceAtLeast(0)
+        lp.x = pickMinShiftAnchor(
+            candidates = floatArrayOf(
+                oldX.toFloat(),                             // 左缘锚定：向右生长
+                (oldX + oldWidth - newWidth).toFloat(),     // 右缘锚定：向左生长
+                oldCenterX - newWidth / 2f                  // 中心保持
+            ),
+            minBound = 0f,
+            maxBound = maxX.toFloat(),
+            oldCenter = oldCenterX,
+            newSize = newWidth
+        )
+
+        // y 允许范围：允许向上溢出 CHIBI_DRAG_MARGIN_RATIO 比例（与 moveMainWindow 一致），
+        // 确保缩放后小人仍可位于屏幕上方区域
+        val minY = -(newHeight * CHIBI_DRAG_MARGIN_RATIO)
         val maxY = (dm.heightPixels - newHeight).coerceAtLeast(0)
-        lp.y = lp.y.coerceIn(minY, maxY)
+        lp.y = pickMinShiftAnchor(
+            candidates = floatArrayOf(
+                oldY.toFloat(),                             // 顶缘锚定：向下生长
+                (oldY + oldHeight - newHeight).toFloat(),   // 底缘锚定：向上生长（脚底不动）
+                oldCenterY - newHeight / 2f                 // 中心保持
+            ),
+            minBound = minY.toFloat(),
+            maxBound = maxY.toFloat(),
+            oldCenter = oldCenterY,
+            newSize = newHeight
+        )
 
         try {
             windowManager?.updateViewLayout(view, lp)
@@ -344,6 +381,26 @@ class SecretaryOverlayService : Service() {
         updateAuxiliaryPosition()
         // 缩放调整过位置，持久化保持"重启后回到当前位置"
         persistWindowPosition()
+    }
+
+    /**
+     * 从多个候选位置中选出"clamp 后窗口中心相对旧中心偏移最小"的一个（px）。
+     *
+     * 缩放窗口时不同锚定方案（边缘/中心）经边界 clamp 后的小人中心偏移不同，
+     * 取偏移最小者可消除放大时的异常跳位。候选均为 clamp 前的期望位置。
+     */
+    private fun pickMinShiftAnchor(
+        candidates: FloatArray,
+        minBound: Float,
+        maxBound: Float,
+        oldCenter: Float,
+        newSize: Int
+    ): Int {
+        val best = candidates.minByOrNull { desired ->
+            val clamped = desired.coerceIn(minBound, maxBound)
+            abs(clamped + newSize / 2f - oldCenter)
+        } ?: return oldCenter.roundToInt() - newSize / 2
+        return best.roundToInt().coerceIn(minBound.roundToInt(), maxBound.roundToInt())
     }
 
     /**

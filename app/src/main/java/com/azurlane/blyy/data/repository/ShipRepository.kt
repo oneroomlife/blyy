@@ -34,6 +34,22 @@ import java.util.concurrent.ConcurrentHashMap
 private const val TAG = "ShipRepository"
 
 /**
+ * 语音数据解析结果（[ShipRepository.fetchVoices] 返回值）。
+ *
+ * 数据类属性顺序与旧 Triple 一致（voices → defaultFigureUrl → skinFigureMap），
+ * 现有调用方的 `val (voices, _, _) = getVoicesUseCase(...)` 解构写法无需修改。
+ *
+ * @param defaultChibiUrl wiki 页面默认 Q版小人（SD 静态图）URL；
+ *        供秘书舰在未匹配到本地 SD 资源时回退显示，页面无小人时为 null
+ */
+data class VoicesData(
+    val voices: List<VoiceLine>,
+    val defaultFigureUrl: String?,
+    val skinFigureMap: Map<String, String>,
+    val defaultChibiUrl: String? = null
+)
+
+/**
  * 舰船/学生数据仓库。
  *
  * 必须为 [Singleton]：内部持有 [voiceCache] 等可变状态，
@@ -220,7 +236,7 @@ class ShipRepository @Inject constructor(
 
 
 
-    suspend fun fetchVoices(shipName: String): Triple<List<VoiceLine>, String, Map<String, String>> = withContext(Dispatchers.IO) {
+    suspend fun fetchVoices(shipName: String): VoicesData = withContext(Dispatchers.IO) {
         val url = buildWikiUrl(shipName)
         
         Log.d(TAG, "Fetching voices from: $url")
@@ -231,6 +247,9 @@ class ShipRepository @Inject constructor(
             onSuccess = { doc ->
                 val skinFigureMap = extractSkinFigureMap(doc)
                 val defaultFigureUrl = skinFigureMap.values.firstOrNull() ?: extractFigureUrl(doc)
+                // 默认 Q版小人（SD 静态图）：与 fetchShipGallery 同源解析，
+                // 供秘书舰在未匹配本地 SD 资源时回退显示（避免回退到完整立绘大图）
+                val defaultChibiUrl = collectChibiCandidates(doc).firstOrNull()?.second
 
                 val voices = mutableListOf<VoiceLine>()
                 val tables = doc.select(".table-ShipWordsTable")
@@ -271,8 +290,8 @@ class ShipRepository @Inject constructor(
                 if (voices.isEmpty()) throw IllegalStateException("未找到语音数据")
                 
                 Log.d(TAG, "Found ${voices.size} voices, ${skinFigureMap.size} skin figures")
-                
-                Triple(voices, defaultFigureUrl, skinFigureMap)
+
+                VoicesData(voices, defaultFigureUrl, skinFigureMap, defaultChibiUrl)
             },
             onFailure = { e ->
                 Log.e(TAG, "Failed to fetch voices", e)
@@ -382,6 +401,46 @@ class ShipRepository @Inject constructor(
         return figureUrl
     }
 
+    /**
+     * 抓取 wiki 页面隐藏图层中的所有 Q版小人（SD 静态图）候选。
+     *
+     * 供 [fetchShipGallery]（皮肤→小人映射）与 [fetchVoices]（默认小人）、
+     * [fetchDefaultChibiUrl] 共用，保证三处解析口径一致。
+     *
+     * @return Pair(alt 文本, 图片 URL) 列表，仅含 .png 静态图
+     */
+    private fun collectChibiCandidates(doc: org.jsoup.nodes.Document): List<Pair<String, String>> {
+        val chibiCandidates = mutableListOf<Pair<String, String>>()
+        doc.select(".data-container img, .qchar-container img, .qchar-figure img").forEach { img ->
+            val alt = img.attr("alt").ifEmpty { img.attr("title") }.trim()
+            val src = formatUrl(img.attr("src").ifEmpty { img.attr("data-src") })
+            if (src.endsWith(".png")) {
+                chibiCandidates.add(Pair(alt, src))
+            }
+        }
+        return chibiCandidates
+    }
+
+    /**
+     * 抓取舰娘 wiki 页面的默认 Q版小人（SD 静态图）URL。
+     *
+     * 供秘书舰在"查看立绘"无手动选择记录时回退到默认小人。
+     *
+     * @return 小人图片 URL；页面无小人或请求失败时返回空串
+     */
+    suspend fun fetchDefaultChibiUrl(shipName: String): String = withContext(Dispatchers.IO) {
+        val url = buildWikiUrl(shipName)
+        networkHelper.fetchDocument(url, maxRetries = 2).fold(
+            onSuccess = { doc ->
+                collectChibiCandidates(doc).firstOrNull()?.second ?: ""
+            },
+            onFailure = { e ->
+                Log.w(TAG, "fetchDefaultChibiUrl failed for $shipName", e)
+                ""
+            }
+        )
+    }
+
     suspend fun fetchShipGallery(shipName: String): ShipGallery = withContext(Dispatchers.IO) {
         Log.d(TAG, "fetchShipGallery START for: $shipName")
         
@@ -414,16 +473,9 @@ class ShipRepository @Inject constructor(
                 // 【关键修复】确保去重后的 Illustrations 作为最终参考，避免后方 mapping 错位
                 val uniqueIllustrations = illustrations.distinctBy { it.second }
 
-                // 2. 抓取隐藏图层里的所有 Q版小人 候选列表
-                val chibiCandidates = mutableListOf<Pair<String, String>>()
-                doc.select(".data-container img, .qchar-container img, .qchar-figure img").forEach { img ->
-                    val alt = img.attr("alt").ifEmpty { img.attr("title") }.trim()
-                    val src = formatUrl(img.attr("src").ifEmpty { img.attr("data-src") })
-                    if (src.endsWith(".png")) {
-                        chibiCandidates.add(Pair(alt, src))
-                    }
-                }
-                
+                // 2. 抓取隐藏图层里的所有 Q版小人 候选列表（与 fetchVoices 共用解析逻辑）
+                val chibiCandidates = collectChibiCandidates(doc)
+
                 val defaultChibiUrl = chibiCandidates.firstOrNull()?.second ?: extractFigureUrl(doc)
 
                 // 3. 严格复刻 js 的匹配逻辑，保证小人数据条目与大立绘 1:1 对等

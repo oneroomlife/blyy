@@ -1,13 +1,13 @@
 package com.azurlane.blyy.domain
 
-import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.data.repository.ShipRepository
+import com.azurlane.blyy.data.repository.VoicesData
 import javax.inject.Inject
 
 class GetVoicesUseCase @Inject constructor(
     private val repository: ShipRepository
 ) {
-    suspend operator fun invoke(shipName: String): Triple<List<VoiceLine>, String, Map<String, String>> {
+    suspend operator fun invoke(shipName: String): VoicesData {
         return repository.fetchVoices(shipName)
     }
 }

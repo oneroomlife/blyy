@@ -12,6 +12,7 @@ import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
+import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.domain.SelectSecretaryUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
@@ -44,7 +45,15 @@ data class SecretaryManagerState(
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
     val sdResourceId: String = "",
     /** 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互） */
-    val overlayTouchPassthrough: Boolean = false
+    val overlayTouchPassthrough: Boolean = false,
+    /**
+     * wiki 网页端 Q版小人（SD 静态图）URL。
+     *
+     * 本地 SD 资源未匹配到时的回退显示图：
+     * - 优先取「查看立绘」中用户选择的 SD 小人（savedFigure）
+     * - 未选择时取 wiki 页面默认小人
+     */
+    val webChibiUrl: String = ""
 )
 
 @Singleton
@@ -57,7 +66,8 @@ class SecretaryManager @Inject constructor(
     private val selectSecretaryUseCase: SelectSecretaryUseCase,
     private val getVoicesUseCase: GetVoicesUseCase,
     private val playbackServiceConnection: PlaybackServiceConnection,
-    private val shipDao: ShipDao
+    private val shipDao: ShipDao,
+    private val shipRepository: ShipRepository
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -71,6 +81,7 @@ class SecretaryManager @Inject constructor(
     private val _sdSkin = MutableStateFlow("")
     private val _sdScale = MutableStateFlow(1.0f)
     private val _sdResourceId = MutableStateFlow("")
+    private val _webChibiUrl = MutableStateFlow("")
     private var autoPlayJob: Job? = null
     private var dialogueClearJob: Job? = null
     
@@ -92,7 +103,8 @@ class SecretaryManager @Inject constructor(
         _sdSkin,
         _sdScale,
         _sdResourceId,
-        settingsDataStore.secretaryOverlayTouchPassthrough
+        settingsDataStore.secretaryOverlayTouchPassthrough,
+        _webChibiUrl
     ) { args ->
         SecretaryManagerState(
             shipName = args[0] as String,
@@ -108,7 +120,8 @@ class SecretaryManager @Inject constructor(
             sdSkin = args[10] as String,
             sdScale = args[11] as Float,
             sdResourceId = args[12] as String,
-            overlayTouchPassthrough = args[13] as Boolean
+            overlayTouchPassthrough = args[13] as Boolean,
+            webChibiUrl = args[14] as String
         )
     }.stateIn(
         scope = scope,
@@ -118,7 +131,17 @@ class SecretaryManager @Inject constructor(
 
     init {
         scope.launch {
-            settingsDataStore.secretaryShipName.collect { _shipName.value = it }
+            settingsDataStore.secretaryShipName.collect { name ->
+                _shipName.value = name
+                // 【空白修复】DataStore 只持久化舰名/立绘/头像，webChibiUrl 未持久化：
+                // 无本地 SD 资源的舰娘在重启后 webChibiUrl 为空，若立绘也曾被清空
+                // （如 SD 资源联动路径 saveSecretaryShip(ship, "", "")），悬浮小人
+                // 会因 figureUrl/webChibiUrl 双空而不渲染任何内容。
+                // 冷启动触发一次后台加载，内部会顺带补齐缺失的立绘与小人 URL。
+                if (name.isNotEmpty() && _voices.value.isEmpty()) {
+                    loadVoicesInBackground(name)
+                }
+            }
         }
         scope.launch {
             settingsDataStore.secretaryFigureUrl.collect { _figureUrl.value = it }
@@ -183,7 +206,7 @@ class SecretaryManager @Inject constructor(
             
             // 从 Wiki 获取立绘 URL
             _isLoadingVoices.value = true
-            val (voices, defaultFigure, skinFigureMap) = getVoicesUseCase(ship.name)
+            val (voices, defaultFigure, skinFigureMap, defaultChibi) = getVoicesUseCase(ship.name)
 
             // 与 loadFigureAndSave 同一优先级：历史保存立绘 > 皮肤立绘 > 默认立绘 > 头像。
             // 此前直接取 skinFigureMap.firstOrNull（依赖 Map 顺序、且与随机翻牌路径不一致），
@@ -193,8 +216,11 @@ class SecretaryManager @Inject constructor(
                 ?: skinFigureMap.values.firstOrNull()
                 ?: defaultFigure
                 ?: ship.avatarUrl
-            
+
             _figureUrl.value = finalFigureUrl
+            // 网页 Q版小人回退图：跟随「查看立绘」中的 SD 小人选择（savedFigure），
+            // 未选择时用 wiki 默认小人，避免未匹配本地 SD 资源时回退到完整立绘大图
+            _webChibiUrl.value = savedFigure ?: defaultChibi.orEmpty()
             _voices.value = voices
             _isLoadingVoices.value = false
             
@@ -212,6 +238,7 @@ class SecretaryManager @Inject constructor(
             Log.e(TAG, "selectShip: 选择失败，使用头像降级", e)
             // 优雅降级：使用头像作为立绘
             _figureUrl.value = ship.avatarUrl
+            _webChibiUrl.value = ""
             _voices.value = emptyList()
             _isLoadingVoices.value = false
 
@@ -228,15 +255,18 @@ class SecretaryManager @Inject constructor(
         _isLoadingVoices.value = true
         
         try {
-            val (voices, defaultFigure, skinFigureMap) = getVoicesUseCase(ship.name)
+            val (voices, defaultFigure, skinFigureMap, defaultChibi) = getVoicesUseCase(ship.name)
             val savedFigure = settingsDataStore.getSavedFigure(ship.name).first()
             val figureUrl = savedFigure
                 ?: skinFigureMap.values.firstOrNull()
                 ?: defaultFigure
-            
+                ?: ""
+
             // 立即更新UI
             _shipName.value = ship.name
             _figureUrl.value = figureUrl
+            // 网页 Q版小人回退图：跟随「查看立绘」中的 SD 小人选择（同 selectShip 优先级）
+            _webChibiUrl.value = savedFigure ?: defaultChibi.orEmpty()
             _avatarUrl.value = ship.avatarUrl
             _voices.value = voices
 
@@ -253,6 +283,7 @@ class SecretaryManager @Inject constructor(
             // 优雅降级
             _shipName.value = ship.name
             _figureUrl.value = ship.avatarUrl
+            _webChibiUrl.value = ""
             _avatarUrl.value = ship.avatarUrl
             _voices.value = emptyList()
 
@@ -273,6 +304,7 @@ class SecretaryManager @Inject constructor(
         _shipName.value = ""
         _figureUrl.value = ""
         _avatarUrl.value = ""
+        _webChibiUrl.value = ""
         _voices.value = emptyList()
         stopAutoPlay()
         // 持久化清理（NonCancellable：即使 scope 被取消也需完成，避免重启后残留旧数据）
@@ -372,8 +404,24 @@ class SecretaryManager @Inject constructor(
         val job = scope.launch {
             _isLoadingVoices.value = true
             try {
-                val (voices, _, _) = getVoicesUseCase(shipName)
+                if (_voices.value.isNotEmpty()) {
+                    // selectShip 等路径已加载过语音并同步补齐图源，无需重复网络请求
+                    return@launch
+                }
+                val (voices, defaultFigure, skinFigureMap, defaultChibi) = getVoicesUseCase(shipName)
                 _voices.value = voices
+                // 【空白修复】补齐缺失的立绘与网页 Q版小人 URL：
+                // - 冷启动恢复：DataStore 未持久化 webChibiUrl
+                // - SD 资源联动清空：updateShipFromResourceId 曾以空串覆盖立绘
+                // 仅在秘书舰仍是该舰名时写入，避免快速切换后误写旧舰娘数据
+                if (_shipName.value == shipName) {
+                    if (_figureUrl.value.isBlank()) {
+                        _figureUrl.value = skinFigureMap.values.firstOrNull() ?: defaultFigure ?: ""
+                    }
+                    if (_webChibiUrl.value.isBlank()) {
+                        _webChibiUrl.value = defaultChibi.orEmpty()
+                    }
+                }
                 Log.d(TAG, "loadVoicesInBackground: 加载了 ${voices.size} 条语音")
             } catch (e: Exception) {
                 Log.e(TAG, "loadVoicesInBackground: 加载失败", e)
@@ -506,6 +554,7 @@ class SecretaryManager @Inject constructor(
                 _voices.value = emptyList()
                 _avatarUrl.value = ""
                 _figureUrl.value = ""
+                _webChibiUrl.value = ""
                 _currentDialogue.value = null
                 stopAutoPlay()
                 // 停止当前正在播放的语音
@@ -532,6 +581,26 @@ class SecretaryManager @Inject constructor(
             // 持久化新舰名，立绘和头像清空让后续加载流程重新获取
             withContext(NonCancellable) {
                 settingsDataStore.saveSecretaryShip(shipName, "", "")
+            }
+            // 网页 Q版小人回退图：跟随「查看立绘」选择，未选择时后台抓取 wiki 默认小人
+            // （保证后续移除 SD 资源时仍能回退显示静态小人而非空白）
+            val savedFigure = settingsDataStore.getSavedFigure(shipName).first()
+            _webChibiUrl.value = savedFigure ?: ""
+            if (savedFigure.isNullOrBlank()) {
+                scope.launch {
+                    val chibi = withContext(Dispatchers.IO) {
+                        try {
+                            shipRepository.fetchDefaultChibiUrl(shipName)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "updateShipFromResourceId: 抓取默认小人失败 $shipName", e)
+                            ""
+                        }
+                    }
+                    // 仅当秘书舰仍是该舰名时生效，避免切换后误写旧舰娘数据
+                    if (_shipName.value == shipName && _webChibiUrl.value.isEmpty()) {
+                        _webChibiUrl.value = chibi
+                    }
+                }
             }
             // 后台加载新舰娘的语音
             loadVoicesInBackground(shipName)
