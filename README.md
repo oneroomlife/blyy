@@ -19,6 +19,7 @@
   <a href="#testing">测试</a> •
   <a href="#ci">CI</a> •
   <a href="#contributing">贡献指南</a> •
+  <a href="#star-history">Star 走势</a> •
   <a href="#acknowledgements">致谢</a>
 </p>
 
@@ -375,6 +376,20 @@ GitHub Actions（[android.yml](.github/workflows/android.yml)）在 push / PR �
 - 如有侵权，请通过 [GitHub Issues](https://github.com/oneroomlife/blyy/issues) 联系删除
 
 **本项目不提供任何游戏资源文件，所有资源均通过网络从公开渠道获取。**
+
+<a id="star-history"></a>
+
+## 📈 Star 走势
+
+<p align="center">
+  <a href="https://star-history.com/#oneroomlife/blyy">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=oneroomlife/blyy&type=Date&theme=dark" />
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=oneroomlife/blyy&type=Date&theme=light" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=oneroomlife/blyy&type=Date" />
+    </picture>
+  </a>
+</p>
 
 <a id="acknowledgements"></a>
 
