@@ -242,7 +242,7 @@ object AvatarMatcher {
 
         // 5. 反向包含匹配
         if (pinyin.isNotEmpty()) {
-            resolveReverseContaining(index, pinyin)?.let {
+            resolveReverseContaining(index, shipName, pinyin)?.let {
                 Log.i(TAG, "[MATCH] '$shipName' -> reverse containing($pinyin): $it")
                 return it
             }
@@ -250,7 +250,7 @@ object AvatarMatcher {
 
         // 6. 模糊子串匹配
         if (pinyin.isNotEmpty()) {
-            resolveFuzzySubstring(index, pinyin)?.let {
+            resolveFuzzySubstring(index, shipName, pinyin)?.let {
                 Log.i(TAG, "[MATCH] '$shipName' -> fuzzy substring($pinyin): $it")
                 return it
             }
@@ -462,11 +462,17 @@ object AvatarMatcher {
 
         // 4. 模糊子串匹配兜底：文件名核心部分是拼音的子串 + 后缀
         // 覆盖 "朱利奥·凯撒·META" → kaisa_alter（kaisa 是 zhuliaokaisa 的子串）
+        // 子串出现同样必须与音节边界对齐（与 resolveFuzzySubstring 同一防误配闸门）
         if (pinyin.isNotEmpty() && pinyin.length >= 5) {
             val bestMatch = index.entries
                 .filter { (key, _) ->
                     key.endsWith(suffix) &&
                         key.length > suffix.length + 3 &&
+                        PinyinHelper.isSyllableAligned(
+                            baseName,
+                            pinyin,
+                            key.removeSuffix(suffix)
+                        ) &&
                         pinyin.contains(key.removeSuffix(suffix))
                 }
                 .maxByOrNull { it.key.length }
@@ -512,14 +518,31 @@ object AvatarMatcher {
      * ⚠️ 反向包含是误配重灾区（"印第安纳波利斯"曾误配"印第安纳"的 yindianna），
      * 新发现的撞车舰娘应加入 [BLOCK_NAMES] 而非在此加特例。
      */
-    private fun resolveReverseContaining(index: Map<String, String>, pinyin: String): String? {
+    /**
+     * 反向包含匹配：查找是拼音前缀的文件（assets 缩短命名兜底）。
+     *
+     * 处理 assets 文件使用缩短命名、文件名是舰娘拼音**前缀**的情况：
+     * - `abuluqi` ← "阿布鲁齐公爵"（pinyin=abuluqigongjue）
+     * - `wuerlixi` ← "乌尔里希·冯·胡滕"（pinyin=wuerlixifenghuteng）
+     * - `ougen` ← "欧根亲王"（pinyin=ougenqinwang）
+     * - `zaoshen` ← "女灶神"（pinyin=nvzaoshen）
+     *
+     * 多个匹配时选最长（最精确）的文件名。
+     * 前缀终点必须落在舰娘名逐字拼音的音节边界上（整字缩写），防止
+     * 截断在音节中间的偶然前缀（如 "abulu" 截断 "阿布鲁齐" 的 "qi"）。
+     * ⚠️ 反向包含是误配重灾区（"印第安纳波利斯"曾误配"印第安纳"的 yindianna），
+     * 新发现的撞车舰娘应加入 [BLOCK_NAMES] 而非在此加特例。
+     */
+    private fun resolveReverseContaining(index: Map<String, String>, shipName: String, pinyin: String): String? {
         if (pinyin.length < 5) return null
         return index.entries
             .mapNotNull { (key, value) ->
                 // 1. 文件名无下划线：直接检查文件名是否为拼音前缀
                 // 阈值 >= 4 支持 gezi/aila/kala/lila/bawu 等短文件名
                 if (!key.contains('_')) {
-                    if (key.length >= 4 && pinyin.startsWith(key)) {
+                    if (key.length >= 4 && pinyin.startsWith(key) &&
+                        PinyinHelper.isSyllableBoundaryAt(shipName, pinyin, key.length)
+                    ) {
                         key to value
                     } else null
                 } else {
@@ -531,7 +554,9 @@ object AvatarMatcher {
                     if (isSkinSuffix(suffix)) return@mapNotNull null
                     val pre = key.substringBefore('_')
                     // 阈值 >= 4 避免过短前缀误匹配（如 xia_DOA 误匹配"小"系列舰娘）
-                    if (pre.length >= 4 && pinyin.startsWith(pre)) {
+                    if (pre.length >= 4 && pinyin.startsWith(pre) &&
+                        PinyinHelper.isSyllableBoundaryAt(shipName, pinyin, pre.length)
+                    ) {
                         pre to value
                     } else null
                 }
@@ -566,11 +591,14 @@ object AvatarMatcher {
      * - 仅处理无下划线的纯拼音文件名（带后缀的 _alter/_idol 等已有专门策略）
      * - 文件名长度 >= 4（避免过短文件名造成大面积误匹配）
      * - 文件名是拼音的连续子串（pinyin.contains(fileName)）
+     * - **音节边界对齐**：子串出现位置必须落在舰娘名逐字拼音的音节边界上，
+     *   防止跨字拼接误配——典型案例 "水星号"(shui|xing|hao) 字符层面包含
+     *   "彗星"(huixing)，但 s[huixing]hao 不是音节对齐的出现，必须拒绝
      * - 相似度阈值：文件名长度 / 拼音长度 >= 0.4（确保文件名足够显著，避免偶然子串匹配）
      *   特例：文件名长度 >= 6 时跳过比例检查（长文件名本身已足够特异）
      * - 多候选取最长文件名（最精确）
      */
-    private fun resolveFuzzySubstring(index: Map<String, String>, pinyin: String): String? {
+    private fun resolveFuzzySubstring(index: Map<String, String>, shipName: String, pinyin: String): String? {
         if (pinyin.length < 5) return null
         return index.entries
             .filter { (key, _) ->
@@ -579,6 +607,8 @@ object AvatarMatcher {
                     key.length >= 4 &&
                     // 文件名是拼音的连续子串
                     pinyin.contains(key) &&
+                    // 子串出现位置必须与音节边界对齐（防跨字拼接）
+                    PinyinHelper.isSyllableAligned(shipName, pinyin, key) &&
                     // 相似度阈值：长文件名(>=6)直接通过，短文件名需比例>=0.4
                     (key.length >= 6 || key.length.toFloat() / pinyin.length >= 0.4f)
             }

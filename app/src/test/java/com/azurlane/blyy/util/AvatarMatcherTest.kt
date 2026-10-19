@@ -22,7 +22,11 @@ class AvatarMatcherTest {
 
     companion object {
         /** 已确认 assets 中无对应资源的舰娘（运行时由网络 URL 兜底），新增失配需先核实再添加 */
-        private val KNOWN_MISSING = setOf<String>()
+        private val KNOWN_MISSING = setOf<String>(
+            // 水星号（NO.759 风帆V，2026-10-22 实装）：assets 无 shuixinghao 资源。
+            // 修复前经模糊子串跨字拼接误配"彗星"(s[huixing]hao)；音节边界闸门上线后正确失配
+            "水星号"
+        )
 
         private fun loadShipNames(): List<String> {
             val stream = AvatarMatcherTest::class.java.classLoader!!.getResourceAsStream("ship_names.txt")

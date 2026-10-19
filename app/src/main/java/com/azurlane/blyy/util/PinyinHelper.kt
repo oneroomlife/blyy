@@ -189,4 +189,73 @@ object PinyinHelper {
         }
         return segments
     }
+
+    /**
+     * 判断候选拼音串在舰娘全拼中的出现是否与逐字拼音的音节边界对齐。
+     *
+     * 模糊子串匹配的防误配闸门：仅 `pinyin.contains(candidate)` 不够——
+     * 候选可能由相邻汉字拼音的**跨字拼接**偶然构成。典型案例
+     * "水星号"(shui|xing|hao) 在字符层面包含 "彗星"(huixing)：
+     * `s[huixing]hao`——按音节切分后 "shui" 与 "huixing" 并不对齐，
+     * 据此命中"彗星"头像纯属误配。
+     *
+     * 实现按舰娘原文的逐字分段收集全部边界偏移（前缀和），要求候选的
+     * 起点与终点都落在真实 segment 边界上。多音字取首个读音，与全拼一致。
+     *
+     * @param text 舰娘名原文（如 "水星号"）
+     * @param pinyin 舰娘名全拼（[toPinyin] 的输出，校验用）
+     * @param candidate 候选串（无下划线纯拼音文件名/目录名）
+     * @return true 表示候选在拼音中的出现位置可由完整音节边界解释；
+     *         无法转换/无法校验时放行（true），防误杀合法匹配
+     */
+    fun isSyllableAligned(text: String, pinyin: String, candidate: String): Boolean {
+        if (candidate.isEmpty() || candidate.length > pinyin.length) return false
+        if (candidate == pinyin) return true
+
+        val segments = toPinyinSegments(text).filter { it.isNotEmpty() }
+        val rebuilt = segments.joinToString("")
+        if (rebuilt != pinyin || segments.size < 2) return true  // 无法校验，放行
+
+        // 全部边界偏移（前缀和）；0 与总长天然是边界
+        val offsets = HashSet<Int>(segments.size * 2)
+        offsets.add(0)
+        var acc = 0
+        for (seg in segments) {
+            acc += seg.length
+            offsets.add(acc)
+        }
+
+        var start = pinyin.indexOf(candidate)
+        while (start != -1) {
+            val end = start + candidate.length
+            if (start in offsets && end in offsets) return true
+            start = pinyin.indexOf(candidate, start + 1)
+        }
+        return false
+    }
+
+    /**
+     * 判断舰娘全拼的 [offset] 位置是否落在逐字拼音的音节边界上。
+     *
+     * 前缀类匹配（文件名是舰娘全拼的前缀）专用闸门：起点 0 天然是边界，
+     * 但前缀的**终点**可能截断在某个音节中间——那说明文件名不是按整字
+     * 缩写命名的，匹配不可信。与 [isSyllableAligned] 的区别：本函数只看
+     * 指定偏移，不接受"候选在其他位置恰好对齐"的情况。
+     *
+     * @param text 舰娘名原文（如 "阿布鲁齐公爵"）
+     * @param pinyin 舰娘名全拼（[toPinyin] 的输出）
+     * @param offset 待校验的截断位置（前缀长度）
+     * @return true 表示偏移是音节边界，或无法转换时放行（防误杀）
+     */
+    fun isSyllableBoundaryAt(text: String, pinyin: String, offset: Int): Boolean {
+        if (offset <= 0 || offset >= pinyin.length) return true
+        val segments = toPinyinSegments(text).filter { it.isNotEmpty() }
+        if (segments.joinToString("") != pinyin) return true  // 无法校验，放行
+        var acc = 0
+        for (seg in segments) {
+            acc += seg.length
+            if (acc == offset) return true
+        }
+        return false
+    }
 }

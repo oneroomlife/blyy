@@ -369,7 +369,7 @@ object LocalSdResolver {
         // 8. 模糊子串匹配：资源目录名是舰娘拼音的任意位置连续子串（最后兜底）
         // 覆盖联动舰娘等部分命名情况（如 qinli ← "五河琴里" pinyin=wuheqinli）
         if (fullPinyin.isNotEmpty()) {
-            val fuzzyMatch = resolveFuzzySubstring(fullPinyin, index)
+            val fuzzyMatch = resolveFuzzySubstring(shipName, fullPinyin, index)
             if (fuzzyMatch != null) {
                 Log.i(TAG, "Fuzzy substring match: $shipName (pinyin=$fullPinyin) → dir=$fuzzyMatch")
                 return buildAssetInfo(dir, fuzzyMatch)
@@ -389,17 +389,20 @@ object LocalSdResolver {
      * - 仅处理无下划线的纯拼音目录名（带后缀的 _alter/_idol 等已有专门策略）
      * - 目录名长度 >= 4（避免过短目录名造成大面积误匹配）
      * - 目录名是拼音的连续子串（pinyin.contains(dirName)）
+     * - **音节边界对齐**：子串出现位置必须落在舰娘名逐字拼音的音节边界上，
+     *   防止跨字拼接误配（如 "水星号" s[huixing]hao ≠ "彗星"）
      * - 相似度阈值：目录名长度 / 拼音长度 >= 0.4（确保目录名足够显著）
      *   特例：目录名长度 >= 6 时跳过比例检查（长目录名本身已足够特异）
      * - 多候选取最长目录名（最精确）
      */
-    private fun resolveFuzzySubstring(pinyin: String, index: Set<String>): String? {
+    private fun resolveFuzzySubstring(shipName: String, pinyin: String, index: Set<String>): String? {
         if (pinyin.length < 5) return null
         return index
             .filter { dirName ->
                 !dirName.contains('_') &&
                 dirName.length >= 4 &&
                 pinyin.contains(dirName) &&
+                PinyinHelper.isSyllableAligned(shipName, pinyin, dirName) &&
                 (dirName.length >= 6 || dirName.length.toFloat() / pinyin.length >= 0.4f)
             }
             .maxByOrNull { it.length }
