@@ -33,8 +33,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +45,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -64,6 +66,8 @@ import com.azurlane.blyy.util.SDResourceManager
 import com.azurlane.blyy.util.SDResourceType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -150,13 +154,20 @@ fun SecretaryChibiOverlay(
      *  优先取「查看立绘」中用户选择的 SD 小人，跟随其皮肤选择；为空时回退 figureUrl（完整立绘） */
     webChibiUrl: String = "",
     /**
-     * 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互）。
+     * 悬浮窗静态图分支的可交互矩形上报（仅 [isSystemOverlay] = true 时使用）。
      *
-     * - 系统悬浮窗场景：由 Service 层 FLAG_NOT_TOUCHABLE 控制，此参数不影响渲染层
-     * - 应用内场景：触摸穿透不生效，SD 小人始终可交互（点击/拖动）。
-     *   触摸穿透是系统悬浮窗专属功能，应用内 SD 小人是 App UI 的一部分，应始终响应触摸
+     * 每次图片 Fit 矩形变化时上报（窗口本地坐标 px）；null = 无可交互内容。
+     * Service 层 OverlayGestureHandler 据此做屏幕空间命中判断——静态图交互
+     * 已上移到 Service 层（修复自参考系拖拽漂移），Composable 层不再挂 pointerInput。
      */
-    overlayTouchPassthrough: Boolean = false,
+    onHitRectChanged: ((RectF?) -> Unit)? = null,
+    /**
+     * 悬浮窗分支模式上报（仅 [isSystemOverlay] = true 时使用）。
+     *
+     * true = 当前渲染 Spine 动画（交互由 GLSurfaceView 自身 OnTouchListener 处理，
+     * Service 层手势处理器放行）；false = 静态图分支（交互由 Service 层处理）。
+     */
+    onSpineActiveChanged: ((Boolean) -> Unit)? = null,
     /**
      * 拖动状态变化回调（仅 [isSystemOverlay] = true 时触发）。
      *
@@ -274,12 +285,18 @@ fun SecretaryChibiOverlay(
             label = "StaticFigureAlpha"
         )
 
+        // 拖动/点击的视觉反馈状态由 Service 层回调驱动：
+        // - Spine 分支：SpineSdView 的 onDragStart/onDragEnd/onTap 回调（下方直接接线）
+        // - 静态图分支：Service 层 OverlayGestureHandler → onDragStateChanged 回调
+        //   （isDragging 由 Service setContent 中的状态写入，见 SecretaryOverlayService）
+
         Box(modifier = modifier.size(overlayWidth, overlayHeight)) {
             if (asset != null && asset.isSpine) {
                 // ── SD 小人（Spine 动画）──
                 // 直接 fillMaxSize：窗口尺寸 = 渲染尺寸，无需 requiredSize + offset 补偿。
                 // 触摸穿透由 SpineSdGlSurfaceView 内部用骨骼 bounds 判断，无需外部限制。
                 // scaleMultiplier = 1.0：视口已反映 displayScale，SpineRenderer 自适应缩放即可。
+                LaunchedEffect(asset) { onSpineActiveChanged?.invoke(true) }
                 SpineSdView(
                     dirPath = asset.dirPath,
                     assetName = asset.assetName,
@@ -303,14 +320,14 @@ fun SecretaryChibiOverlay(
                 )
             } else {
                 // ── 静态图片资源 / 网页 Q版小人 / 网络立绘回退 ──
-                // 回退优先级：本地静态资源 → 网页 Q版小人（跟随「查看立绘」选择）→ 网络立绘。
-                // 静态图片资源用 asset.imageFilePath（本地文件）；
-                // 本地 SD 资源未匹配时优先用 webChibiUrl（wiki 静态小人，比完整立绘视觉更贴合 SD 场景）；
-                // 无小人图时最终回退 figureUrl（网络立绘 URL）。
-                // SD 解析未完成期间 imageModel = null：先不渲染，避免立绘→SD 小人的闪烁。
-                // 交互区域 = 图片实际显示矩形（Fit 后），不再整个窗口拦截触摸——
-                // 此前整个窗口挂 pointerInput，ContentScale.Fit 四周的透明区域
-                // 在悬浮窗场景会挡住下层 App 的触摸操作。
+                // 【交互已上移到 Service 层】旧 Compose pointerInput(detectDragGestures)
+                // 的 dragAmount 是视图本地坐标增量，而拖动会移动窗口本身——窗口跟随
+                // 手指移动后本地坐标几乎不变，dragAmount 趋近 0，拖拽极慢/卡死
+                // （与 SpineSdGlSurfaceView 注释记载的同源问题）。
+                // 现由 Service 层 OverlayGestureHandler 用 rawX/rawY 屏幕绝对坐标处理，
+                // 本层只上报可交互矩形（Fit 后图片实际显示区域）供命中判断，
+                // 并保留点击/拖动的视觉反馈动画（状态由 Service 层回调写入）。
+                LaunchedEffect(asset) { onSpineActiveChanged?.invoke(false) }
                 val imagePath = asset?.imageFilePath
                 val imageModel = when {
                     !sdResolved -> null
@@ -342,7 +359,9 @@ fun SecretaryChibiOverlay(
                     },
                     onDrag = { dx, dy -> onPositionChange?.invoke(dx, dy) },
                     scale = staticScale,
-                    alpha = staticAlpha
+                    alpha = staticAlpha,
+                    interactive = false,
+                    onHitRectChanged = onHitRectChanged
                 )
             }
         }
@@ -401,9 +420,12 @@ fun SecretaryChibiOverlay(
     //   displayScale=2.0 时 dragMinY=-baseHeightPx*0.15，但小人顶部 = localOffsetY + chibiHeadTopY
     //   = -baseHeightPx*0.15 + (-baseHeightPx*0.45) = -baseHeightPx*0.6，小人头部超出屏幕 60% 被裁剪
     // 修复后 dragMinY 考虑 chibiHeadTopY，保证小人顶部最多超出屏幕 margin（15% baseHeightPx）
-    val dragMinY = -chibiHeadTopY - baseHeightPx * CHIBI_DRAG_MARGIN_RATIO
-    val dragMaxY = screenHeight - chibiHeadTopY -
-        baseHeightPx * (CHIBI_VIEWPORT_USAGE * displayScale - CHIBI_DRAG_MARGIN_RATIO)
+        val dragMinY = -chibiHeadTopY - baseHeightPx * CHIBI_DRAG_MARGIN_RATIO
+        // coerceAtLeast(dragMinY)：小屏 + displayScale 接近 2.0 时原始值可能小于
+        // dragMinY（下界反转，拖动范围整个越界），夹取保证 maxY ≥ minY 至少合法
+        val dragMaxY = (screenHeight - chibiHeadTopY -
+            baseHeightPx * (CHIBI_VIEWPORT_USAGE * displayScale - CHIBI_DRAG_MARGIN_RATIO))
+            .coerceAtLeast(dragMinY)
 
     var localOffsetX by remember { mutableFloatStateOf(screenWidth - baseWidthPx - 24f) }
     var localOffsetY by remember { mutableFloatStateOf(screenHeight * 0.5f - baseHeightPx / 2) }
@@ -677,15 +699,20 @@ fun SecretaryOverlayAuxiliaryContent(
 }
 
 /**
- * 静态立绘交互层：把触摸交互限制在图片实际显示区域（ContentScale.Fit 后的矩形）。
+ * 静态立绘渲染层：把显示限制在图片实际显示区域（ContentScale.Fit 后的矩形）。
  *
- * 背景：此前静态图分支在整个容器（悬浮窗场景 = 整个窗口）上挂 pointerInput，
- * ContentScale.Fit 四周的透明区域同样拦截触摸——悬浮窗场景挡住下层 App，
- * 应用内场景挡住父级滚动手势，违背"只和 SD 小人显示部分交互"的目标。
+ * 背景：ContentScale.Fit 四周的透明区域不应参与显示与交互——悬浮窗场景挡住下层 App，
+ * 应用内场景挡住父级滚动手势。
  *
- * 实现：读取 Coil 加载结果的图片宽高比，计算 Fit 后的实际显示矩形，
- * 只在该矩形上渲染与交互；图片未加载（宽高比未知）或无图可显示（imageModel=null）
- * 时不提供任何交互（此前 null 模型也会挂一个整容器可交互的空 Box）。
+ * 两种交互模式：
+ * - [interactive] = true（应用内）：根坐标锚定拖拽 + 点击。旧 detectDragGestures 的
+ *   dragAmount 是节点本地坐标增量，而拖动回调会移动节点本身——节点跟随手指移动后
+ *   本地坐标反向漂移，表现为拖拽速度减半/卡顿。现改用手势锚定会话：在 DOWN 时记录
+ *   锚点（节点 offset + 指针窗口坐标），MOVE 时从锚点**绝对**推导新 offset——
+ *   节点自身移动不影响窗口坐标系测量帧，一次写对，无累积误差。
+ * - [interactive] = false（系统悬浮窗）：本层不挂任何 pointerInput，交互由 Service 层
+ *   OverlayGestureHandler（rawX/rawY 屏幕绝对坐标）处理；本层仅通过
+ *   [onHitRectChanged] 上报图片 Fit 矩形（窗口本地坐标）供命中判断。
  *
  * @param containerWidthPx/containerHeightPx 容器尺寸（px），显示矩形在其内计算
  * @param imageModel Coil 模型；null = 无图可显示，也不提供交互
@@ -710,7 +737,11 @@ private fun InteractiveStaticFigure(
      * 【空白修复】此前 Coil 加载失败时 imageAspect 永不写入 → fitRect 为 null →
      * 整个组件直接不渲染任何内容，即使降级图源可用也表现为"什么都不显示"。
      */
-    fallbackModel: Any? = null
+    fallbackModel: Any? = null,
+    /** 交互开关：true=应用内（本层处理手势），false=悬浮窗（Service 层处理，仅上报矩形） */
+    interactive: Boolean = true,
+    /** 悬浮窗场景：图片 Fit 矩形（窗口本地坐标 px）变化时上报；null = 无可交互内容 */
+    onHitRectChanged: ((RectF?) -> Unit)? = null
 ) {
     // 图片宽高比：由 Coil 加载成功回调写入；模型变化时重置（切舰娘/皮肤后重新测量）
     var imageAspect by remember { mutableStateOf<Float?>(null) }
@@ -721,7 +752,13 @@ private fun InteractiveStaticFigure(
     val fitRect = remember(imageAspect, containerWidthPx, containerHeightPx) {
         computeFittedImageRect(imageAspect, containerWidthPx, containerHeightPx)
     }
-    // 无图可加载：不组合任何内容
+
+    // 悬浮窗场景：把 Fit 矩形上报给 Service 层手势处理器做命中判断
+    if (onHitRectChanged != null) {
+        LaunchedEffect(fitRect) { onHitRectChanged(fitRect) }
+    }
+
+    // 无图可加载：不组合任何内容（悬浮窗场景同时上报 null 矩形，不拦截触摸）
     if (activeModel == null) return
 
     val density = LocalDensity.current
@@ -751,23 +788,17 @@ private fun InteractiveStaticFigure(
                 this.alpha = if (fitRect != null) alpha else 0f
             }
             .then(
-                if (fitRect != null) {
-                    Modifier
-                        .pointerInput(Unit) {
-                            detectTapGestures(onTap = { _ -> onTap() })
-                        }
-                        .pointerInput(Unit) {
-                            detectDragGestures(
-                                onDragStart = { _ -> onDragStart() },
-                                onDragEnd = onDragEnd,
-                                onDragCancel = onDragEnd
-                            ) { change, dragAmount ->
-                                change.consume()
-                                onDrag(dragAmount.x, dragAmount.y)
-                            }
-                        }
+                if (interactive && fitRect != null) {
+                    // 应用内场景：根坐标锚定手势（见函数 KDoc），无自参考系漂移
+                    Modifier.anchorDragGestures(
+                        onTap = onTap,
+                        onDragStart = onDragStart,
+                        onDragEnd = onDragEnd,
+                        onDrag = onDrag
+                    )
                 } else {
-                    // aspect 未写入前不挂交互：加载失败/无图时不拦截触摸
+                    // 悬浮窗场景（Service 层处理交互）或 aspect 未写入前：不挂交互，
+                    // 不拦截触摸（悬浮窗穿透到下层 App / 应用内穿透到父级滚动）
                     Modifier
                 }
             )
@@ -791,18 +822,83 @@ private fun InteractiveStaticFigure(
     }
 }
 
-/** 计算 ContentScale.Fit 后图片实际显示矩形（容器坐标，px）；宽高比未知或容器无效时返回 null */
-private fun computeFittedImageRect(aspect: Float?, containerW: Float, containerH: Float): RectF? {
-    if (aspect == null || !aspect.isFinite() || aspect <= 0f || containerW <= 0f || containerH <= 0f) return null
-    val containerAspect = containerW / containerH
-    return if (aspect >= containerAspect) {
-        // 图片更宽：宽度铺满，垂直居中
-        val h = containerW / aspect
-        RectF(0f, (containerH - h) / 2f, containerW, (containerH + h) / 2f)
-    } else {
-        // 图片更高：高度铺满，水平居中
-        val w = containerH * aspect
-        RectF((containerW - w) / 2f, 0f, (containerW + w) / 2f, containerH)
+/**
+ * 根坐标锚定拖拽手势修饰符（Composable 工厂形式）。
+ *
+ * 修复 detectDragGestures 在"拖动回调移动节点自身"场景下的自参考系漂移：
+ * dragAmount 是节点本地坐标增量，节点随手指移动后增量被节点位移抵消
+ * （手指移动 dx 的同时节点也移动 dx，下帧本地坐标几乎不变）。
+ *
+ * 本实现改为**绝对推导**：每个事件把指针位置换算到窗口坐标系
+ * （[LayoutCoordinates.localToWindow]，窗口坐标不随本节点移动变化），
+ * 增量 = 当前窗口坐标 − 上一事件窗口坐标，与节点自身位移无关，
+ * 手指移动多少节点就跟多少，无累积误差。
+ *
+ * 手势语义与系统一致：超 touchSlop 进入拖动，DOWN→UP 未超 slop 识别为点击。
+ */
+@Composable
+private fun Modifier.anchorDragGestures(
+    onTap: () -> Unit,
+    onDragStart: () -> Unit,
+    onDragEnd: () -> Unit,
+    onDrag: (dx: Float, dy: Float) -> Unit
+): Modifier {
+    // PointerInputScope 无 coordinates 属性（Compose 1.10），
+    // 用 onGloballyPositioned 捕获本节点布局坐标做 localToWindow 换算
+    var coordinatesRef by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    return this
+        .onGloballyPositioned { coordinatesRef = it }
+        .pointerInput(Unit) {
+            val touchSlop = viewConfiguration.touchSlop
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                var lastWindowPos = coordinatesRef?.localToWindow(down.position) ?: return@awaitEachGesture
+                var dragging = false
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val windowPos = coordinatesRef?.localToWindow(change.position) ?: break
+                        if (!dragging) {
+                            val dx = windowPos.x - lastWindowPos.x
+                            val dy = windowPos.y - lastWindowPos.y
+                            if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                                dragging = true
+                                onDragStart()
+                                // 拖动判定成立后回退到本事件起点重算增量，避免 slop 内的
+                                // 位移被丢弃造成起拖瞬间的小跳变
+                                lastWindowPos = coordinatesRef?.localToWindow(down.position) ?: windowPos
+                            }
+                        }
+                        if (dragging) {
+                            val dx = windowPos.x - lastWindowPos.x
+                            val dy = windowPos.y - lastWindowPos.y
+                            if (dx != 0f || dy != 0f) {
+                                onDrag(dx, dy)
+                                change.consume()
+                            }
+                        }
+                        lastWindowPos = windowPos
+                        if (event.changes.any { it.changedToUpIgnoreConsumed() }) {
+                            if (dragging) onDragEnd() else onTap()
+                            break
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    // 手势流被取消（节点离树/其他手势接管）：恢复状态后重新抛出，
+                    // awaitEachGesture 会等待所有指针抬起后进入下一轮
+                    if (dragging) onDragEnd()
+                    throw e
+                }
+            }
+        }
+}
+
+/** 计算 ContentScale.Fit 后图片实际显示矩形（容器坐标，px）；宽高比未知或容器无效时返回 null。
+ *  纯逻辑在 [OverlayGeometry.computeFittedImageRect]（可 JVM 单测），此处转换回 android RectF */
+internal fun computeFittedImageRect(aspect: Float?, containerW: Float, containerH: Float): RectF? {
+    return OverlayGeometry.computeFittedImageRect(aspect, containerW, containerH)?.let {
+        RectF(it.left, it.top, it.right, it.bottom)
     }
 }
 

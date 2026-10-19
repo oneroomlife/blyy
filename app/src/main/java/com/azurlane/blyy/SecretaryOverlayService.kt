@@ -2,11 +2,16 @@ package com.azurlane.blyy
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -30,11 +35,12 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import com.azurlane.blyy.MainActivity
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.ui.components.CHIBI_BASE_HEIGHT
 import com.azurlane.blyy.ui.components.CHIBI_BASE_WIDTH
 import com.azurlane.blyy.ui.components.CHIBI_DRAG_MARGIN_RATIO
+import com.azurlane.blyy.ui.components.OverlayGestureHandler
+import com.azurlane.blyy.ui.components.OverlayGeometry
 import com.azurlane.blyy.ui.components.SecretaryChibiOverlay
 import com.azurlane.blyy.ui.components.SecretaryOverlayAuxiliaryContent
 import com.azurlane.blyy.ui.theme.BlyyTheme
@@ -85,6 +91,21 @@ class SecretaryOverlayService : Service() {
     private var composeView: ComposeView? = null
     private var overlayLayoutParams: WindowManager.LayoutParams? = null
 
+    // ── 静态图分支手势处理（Service 层 rawX/rawY 拖拽）──
+    // 静态图 Composable 不挂 pointerInput，交互全部由此处理器在 View 层完成；
+    // Spine 分支激活时 spineActive=true 放行事件给 GLSurfaceView 自身处理
+    private var gestureHandler: OverlayGestureHandler? = null
+    private val hitRectState = mutableStateOf<RectF?>(null)
+    private val spineActiveState = mutableStateOf(false)
+
+    /**
+     * 主窗口是否因内容为空被临时移除（僵尸窗口修复）。
+     *
+     * true = ComposeView 已从 WindowManager removeView，但 view/params/生命周期宿主
+     * 保留在 Service 中，内容恢复时 [ensureMainWindowAttached] 直接 re-add。
+     */
+    @Volatile private var mainWindowDetached = false
+
     // ── 辅助窗口（气泡/拖动提示）──
     private var auxComposeView: ComposeView? = null
     private var auxLayoutParams: WindowManager.LayoutParams? = null
@@ -99,11 +120,17 @@ class SecretaryOverlayService : Service() {
 
     private var lifecycleOwner: FloatingWindowLifecycleOwner? = null
 
+    /** 通知"关闭悬浮窗" action 的动态接收器（onDestroy 注销） */
+    private var closeActionReceiver: BroadcastReceiver? = null
+
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
 
     companion object {
         private const val TAG = "SecretaryOverlay"
         private const val ANIMATION_DURATION_MS = 300
+
+        /** 通知关闭 action（setPackage 限定本应用内部广播） */
+        private const val ACTION_CLOSE_OVERLAY = "com.azurlane.blyy.action.CLOSE_SECRETARY_OVERLAY"
 
         /** 未保存过位置时的默认落点（px） */
         private const val DEFAULT_POS_X = 100
@@ -116,7 +143,7 @@ class SecretaryOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning.set(true)
-        MainActivity.updateOverlayState(true)
+        secretaryManager.updateOverlayRunning(true)
         Log.d(TAG, "onCreate: 服务创建")
         startForegroundServiceNotification()
         // 窗口创建移入协程：先读取上次保存的位置再 addView，
@@ -231,25 +258,46 @@ class SecretaryOverlayService : Service() {
                             updateMainWindowTouchMode(secretaryState.overlayTouchPassthrough)
                         }
 
-                        // 监听对话/拖动/立绘状态变化：添加或移除辅助窗口
-                        // 显示条件：figureUrl 非空 或 webChibiUrl 非空（网页 Q版小人回退）
-                        // 或 sdResourceId 非空（SD 资源直接渲染时不依赖 figureUrl）
+                        // 是否有可渲染内容（figureUrl / webChibiUrl / sdResourceId 任一非空）。
+                        // 同时驱动：辅助窗口增删 + 主窗口增删（僵尸窗口修复）+ 内容可见性动画
+                        val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
+                            secretaryState.webChibiUrl.isNotEmpty() ||
+                            secretaryState.sdResourceId.isNotEmpty()
+
+                        // 监听对话/拖动状态变化：添加或移除辅助窗口
                         LaunchedEffect(dialogue, isDragging, secretaryState.figureUrl, secretaryState.webChibiUrl, secretaryState.sdResourceId) {
-                            val hasContent = secretaryState.figureUrl.isNotEmpty() ||
-                                secretaryState.webChibiUrl.isNotEmpty() ||
-                                secretaryState.sdResourceId.isNotEmpty()
-                            if (!hasContent) {
+                            if (!hasChibiContent) {
                                 hideAuxiliaryWindow()
                             } else {
                                 updateAuxiliaryWindow(dialogue, isDragging)
                             }
                         }
+                        // 静态图分支的交互参数上报同步：Composable 写 Compose State，
+                        // 此处镜像到手势处理器的 @Volatile 字段（View 层触摸读取）
+                        val reportedHitRect by hitRectState
+                        val reportedSpineActive by spineActiveState
+                        LaunchedEffect(reportedHitRect) {
+                            gestureHandler?.hitRect = reportedHitRect
+                        }
+                        LaunchedEffect(reportedSpineActive) {
+                            gestureHandler?.spineActive = reportedSpineActive
+                        }
+
+                        // 【僵尸窗口修复】主窗口随内容增删：秘书舰被清空（三 URL 全空）时
+                        // removeView 释放窗口/ComposeView 资源，不再常驻一块透明窗口；
+                        // 内容恢复时按最新持久化位置 re-add。
+                        // 原实现仅隐藏内容（AnimatedVisibility），窗口对象与 GL 资源持续存在。
+                        LaunchedEffect(hasChibiContent) {
+                            if (hasChibiContent) {
+                                ensureMainWindowAttached()
+                            } else {
+                                removeMainWindowTemporarily()
+                            }
+                        }
 
                         // 使用动画过渡效果
                         AnimatedVisibility(
-                            visible = secretaryState.figureUrl.isNotEmpty() ||
-                                secretaryState.webChibiUrl.isNotEmpty() ||
-                                secretaryState.sdResourceId.isNotEmpty(),
+                            visible = hasChibiContent,
                             enter = fadeIn(
                                 animationSpec = tween(ANIMATION_DURATION_MS, easing = FastOutSlowInEasing)
                             ) + scaleIn(
@@ -272,6 +320,11 @@ class SecretaryOverlayService : Service() {
                                 sdScale = secretaryState.sdScale,
                                 sdResourceId = secretaryState.sdResourceId,
                                 webChibiUrl = secretaryState.webChibiUrl,
+                                // 静态图分支交互上报：可交互矩形（窗口本地坐标）与分支模式。
+                                // Service 层 OverlayGestureHandler 据此做屏幕空间命中判断——
+                                // Compose 层 pointerInput 已摘除（修复自参考系拖拽漂移）
+                                onHitRectChanged = { rect -> hitRectState.value = rect },
+                                onSpineActiveChanged = { active -> spineActiveState.value = active },
                                 onTap = {
                                     Log.d(TAG, "showOverlay: 悬浮窗被点击")
                                     if (secretaryState.shipName.isNotEmpty()) {
@@ -299,6 +352,36 @@ class SecretaryOverlayService : Service() {
                     }
                 }
             }
+
+            // 静态图分支手势处理器：View 层 rawX/rawY 拖拽（修复 Compose 本地坐标漂移）。
+            // hitRect/spineActive 由 Composable 状态上报，经 setter 同步到处理器
+            val handler = OverlayGestureHandler(
+                view = composeView!!,
+                windowParamsProvider = {
+                    val lp = overlayLayoutParams
+                    (lp?.x ?: 0) to (lp?.y ?: 0)
+                },
+                onMove = { dx, dy -> moveMainWindow(dx, dy) },
+                onTap = {
+                    Log.d(TAG, "GestureHandler: 悬浮窗被点击")
+                    if (secretaryManager.state.value.shipName.isNotEmpty()) {
+                        serviceScope.launch {
+                            try {
+                                secretaryManager.playRandomVoice()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "GestureHandler: 语音播放失败", e)
+                            }
+                        }
+                    }
+                },
+                onDragStateChanged = { dragging ->
+                    if (!dragging) persistWindowPosition()
+                }
+            )
+            // 状态上报接线：Composable 写 mutableState → 同步到处理器 @Volatile 字段
+            // （setContent 中不直接持 handler 引用，用 Service 级状态中转）
+            gestureHandler = handler
+            composeView?.setOnTouchListener(handler)
 
             windowManager?.addView(composeView, params)
             Log.d(TAG, "showOverlay: 主窗口添加成功 (尺寸=${overlayWidthPx}x${overlayHeightPx}px, pos=($posX,$posY))")
@@ -386,8 +469,8 @@ class SecretaryOverlayService : Service() {
     /**
      * 从多个候选位置中选出"clamp 后窗口中心相对旧中心偏移最小"的一个（px）。
      *
-     * 缩放窗口时不同锚定方案（边缘/中心）经边界 clamp 后的小人中心偏移不同，
-     * 取偏移最小者可消除放大时的异常跳位。候选均为 clamp 前的期望位置。
+     * 纯逻辑在 [OverlayGeometry.pickMinShiftAnchor]（可 JVM 单测），
+     * 此处保留同名薄委托供本类调用点使用。
      */
     private fun pickMinShiftAnchor(
         candidates: FloatArray,
@@ -395,13 +478,7 @@ class SecretaryOverlayService : Service() {
         maxBound: Float,
         oldCenter: Float,
         newSize: Int
-    ): Int {
-        val best = candidates.minByOrNull { desired ->
-            val clamped = desired.coerceIn(minBound, maxBound)
-            abs(clamped + newSize / 2f - oldCenter)
-        } ?: return oldCenter.roundToInt() - newSize / 2
-        return best.roundToInt().coerceIn(minBound.roundToInt(), maxBound.roundToInt())
-    }
+    ): Int = OverlayGeometry.pickMinShiftAnchor(candidates, minBound, maxBound, oldCenter, newSize)
 
     /**
      * 动态切换主窗口触摸穿透模式（[overlayTouchPassthrough] 变化时调用）。
@@ -473,6 +550,60 @@ class SecretaryOverlayService : Service() {
             Log.e(TAG, "moveMainWindow: updateViewLayout failed", e)
         }
         updateAuxiliaryPosition()
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // 主窗口增删（僵尸窗口修复）
+    // ───────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 主窗口已移除且内容恢复时重新挂到 WindowManager。
+     *
+     * 位置策略：优先沿用当前 LayoutParams 中的位置（服务存活期间用户拖动过的位置）；
+     * 若窗口从未真正显示过（onCreate 时内容即空），按持久化位置解析。
+     */
+    private suspend fun ensureMainWindowAttached() {
+        val view = composeView ?: return
+        val lp = overlayLayoutParams ?: return
+        if (!mainWindowDetached) return
+        mainWindowDetached = false
+        // 服务存活期间的移除→恢复沿用原位置；首次显示（onCreate 时无内容）走持久化解析
+        if (lp.width <= 0 || lp.height <= 0) {
+            rebuildLayoutParamsFromPersisted(lp)
+        }
+        try {
+            windowManager?.addView(view, lp)
+            Log.d(TAG, "ensureMainWindowAttached: 主窗口重新挂载 pos=(${lp.x},${lp.y})")
+        } catch (e: Exception) {
+            Log.e(TAG, "ensureMainWindowAttached: addView failed", e)
+            mainWindowDetached = true
+        }
+    }
+
+    /** 内容为空时移除主窗口（窗口/ComposeView/GL 资源全部释放，view 对象保留供恢复） */
+    private fun removeMainWindowTemporarily() {
+        val view = composeView ?: return
+        if (mainWindowDetached) return
+        mainWindowDetached = true
+        try {
+            windowManager?.removeView(view)
+            Log.d(TAG, "removeMainWindowTemporarily: 主窗口移除（无内容）")
+        } catch (e: Exception) {
+            Log.e(TAG, "removeMainWindowTemporarily: removeView failed", e)
+        }
+    }
+
+    /** 按持久化 sdScale/位置重建 LayoutParams 尺寸与落点（尺寸合法后仍需 clamp） */
+    private suspend fun rebuildLayoutParamsFromPersisted(lp: WindowManager.LayoutParams) {
+        val density = resources.displayMetrics.density
+        val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
+        val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
+        val savedScale = playerSettings.secretarySdScale.first().coerceIn(0.3f, 2.0f)
+        lp.width = (baseWidthPx * savedScale).toInt()
+        lp.height = (baseHeightPx * savedScale).toInt()
+        val (posX, posY) = resolveWindowPosition(lp.width, lp.height)
+        lp.x = posX
+        lp.y = posY
     }
 
     // ───────────────────────────────────────────────────────────────────────────
@@ -596,19 +727,35 @@ class SecretaryOverlayService : Service() {
     /**
      * 更新辅助窗口位置（紧贴主窗口上方，水平居中）。
      *
-     * - x = 主窗口中心 x - 辅助窗口宽度/2
-     * - y = 主窗口顶部 y - 辅助窗口高度
+     * - 期望 x = 主窗口中心 x - 辅助窗口宽度/2
+     * - 期望 y = 主窗口顶部 y - 辅助窗口高度
      *
-     * 主窗口在屏幕顶部时 y 为负，FLAG_LAYOUT_NO_LIMITS 允许溢出（辅助窗口部分不可见，可接受）。
+     * 【屏幕外消失修复】原实现 x/y 完全不 clamp：
+     * - 主窗贴左/右边缘时气泡水平溢出屏幕（FLAG_LAYOUT_NO_LIMITS 渲染到屏幕外）
+     * - 主窗拖到顶部（y 允许 -15% 窗高）时气泡 y < 0，整个气泡不可见
+     * 现在 x clamp 到 [0, 屏宽-辅宽]、y 下限 0：气泡宁可横向偏移/压住小人头顶，
+     * 也不消失到屏幕外（对话内容必须可见）。
+     *
+     * 辅窗尺寸未知（onGloballyPositioned 回调前 auxWidthPx=0）时跳过 x 方向的
+     * 边缘 clamp（0 尺寸 clamp 结果无意义），首次测量回调后会再次触发定位纠正。
      */
     private fun updateAuxiliaryPosition() {
         val auxLp = auxLayoutParams ?: return
         val auxView = auxComposeView ?: return
         val mainLp = overlayLayoutParams ?: return
+        val dm = resources.displayMetrics
 
         // 紧贴主窗口上方，水平居中
-        auxLp.x = mainLp.x + (mainLp.width - auxWidthPx) / 2
-        auxLp.y = mainLp.y - auxHeightPx
+        val desiredX = mainLp.x + (mainLp.width - auxWidthPx) / 2
+        val desiredY = mainLp.y - auxHeightPx
+        // x clamp：辅宽已知时限制在屏幕内（未知时中心定位，等待测量回调纠正）
+        auxLp.x = if (auxWidthPx > 0) {
+            desiredX.coerceIn(0, (dm.widthPixels - auxWidthPx).coerceAtLeast(0))
+        } else {
+            desiredX
+        }
+        // y clamp：下限 0（屏幕顶部），气泡不消失到屏幕外（宁可压住小人头顶）
+        auxLp.y = desiredY.coerceAtLeast(0)
 
         try {
             windowManager?.updateViewLayout(auxView, auxLp)
@@ -622,6 +769,40 @@ class SecretaryOverlayService : Service() {
         return START_STICKY
     }
 
+    /**
+     * 【转屏/折叠恢复】屏幕尺寸/方向变化时按新 displayMetrics 重新 clamp 主窗位置。
+     *
+     * 原实现无此回调：转屏后（横屏↔竖屏、折叠屏展开）窗口可能停在屏幕外或越界，
+     * 直到用户下次拖动才被 clamp 纠正。注意 Service 的 manifest 未声明
+     * android:configChanges，默认行为下旋转会导致 Service 重建（onCreate 重新走
+     * 持久化恢复路径，本身已按新屏幕 clamp）；此回调主要覆盖不触发重建的尺寸变化
+     *（多窗口模式拖动调整大小、分屏边界变化等）。
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val lp = overlayLayoutParams ?: return
+        val view = composeView ?: return
+        if (mainWindowDetached) return
+        val dm = resources.displayMetrics
+        val maxX = (dm.widthPixels - lp.width).coerceAtLeast(0)
+        val minY = -(lp.height * CHIBI_DRAG_MARGIN_RATIO).toInt()
+        val maxY = (dm.heightPixels - lp.height).coerceAtLeast(0)
+        val newX = lp.x.coerceIn(0, maxX)
+        val newY = lp.y.coerceIn(minY, maxY)
+        if (newX != lp.x || newY != lp.y) {
+            lp.x = newX
+            lp.y = newY
+            try {
+                windowManager?.updateViewLayout(view, lp)
+                Log.d(TAG, "onConfigurationChanged: 主窗位置 clamp 到 (${newX},${newY})")
+            } catch (e: Exception) {
+                Log.e(TAG, "onConfigurationChanged: updateViewLayout failed", e)
+            }
+            updateAuxiliaryPosition()
+            persistWindowPosition()
+        }
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         // 用户从最近任务划掉 App 时停止悬浮窗，避免无感知常驻
         Log.d(TAG, "onTaskRemoved: 停止悬浮窗服务")
@@ -632,7 +813,7 @@ class SecretaryOverlayService : Service() {
     override fun onDestroy() {
         Log.d(TAG, "onDestroy: 服务销毁")
         isRunning.set(false)
-        MainActivity.updateOverlayState(false)
+        secretaryManager.updateOverlayRunning(false)
 
         try {
             // 先移除辅助窗口
@@ -647,6 +828,14 @@ class SecretaryOverlayService : Service() {
             // dispose 与 removeView 解耦：removeView 抛异常（如 view 本就未附加）时，
             // LifecycleOwner/ViewModelStore 的清理也不能跳过（handleLifecycleEvent 幂等）
             try { lifecycleOwner?.dispose() } catch (_: Exception) {}
+            // 清理手势处理器的 Handler 回调
+            gestureHandler?.dispose()
+            gestureHandler = null
+            // 注销通知关闭 action 接收器
+            closeActionReceiver?.let {
+                runCatching { unregisterReceiver(it) }
+            }
+            closeActionReceiver = null
             // 主动断开引用，加速 GC
             composeView = null
             overlayLayoutParams = null
@@ -669,23 +858,38 @@ class SecretaryOverlayService : Service() {
             manager?.createNotificationChannel(channel)
         }
 
-        // Notification.Builder(Context, channelId) 为 API 26+ 接口，24-25 回退旧构造器
-        val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // 【通知交互】点击通知打开 App（回 MainActivity，无需新建任务栈）；
+        // "关闭" action 经 LocalBroadcast 直接 stopSelf（悬浮窗场景标准做法，
+        // 免去用户进设置页找开关的两步操作）
+        val contentIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val closeIntent = PendingIntent.getBroadcast(
+            this, 1,
+            Intent(ACTION_CLOSE_OVERLAY).setPackage(packageName),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val baseBuilder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             android.app.Notification.Builder(this, channelId)
-                .setContentTitle("秘书舰陪伴中")
-                .setContentText("秘书舰正在屏幕上")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setOngoing(true)
-                .build()
         } else {
             @Suppress("DEPRECATION")
             android.app.Notification.Builder(this)
-                .setContentTitle("秘书舰陪伴中")
-                .setContentText("秘书舰正在屏幕上")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setOngoing(true)
-                .build()
         }
+        val notification = baseBuilder
+            .setContentTitle("秘书舰陪伴中")
+            .setContentText("秘书舰正在屏幕上")
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setOngoing(true)
+            .setContentIntent(contentIntent)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "关闭悬浮窗",
+                closeIntent
+            )
+            .build()
 
         // Android 14+ 必须显式传入与 Manifest 声明匹配的 foregroundServiceType
         // 不再 try/catch 吞异常：失败应立即 stopSelf，避免 5 秒未 startForeground 崩溃
@@ -693,6 +897,27 @@ class SecretaryOverlayService : Service() {
             startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(1, notification)
+        }
+
+        // 关闭 action 的接收器：动态注册（setPackage 已限定本应用，接收器无需导出）
+        if (closeActionReceiver == null) {
+            closeActionReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    if (intent?.action == ACTION_CLOSE_OVERLAY) {
+                        Log.d(TAG, "通知关闭 action：停止悬浮窗服务")
+                        serviceScope.launch {
+                            runCatching { playerSettings.setSecretaryOverlayEnabled(false) }
+                        }
+                        stopSelf()
+                    }
+                }
+            }
+            val filter = IntentFilter(ACTION_CLOSE_OVERLAY)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(closeActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(closeActionReceiver, filter)
+            }
         }
         Log.d(TAG, "startForegroundServiceNotification: 前台服务启动成功")
     }
