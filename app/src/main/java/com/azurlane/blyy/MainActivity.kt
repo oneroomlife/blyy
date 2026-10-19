@@ -29,8 +29,6 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.util.OverlayPermissionHelper
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -47,14 +45,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         // 悬浮窗相关日志使用独立 TAG，便于按功能模块过滤
         private const val TAG_OVERLAY = "SecretaryOverlay"
-
-        // 用于跨组件通信的悬浮窗状态
-        private val _overlayState = MutableStateFlow(SecretaryOverlayService.isServiceRunning())
-        val overlayState = _overlayState.asStateFlow()
-
-        fun updateOverlayState(isRunning: Boolean) {
-            _overlayState.value = isRunning
-        }
     }
 
     @UnstableApi

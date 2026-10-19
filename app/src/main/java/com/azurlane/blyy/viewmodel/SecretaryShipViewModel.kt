@@ -138,6 +138,9 @@ class SecretaryShipViewModel @Inject constructor(
         loadSdResourceLink(forceRefresh = true)
     }
 
+    /** 系统悬浮窗运行状态（转发 Manager 单例，Service 写入 / UI 读取三方统一） */
+    val overlayRunning: StateFlow<Boolean> = secretaryManager.overlayRunning
+
     val state: StateFlow<SecretaryShipState> = combine(
         secretaryManager.state,
         _isFlipping,

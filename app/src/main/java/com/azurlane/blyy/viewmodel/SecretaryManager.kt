@@ -7,12 +7,12 @@ import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import com.azurlane.blyy.SecretaryOverlayService
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
-import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.domain.SelectSecretaryUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
@@ -52,6 +52,9 @@ data class SecretaryManagerState(
      * 本地 SD 资源未匹配到时的回退显示图：
      * - 优先取「查看立绘」中用户选择的 SD 小人（savedFigure）
      * - 未选择时取 wiki 页面默认小人
+     *
+     * 已持久化到 DataStore：冷启动零网络即可恢复悬浮小人，
+     * 后台抓取仅在恢复值为空时作补齐兜底。
      */
     val webChibiUrl: String = ""
 )
@@ -66,88 +69,67 @@ class SecretaryManager @Inject constructor(
     private val selectSecretaryUseCase: SelectSecretaryUseCase,
     private val getVoicesUseCase: GetVoicesUseCase,
     private val playbackServiceConnection: PlaybackServiceConnection,
-    private val shipDao: ShipDao,
-    private val shipRepository: ShipRepository
+    private val shipDao: ShipDao
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    private val _shipName = MutableStateFlow("")
-    private val _figureUrl = MutableStateFlow("")
-    private val _avatarUrl = MutableStateFlow("")
-    private val _voices = MutableStateFlow<List<VoiceLine>>(emptyList())
-    private val _isLoadingVoices = MutableStateFlow(false)
-    private val _voiceLanguage = MutableStateFlow(VoiceLanguage.CN)
-    private val _currentDialogue = MutableStateFlow<String?>(null)
-    private val _sdSkin = MutableStateFlow("")
-    private val _sdScale = MutableStateFlow(1.0f)
-    private val _sdResourceId = MutableStateFlow("")
-    private val _webChibiUrl = MutableStateFlow("")
-    private var autoPlayJob: Job? = null
-    private var dialogueClearJob: Job? = null
-    
-    companion object {
-        private const val TAG = "SecretaryManager"
+    /**
+     * 单一状态容器：所有字段经 [updateState] 的 `copy()` 更新。
+     *
+     * 替代旧的"16 个 MutableStateFlow + combine + args 下标转型"方案：
+     * - 新增字段只改 data class，不再有 args 顺序错位风险
+     * - 无 combine 跨流订阅开销，也无冷启动组合延迟
+     */
+    private val _state = MutableStateFlow(SecretaryManagerState())
+    val state: StateFlow<SecretaryManagerState> = _state.asStateFlow()
+
+    /** 状态更新唯一入口（主线程约束与旧方案一致：scope = Main，collector 也在 Main） */
+    private inline fun updateState(transform: (SecretaryManagerState) -> SecretaryManagerState) {
+        _state.update(transform)
     }
 
-    val state: StateFlow<SecretaryManagerState> = combine(
-        _shipName,
-        _figureUrl,
-        _avatarUrl,
-        _voices,
-        _isLoadingVoices,
-        _voiceLanguage,
-        settingsDataStore.secretaryAutoPlayEnabled,
-        settingsDataStore.secretaryAutoPlayIntervalMinutes,
-        _currentDialogue,
-        settingsDataStore.secretaryDialogueEnabled,
-        _sdSkin,
-        _sdScale,
-        _sdResourceId,
-        settingsDataStore.secretaryOverlayTouchPassthrough,
-        _webChibiUrl
-    ) { args ->
-        SecretaryManagerState(
-            shipName = args[0] as String,
-            figureUrl = args[1] as String,
-            avatarUrl = args[2] as String,
-            voices = @Suppress("UNCHECKED_CAST") (args[3] as List<VoiceLine>),
-            isLoadingVoices = args[4] as Boolean,
-            voiceLanguage = args[5] as VoiceLanguage,
-            autoPlayEnabled = args[6] as Boolean,
-            autoPlayIntervalMinutes = args[7] as Int,
-            currentDialogue = args[8] as String?,
-            dialogueEnabled = args[9] as Boolean,
-            sdSkin = args[10] as String,
-            sdScale = args[11] as Float,
-            sdResourceId = args[12] as String,
-            overlayTouchPassthrough = args[13] as Boolean,
-            webChibiUrl = args[14] as String
-        )
-    }.stateIn(
-        scope = scope,
-        started = SharingStarted.Eagerly,
-        initialValue = SecretaryManagerState()
-    )
+    /**
+     * voices 归属舰名：voices 列表当前对应的舰娘。
+     *
+     * 【P0 竞态修复】此前 loadVoicesInBackground 中 voices 写在舰名守卫之外：
+     * 快速切换舰娘时，旧舰的在途加载完成后会直接覆盖新舰的 voices，
+     * 表现为"新秘书舰播旧秘书舰的语音/台词"。现在 voices 的写入以归属舰名为令牌，
+     * 只在当前舰名仍等于加载目标时落盘。
+     */
+    private var voicesOwnerShip: String = ""
+
+    private var autoPlayJob: Job? = null
+    private var dialogueClearJob: Job? = null
+
+    // ── MediaController 解析缓存 ──
+    // 【连发/监听器泄漏修复】此前每次播放都往 ListenableFuture 上 addListener：
+    // 连接未就绪期内的多次播放会在连接建立瞬间连发执行；且监听器对象随调用无界累积。
+    // 现在只挂一个监听器解析 Future 一次，controller 就绪后直接命中缓存执行。
+    @Volatile private var cachedController: Player? = null
+    private val pendingControllerCommands = ArrayDeque<(Player) -> Unit>()
+    private var controllerListenerAttached = false
 
     init {
+        resolveControllerWhenReady()
+
         scope.launch {
             settingsDataStore.secretaryShipName.collect { name ->
-                _shipName.value = name
-                // 【空白修复】DataStore 只持久化舰名/立绘/头像，webChibiUrl 未持久化：
-                // 无本地 SD 资源的舰娘在重启后 webChibiUrl 为空，若立绘也曾被清空
-                // （如 SD 资源联动路径 saveSecretaryShip(ship, "", "")），悬浮小人
-                // 会因 figureUrl/webChibiUrl 双空而不渲染任何内容。
-                // 冷启动触发一次后台加载，内部会顺带补齐缺失的立绘与小人 URL。
-                if (name.isNotEmpty() && _voices.value.isEmpty()) {
+                updateState { it.copy(shipName = name) }
+                // 冷启动恢复：语音缺失（旧版本升级/数据异常）时后台补载，
+                // 内部会顺带补齐空缺的立绘与 webChibiUrl（见守卫逻辑）
+                if (name.isNotEmpty() && _state.value.voices.isEmpty()) {
                     loadVoicesInBackground(name)
                 }
             }
         }
         scope.launch {
-            settingsDataStore.secretaryFigureUrl.collect { _figureUrl.value = it }
+            settingsDataStore.secretaryFigureUrl.collect { url -> updateState { it.copy(figureUrl = url) } }
         }
         scope.launch {
-            settingsDataStore.secretaryAvatarUrl.collect { _avatarUrl.value = it }
+            settingsDataStore.secretaryAvatarUrl.collect { url -> updateState { it.copy(avatarUrl = url) } }
+        }
+        scope.launch {
+            settingsDataStore.secretaryWebChibiUrl.collect { url -> updateState { it.copy(webChibiUrl = url) } }
         }
         scope.launch {
             // distinctUntilChanged：safeData 在任意 key 的 edit 后都会重新发射整包
@@ -155,159 +137,195 @@ class SecretaryManager @Inject constructor(
             // 每次写入都会走到 startAutoPlay → stop+restart，自动播放的 delay 定时器
             // 被频繁重置，表现为什么时候都不会触发自动播放。
             settingsDataStore.secretaryAutoPlayEnabled.distinctUntilChanged().collect { enabled ->
-                if (enabled && _shipName.value.isNotEmpty()) {
-                    startAutoPlay()
+                updateState { it.copy(autoPlayEnabled = enabled) }
+                if (enabled && _state.value.shipName.isNotEmpty()) {
+                    if (autoPlayJob?.isActive != true) startAutoPlay()
                 } else {
                     stopAutoPlay()
                 }
             }
         }
         scope.launch {
+            settingsDataStore.secretaryAutoPlayIntervalMinutes.collect { minutes ->
+                updateState { it.copy(autoPlayIntervalMinutes = minutes) }
+            }
+        }
+        scope.launch {
             settingsDataStore.voiceLanguage.collect { lang ->
-                _voiceLanguage.value = lang
+                updateState { it.copy(voiceLanguage = lang) }
             }
         }
         scope.launch {
             settingsDataStore.secretaryDialogueEnabled.collect { enabled ->
+                updateState { it.copy(dialogueEnabled = enabled) }
                 // 开关关闭时立即清除残留台词
                 if (!enabled) {
                     dialogueClearJob?.cancel()
-                    _currentDialogue.value = null
+                    updateState { it.copy(currentDialogue = null) }
                 }
             }
         }
         scope.launch {
-            settingsDataStore.secretarySdSkin.collect { _sdSkin.value = it }
+            settingsDataStore.secretarySdSkin.collect { skin ->
+                updateState { it.copy(sdSkin = skin) }
+            }
         }
         scope.launch {
-            settingsDataStore.secretarySdScale.collect { _sdScale.value = it }
+            settingsDataStore.secretarySdScale.collect { scale ->
+                updateState { it.copy(sdScale = scale) }
+            }
         }
         scope.launch {
-            settingsDataStore.secretarySdResourceId.collect { _sdResourceId.value = it }
+            settingsDataStore.secretarySdResourceId.collect { id ->
+                updateState { it.copy(sdResourceId = id) }
+            }
         }
+        scope.launch {
+            settingsDataStore.secretaryOverlayTouchPassthrough.collect { enabled ->
+                updateState { it.copy(overlayTouchPassthrough = enabled) }
+            }
+        }
+    }
+
+    /**
+     * 挂一次 Future 监听器解析 MediaController：完成后写入 [cachedController]
+     * 并按序消费排队命令。多场景（init + onController 未就绪路径）重复调用也只挂一次。
+     */
+    private fun resolveControllerWhenReady() {
+        if (controllerListenerAttached) return
+        controllerListenerAttached = true
+        val future = playbackServiceConnection.mediaController
+        future.addListener({
+            try {
+                val controller = future.get()
+                val toRun: List<(Player) -> Unit>
+                synchronized(pendingControllerCommands) {
+                    cachedController = controller
+                    toRun = pendingControllerCommands.toList()
+                    pendingControllerCommands.clear()
+                }
+                for (cmd in toRun) cmd(controller)
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaController resolve failed", e)
+            }
+        }, MoreExecutors.directExecutor())
+    }
+
+    /**
+     * 系统悬浮窗运行状态（替代旧的 MainActivity.companion 静态字段事件总线）。
+     *
+     * Service onCreate/onDestroy 写入，设置页开关与应用内小人互斥逻辑读取，
+     * 三方统一从本单例读写；进程重启后初值取服务的静态运行标记。
+     */
+    private val _overlayRunning = MutableStateFlow(SecretaryOverlayService.isServiceRunning())
+    val overlayRunning: StateFlow<Boolean> = _overlayRunning.asStateFlow()
+
+    fun updateOverlayRunning(running: Boolean) {
+        _overlayRunning.value = running
     }
 
     suspend fun selectRandom(): Ship? {
         val startTime = System.currentTimeMillis()
         val ship = selectSecretaryUseCase.selectRandomSecretary() ?: return null
-        loadFigureAndSave(ship)
+        applyShipSelection(ship)
         Log.d(TAG, "selectRandom: 耗时 ${System.currentTimeMillis() - startTime}ms")
         return ship
     }
 
     suspend fun selectShip(ship: Ship, figureUrl: String) {
-        val startTime = System.currentTimeMillis()
-        Log.d(TAG, "selectShip: 开始选择 ${ship.name}")
-        
-        try {
-            // 立即更新舰娘名称，让用户知道正在加载
-            _shipName.value = ship.name
-            _avatarUrl.value = ship.avatarUrl
-            
-            // 从 Wiki 获取立绘 URL
-            _isLoadingVoices.value = true
-            val (voices, defaultFigure, skinFigureMap, defaultChibi) = getVoicesUseCase(ship.name)
+        applyShipSelection(ship)
+    }
 
-            // 与 loadFigureAndSave 同一优先级：历史保存立绘 > 皮肤立绘 > 默认立绘 > 头像。
-            // 此前直接取 skinFigureMap.firstOrNull（依赖 Map 顺序、且与随机翻牌路径不一致），
-            // 同一舰娘经"心有所属"与"随机翻牌"两条路径可能得到不同立绘
+    /**
+     * 选舰核心路径（selectShip 与随机翻牌 selectRandom 的去重提取）。
+     *
+     * 统一图源优先级：历史保存立绘(savedFigure) > 皮肤立绘 > 默认立绘 > 头像；
+     * webChibiUrl 跟随 savedFigure，未选择时用 wiki 默认小人。
+     */
+    private suspend fun applyShipSelection(ship: Ship) {
+        val startTime = System.currentTimeMillis()
+        Log.d(TAG, "applyShipSelection: 开始选择 ${ship.name}")
+
+        updateState {
+            // 立即更新舰名/头像让 UI 先反馈"正在加载"（语音/图源随后就位）；
+            // 同步作废旧舰语音归属，防止在途旧舰加载结果落盘
+            it.copy(
+                shipName = ship.name,
+                avatarUrl = ship.avatarUrl,
+                voices = emptyList(),
+                isLoadingVoices = true
+            )
+        }
+        voicesOwnerShip = ship.name
+
+        try {
+            val voicesData = getVoicesUseCase(ship.name)
             val savedFigure = settingsDataStore.getSavedFigure(ship.name).first()
             val finalFigureUrl = savedFigure
-                ?: skinFigureMap.values.firstOrNull()
-                ?: defaultFigure
+                ?: voicesData.skinFigureMap.values.firstOrNull()
+                ?: voicesData.defaultFigureUrl
                 ?: ship.avatarUrl
+            val webChibi = savedFigure ?: voicesData.defaultChibiUrl.orEmpty()
 
-            _figureUrl.value = finalFigureUrl
-            // 网页 Q版小人回退图：跟随「查看立绘」中的 SD 小人选择（savedFigure），
-            // 未选择时用 wiki 默认小人，避免未匹配本地 SD 资源时回退到完整立绘大图
-            _webChibiUrl.value = savedFigure ?: defaultChibi.orEmpty()
-            _voices.value = voices
-            _isLoadingVoices.value = false
-            
-            // 异步保存到持久化存储（NonCancellable：即使 scope 被取消也需完成写入，避免状态丢失）
-            scope.launch {
-                withContext(NonCancellable) {
-                    settingsDataStore.saveSecretaryShip(ship.name, finalFigureUrl, ship.avatarUrl)
-                }
+            updateState {
+                it.copy(
+                    figureUrl = finalFigureUrl,
+                    webChibiUrl = webChibi,
+                    voices = voicesData.voices,
+                    isLoadingVoices = false
+                )
             }
+            voicesOwnerShip = ship.name
 
-            if (state.value.autoPlayEnabled) startAutoPlay()
+            persistSecretary(ship.name, finalFigureUrl, ship.avatarUrl, webChibi)
 
-            Log.d(TAG, "selectShip: 完成，立绘URL=$finalFigureUrl，耗时 ${System.currentTimeMillis() - startTime}ms")
+            // 已在运行则不打断（与滑块调整同策略）：切舰不重置自动播放倒计时
+            if (_state.value.autoPlayEnabled && autoPlayJob?.isActive != true) startAutoPlay()
+
+            Log.d(TAG, "applyShipSelection: 完成，立绘URL=$finalFigureUrl，耗时 ${System.currentTimeMillis() - startTime}ms")
         } catch (e: Exception) {
-            Log.e(TAG, "selectShip: 选择失败，使用头像降级", e)
-            // 优雅降级：使用头像作为立绘
-            _figureUrl.value = ship.avatarUrl
-            _webChibiUrl.value = ""
-            _voices.value = emptyList()
-            _isLoadingVoices.value = false
-
-            scope.launch {
-                withContext(NonCancellable) {
-                    settingsDataStore.saveSecretaryShip(ship.name, ship.avatarUrl, ship.avatarUrl)
-                }
+            Log.e(TAG, "applyShipSelection: 加载失败，使用头像降级", e)
+            updateState {
+                it.copy(
+                    figureUrl = ship.avatarUrl,
+                    webChibiUrl = "",
+                    voices = emptyList(),
+                    isLoadingVoices = false
+                )
             }
+            persistSecretary(ship.name, ship.avatarUrl, ship.avatarUrl, "")
         }
     }
 
-    private suspend fun loadFigureAndSave(ship: Ship) {
-        val startTime = System.currentTimeMillis()
-        _isLoadingVoices.value = true
-        
-        try {
-            val (voices, defaultFigure, skinFigureMap, defaultChibi) = getVoicesUseCase(ship.name)
-            val savedFigure = settingsDataStore.getSavedFigure(ship.name).first()
-            val figureUrl = savedFigure
-                ?: skinFigureMap.values.firstOrNull()
-                ?: defaultFigure
-                ?: ""
-
-            // 立即更新UI
-            _shipName.value = ship.name
-            _figureUrl.value = figureUrl
-            // 网页 Q版小人回退图：跟随「查看立绘」中的 SD 小人选择（同 selectShip 优先级）
-            _webChibiUrl.value = savedFigure ?: defaultChibi.orEmpty()
-            _avatarUrl.value = ship.avatarUrl
-            _voices.value = voices
-
-            // 异步保存（NonCancellable：确保写入完成）
-            scope.launch {
-                withContext(NonCancellable) {
-                    settingsDataStore.saveSecretaryShip(ship.name, figureUrl, ship.avatarUrl)
-                }
+    /** 选舰结果持久化（NonCancellable：即使 scope 被取消也需完成写入，避免状态丢失） */
+    private fun persistSecretary(
+        shipName: String,
+        figureUrl: String,
+        avatarUrl: String,
+        webChibiUrl: String
+    ) {
+        scope.launch {
+            withContext(NonCancellable) {
+                settingsDataStore.saveSecretaryShip(shipName, figureUrl, avatarUrl, webChibiUrl)
             }
-
-            Log.d(TAG, "loadFigureAndSave: 成功，耗时 ${System.currentTimeMillis() - startTime}ms")
-        } catch (e: Exception) {
-            Log.e(TAG, "loadFigureAndSave: 加载失败，使用头像降级", e)
-            // 优雅降级
-            _shipName.value = ship.name
-            _figureUrl.value = ship.avatarUrl
-            _webChibiUrl.value = ""
-            _avatarUrl.value = ship.avatarUrl
-            _voices.value = emptyList()
-
-            scope.launch {
-                withContext(NonCancellable) {
-                    settingsDataStore.saveSecretaryShip(ship.name, ship.avatarUrl, ship.avatarUrl)
-                }
-            }
-        } finally {
-            _isLoadingVoices.value = false
-            if (state.value.autoPlayEnabled) startAutoPlay()
         }
     }
 
     fun clearSecretary() {
         Log.d(TAG, "clearSecretary: 清除秘书舰")
-        // 立即更新内存状态（UI 即时响应，不依赖协程）
-        _shipName.value = ""
-        _figureUrl.value = ""
-        _avatarUrl.value = ""
-        _webChibiUrl.value = ""
-        _voices.value = emptyList()
+        updateState {
+            it.copy(
+                shipName = "",
+                figureUrl = "",
+                avatarUrl = "",
+                webChibiUrl = "",
+                voices = emptyList(),
+                currentDialogue = null
+            )
+        }
+        voicesOwnerShip = ""
         stopAutoPlay()
-        // 持久化清理（NonCancellable：即使 scope 被取消也需完成，避免重启后残留旧数据）
+        // 持久化清理（NonCancellable：即使 scope 被取消也需完成写入，避免重启后残留旧数据）
         scope.launch {
             withContext(NonCancellable) {
                 settingsDataStore.clearSecretaryShip()
@@ -319,10 +337,10 @@ class SecretaryManager @Inject constructor(
     fun playRandomVoice() {
         // 点击即播语义：语音未就绪时先等待在途/新发起的加载完成再播。
         // 此前调用方（悬浮窗 onTap）先 ensureVoicesLoaded（异步）后立刻 playRandomVoice，
-        // voices 仍为空 → 本次点击只触发后台加载、不出声，要点第二次才有声音
+        // voices 仍为空 → 本次点击只触发后台加载、不出声，要点两次才有声音
         scope.launch {
-            if (_voices.value.isEmpty()) {
-                loadVoicesInBackground(_shipName.value)?.join()
+            if (_state.value.voices.isEmpty()) {
+                loadVoicesInBackground(_state.value.shipName)?.join()
             }
             playRandomVoiceNow()
         }
@@ -330,21 +348,21 @@ class SecretaryManager @Inject constructor(
 
     @androidx.annotation.OptIn(UnstableApi::class)
     private fun playRandomVoiceNow() {
-        val voices = _voices.value
+        val voices = _state.value.voices
         if (voices.isEmpty()) {
             // 等待后仍为空（加载失败/无语音数据）：再触发一次后台加载供下次播放
-            if (_shipName.value.isNotEmpty()) loadVoicesInBackground(_shipName.value)
+            if (_state.value.shipName.isNotEmpty()) loadVoicesInBackground(_state.value.shipName)
             return
         }
         val randomVoice = voices.random()
         // 更新台词弹窗内容，8 秒后自动清除（仅在开关开启时显示）
         val cleanDialogue = randomVoice.dialogue.replace("\n", " ").replace("\r", "").trim()
-        if (state.value.dialogueEnabled) {
-            _currentDialogue.value = cleanDialogue.ifEmpty { null }
+        if (_state.value.dialogueEnabled) {
+            updateState { it.copy(currentDialogue = cleanDialogue.ifEmpty { null }) }
             dialogueClearJob?.cancel()
             dialogueClearJob = scope.launch {
-                delay(8000)
-                _currentDialogue.value = null
+                delay(DIALOGUE_CLEAR_DELAY_MS)
+                updateState { it.copy(currentDialogue = null) }
             }
         }
         onController { player ->
@@ -359,13 +377,13 @@ class SecretaryManager @Inject constructor(
 
     @androidx.annotation.OptIn(UnstableApi::class)
     private fun createMediaItem(voice: VoiceLine): MediaItem {
-        val activeAudioUrl = voice.getActiveAudioUrl(_voiceLanguage.value)
+        val activeAudioUrl = voice.getActiveAudioUrl(_state.value.voiceLanguage)
         val cleanDialogue = voice.dialogue.replace("\n", " ").replace("\r", "").trim()
         val metadata = androidx.media3.common.MediaMetadata.Builder()
             .setTitle(cleanDialogue)
-            .setArtist("${_shipName.value} · ${voice.skinName}")
+            .setArtist("${_state.value.shipName} · ${voice.skinName}")
             .setAlbumTitle(voice.scene)
-            .setArtworkUri(_avatarUrl.value.let { if (it.isNotEmpty()) it.toUri() else null })
+            .setArtworkUri(_state.value.avatarUrl.let { if (it.isNotEmpty()) it.toUri() else null })
             .build()
         return MediaItem.Builder()
             .setMediaId(activeAudioUrl)
@@ -374,16 +392,28 @@ class SecretaryManager @Inject constructor(
             .build()
     }
 
+    /**
+     * 在 MediaController 上执行命令。
+     *
+     * 命中 [cachedController] 缓存直接执行；未就绪时排队，
+     * 由 init 中挂载的单次 Future 监听器在连接建立后按序消费。
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
     private fun onController(command: (Player) -> Unit) {
-        playbackServiceConnection.mediaController.addListener({
-            playbackServiceConnection.mediaController.get()?.let { command(it) }
-        }, MoreExecutors.directExecutor())
+        cachedController?.let {
+            command(it)
+            return
+        }
+        synchronized(pendingControllerCommands) {
+            pendingControllerCommands.addLast(command)
+        }
+        resolveControllerWhenReady()
     }
 
     fun ensureVoicesLoaded(shipName: String) {
         // 舰名为空时不加载语音（自定义非舰娘资源无语音，避免错误触发网络请求）
         if (shipName.isBlank()) return
-        if (_shipName.value == shipName && _voices.value.isEmpty() && !_isLoadingVoices.value) {
+        if (_state.value.shipName == shipName && _state.value.voices.isEmpty() && !_state.value.isLoadingVoices) {
             loadVoicesInBackground(shipName)
         }
     }
@@ -397,37 +427,51 @@ class SecretaryManager @Inject constructor(
     private fun loadVoicesInBackground(shipName: String): Job? {
         // 舰名为空时不加载语音（自定义非舰娘资源无对应舰娘，不应触发语音加载）
         if (shipName.isBlank()) {
-            _voices.value = emptyList()
+            updateState { it.copy(voices = emptyList()) }
             return null
         }
         voicesLoadJob?.takeIf { it.isActive && voicesLoadTarget == shipName }?.let { return it }
         val job = scope.launch {
-            _isLoadingVoices.value = true
+            updateState { it.copy(isLoadingVoices = true) }
             try {
-                if (_voices.value.isNotEmpty()) {
-                    // selectShip 等路径已加载过语音并同步补齐图源，无需重复网络请求
+                if (_state.value.voices.isNotEmpty() && voicesOwnerShip == shipName) {
+                    // applyShipSelection 等路径已加载过语音并同步补齐图源，无需重复网络请求
                     return@launch
                 }
-                val (voices, defaultFigure, skinFigureMap, defaultChibi) = getVoicesUseCase(shipName)
-                _voices.value = voices
-                // 【空白修复】补齐缺失的立绘与网页 Q版小人 URL：
-                // - 冷启动恢复：DataStore 未持久化 webChibiUrl
-                // - SD 资源联动清空：updateShipFromResourceId 曾以空串覆盖立绘
-                // 仅在秘书舰仍是该舰名时写入，避免快速切换后误写旧舰娘数据
-                if (_shipName.value == shipName) {
-                    if (_figureUrl.value.isBlank()) {
-                        _figureUrl.value = skinFigureMap.values.firstOrNull() ?: defaultFigure ?: ""
+                val voicesData = getVoicesUseCase(shipName)
+                // 【P0 竞态修复】归属守卫：加载期间舰名可能已切换（快速切舰），
+                // 旧舰的在途结果不得写入新舰状态——voices 与图源一并守卫
+                if (_state.value.shipName == shipName) {
+                    var chibiToPersist: String? = null
+                    updateState {
+                        val newChibi = it.webChibiUrl.ifBlank { voicesData.defaultChibiUrl.orEmpty() }
+                        if (it.webChibiUrl.isBlank() && newChibi.isNotEmpty()) chibiToPersist = newChibi
+                        it.copy(
+                            voices = voicesData.voices,
+                            // 补齐缺失的立绘与网页 Q版小人 URL（冷启动恢复/SD 资源联动清空场景）
+                            figureUrl = it.figureUrl.ifBlank {
+                                voicesData.skinFigureMap.values.firstOrNull()
+                                    ?: voicesData.defaultFigureUrl ?: ""
+                            },
+                            webChibiUrl = newChibi
+                        )
                     }
-                    if (_webChibiUrl.value.isBlank()) {
-                        _webChibiUrl.value = defaultChibi.orEmpty()
-                    }
+                    voicesOwnerShip = shipName
+                    // 补齐的小人 URL 同步持久化，下次冷启动零网络恢复
+                    chibiToPersist?.let { settingsDataStore.setSecretaryWebChibiUrl(it) }
+                    Log.d(TAG, "loadVoicesInBackground: 加载了 ${voicesData.voices.size} 条语音（$shipName）")
+                } else {
+                    Log.d(TAG, "loadVoicesInBackground: 加载完成时舰名已切换为 ${_state.value.shipName}，丢弃 $shipName 的结果")
                 }
-                Log.d(TAG, "loadVoicesInBackground: 加载了 ${voices.size} 条语音")
             } catch (e: Exception) {
                 Log.e(TAG, "loadVoicesInBackground: 加载失败", e)
-                _voices.value = emptyList()
+                if (_state.value.shipName == shipName) {
+                    updateState { it.copy(voices = emptyList()) }
+                }
             } finally {
-                _isLoadingVoices.value = false
+                if (_state.value.shipName == shipName) {
+                    updateState { it.copy(isLoadingVoices = false) }
+                }
             }
         }
         voicesLoadJob = job
@@ -440,7 +484,7 @@ class SecretaryManager @Inject constructor(
             withContext(NonCancellable) {
                 settingsDataStore.setSecretaryAutoPlay(enabled, intervalMinutes)
             }
-            if (enabled && _shipName.value.isNotEmpty()) {
+            if (enabled && _state.value.shipName.isNotEmpty()) {
                 // 已在运行则不打断：间隔由循环每轮自适应读取，滑块连发不再重启定时器
                 if (autoPlayJob?.isActive != true) startAutoPlay()
             } else {
@@ -484,7 +528,7 @@ class SecretaryManager @Inject constructor(
 
     fun setSdSkin(skin: String) {
         // 立即更新内存状态，确保 UI 实时响应（皮肤切换无需等待 DataStore 异步写入）
-        _sdSkin.value = skin
+        updateState { it.copy(sdSkin = skin) }
         scope.launch {
             withContext(NonCancellable) {
                 settingsDataStore.setSecretarySdSkin(skin)
@@ -494,7 +538,7 @@ class SecretaryManager @Inject constructor(
 
     fun setSdScale(scale: Float) {
         // 立即更新内存状态，确保 UI 实时响应滑块拖动（避免等待 DataStore 异步写入 + collect 回调的延迟）
-        _sdScale.value = scale
+        updateState { it.copy(sdScale = scale) }
         scope.launch {
             withContext(NonCancellable) {
                 settingsDataStore.setSecretarySdScale(scale)
@@ -503,10 +547,8 @@ class SecretaryManager @Inject constructor(
     }
 
     fun setSdResourceId(resourceId: String) {
-        // 立即更新内存状态，确保 UI 实时响应
-        _sdResourceId.value = resourceId
-        // 切换资源时重置皮肤为默认，避免旧皮肤名不适用于新资源
-        _sdSkin.value = ""
+        // 立即更新内存状态，确保 UI 实时响应；切换资源时重置皮肤为默认
+        updateState { it.copy(sdResourceId = resourceId, sdSkin = "") }
         scope.launch {
             withContext(NonCancellable) {
                 settingsDataStore.setSecretarySdResourceId(resourceId)
@@ -548,61 +590,52 @@ class SecretaryManager @Inject constructor(
         if (shipName.isNullOrBlank()) {
             // 无对应舰娘的自定义资源：清空舰名和语音，避免错误使用原语音
             // 即使原秘书舰有语音，切换到无语音资源后也不应继续播放原语音
-            if (_shipName.value.isNotEmpty() || _voices.value.isNotEmpty()) {
-                Log.d(TAG, "updateShipFromResourceId: 资源 $resourceId 无对应舰娘，清空舰名和语音（原 ${_shipName.value}）")
-                _shipName.value = ""
-                _voices.value = emptyList()
-                _avatarUrl.value = ""
-                _figureUrl.value = ""
-                _webChibiUrl.value = ""
-                _currentDialogue.value = null
+            if (_state.value.shipName.isNotEmpty() || _state.value.voices.isNotEmpty()) {
+                Log.d(TAG, "updateShipFromResourceId: 资源 $resourceId 无对应舰娘，清空舰名和语音（原 ${_state.value.shipName}）")
+                updateState {
+                    it.copy(
+                        shipName = "",
+                        voices = emptyList(),
+                        avatarUrl = "",
+                        figureUrl = "",
+                        webChibiUrl = "",
+                        currentDialogue = null
+                    )
+                }
+                voicesOwnerShip = ""
                 stopAutoPlay()
                 // 停止当前正在播放的语音
                 onController { it.pause() }
                 // 持久化清空，避免重启后残留原舰名导致错误加载语音
                 withContext(NonCancellable) {
-                    settingsDataStore.saveSecretaryShip("", "", "")
+                    settingsDataStore.saveSecretaryShip("", "", "", "")
                 }
             }
             return
         }
 
         // 找到对应舰名，且与当前舰名不同，则更新秘书舰和语音
-        if (shipName != _shipName.value) {
-            Log.d(TAG, "updateShipFromResourceId: 资源 $resourceId → 舰名 $shipName（原 ${_shipName.value}）")
-            _shipName.value = shipName
-            _voices.value = emptyList()
-            _avatarUrl.value = ""
-            _figureUrl.value = ""
-            _currentDialogue.value = null
+        if (shipName != _state.value.shipName) {
+            Log.d(TAG, "updateShipFromResourceId: 资源 $resourceId → 舰名 $shipName（原 ${_state.value.shipName}）")
+            updateState {
+                it.copy(
+                    shipName = shipName,
+                    voices = emptyList(),
+                    avatarUrl = "",
+                    figureUrl = "",
+                    currentDialogue = null
+                )
+            }
+            voicesOwnerShip = ""
             stopAutoPlay()
             // 停止当前正在播放的旧语音，避免新语音加载期间继续播放旧语音
             onController { it.pause() }
             // 持久化新舰名，立绘和头像清空让后续加载流程重新获取
             withContext(NonCancellable) {
-                settingsDataStore.saveSecretaryShip(shipName, "", "")
+                settingsDataStore.saveSecretaryShip(shipName, "", "", "")
             }
-            // 网页 Q版小人回退图：跟随「查看立绘」选择，未选择时后台抓取 wiki 默认小人
-            // （保证后续移除 SD 资源时仍能回退显示静态小人而非空白）
-            val savedFigure = settingsDataStore.getSavedFigure(shipName).first()
-            _webChibiUrl.value = savedFigure ?: ""
-            if (savedFigure.isNullOrBlank()) {
-                scope.launch {
-                    val chibi = withContext(Dispatchers.IO) {
-                        try {
-                            shipRepository.fetchDefaultChibiUrl(shipName)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "updateShipFromResourceId: 抓取默认小人失败 $shipName", e)
-                            ""
-                        }
-                    }
-                    // 仅当秘书舰仍是该舰名时生效，避免切换后误写旧舰娘数据
-                    if (_shipName.value == shipName && _webChibiUrl.value.isEmpty()) {
-                        _webChibiUrl.value = chibi
-                    }
-                }
-            }
-            // 后台加载新舰娘的语音
+            // 后台加载新舰娘的语音；webChibiUrl 跟随「查看立绘」选择，
+            // 为空时由加载流程顺带抓取 wiki 默认小人并持久化（见归属守卫内逻辑）
             loadVoicesInBackground(shipName)
         }
     }
@@ -641,11 +674,11 @@ class SecretaryManager @Inject constructor(
     private fun startAutoPlay() {
         stopAutoPlay()
         autoPlayJob = scope.launch {
-            while (isActive && _shipName.value.isNotEmpty()) {
+            while (isActive && _state.value.shipName.isNotEmpty()) {
                 // 每轮循环读取最新间隔：滑块调整对下一轮生效，无需重启循环
-                val intervalMs = state.value.autoPlayIntervalMinutes * 60 * 1000L
+                val intervalMs = _state.value.autoPlayIntervalMinutes * 60 * 1000L
                 delay(intervalMs)
-                if (isActive && state.value.autoPlayEnabled) playRandomVoice()
+                if (isActive && _state.value.autoPlayEnabled) playRandomVoice()
             }
         }
     }
@@ -654,9 +687,10 @@ class SecretaryManager @Inject constructor(
         autoPlayJob?.cancel()
         autoPlayJob = null
     }
-    
-    fun cleanup() {
-        stopAutoPlay()
-        scope.cancel()
+
+    companion object {
+        private const val TAG = "SecretaryManager"
+        /** 台词自动清除延迟（ms） */
+        private const val DIALOGUE_CLEAR_DELAY_MS = 8000L
     }
 }

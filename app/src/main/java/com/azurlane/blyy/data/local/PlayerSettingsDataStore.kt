@@ -57,6 +57,8 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_SHIP_NAME_KEY = stringPreferencesKey("secretary_ship_name")
         private val SECRETARY_FIGURE_URL_KEY = stringPreferencesKey("secretary_figure_url")
         private val SECRETARY_AVATAR_URL_KEY = stringPreferencesKey("secretary_avatar_url")
+        // wiki 网页 Q版小人回退图（冷启动零网络恢复悬浮小人，避免弱网/离线时悬浮窗空白）
+        private val SECRETARY_WEB_CHIBI_URL_KEY = stringPreferencesKey("secretary_web_chibi_url")
         private val SECRETARY_AUTO_PLAY_ENABLED_KEY = booleanPreferencesKey("secretary_auto_play_enabled")
         private val SECRETARY_AUTO_PLAY_INTERVAL_KEY = intPreferencesKey("secretary_auto_play_interval")
         private val SECRETARY_DIALOGUE_ENABLED_KEY = booleanPreferencesKey("secretary_dialogue_enabled")
@@ -246,6 +248,9 @@ class PlayerSettingsDataStore @Inject constructor(
     val secretaryShipName: Flow<String> = safeData.map { it[SECRETARY_SHIP_NAME_KEY] ?: "" }
     val secretaryFigureUrl: Flow<String> = safeData.map { it[SECRETARY_FIGURE_URL_KEY] ?: "" }
     val secretaryAvatarUrl: Flow<String> = safeData.map { it[SECRETARY_AVATAR_URL_KEY] ?: "" }
+
+    /** wiki 网页 Q版小人回退图 URL（本地 SD 资源未匹配时的悬浮小人显示图） */
+    val secretaryWebChibiUrl: Flow<String> = safeData.map { it[SECRETARY_WEB_CHIBI_URL_KEY] ?: "" }
     val secretaryAutoPlayEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
     val secretaryAutoPlayIntervalMinutes: Flow<Int> = safeData.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
     val secretaryDialogueEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_DIALOGUE_ENABLED_KEY] ?: true }
@@ -314,11 +319,23 @@ class PlayerSettingsDataStore @Inject constructor(
             }
         }
 
-    suspend fun saveSecretaryShip(shipName: String, figureUrl: String, avatarUrl: String) {
+    /**
+     * 保存秘书舰（舰名/立绘/头像/网页小人一次成组原子写入，
+     * 避免恢复时读到一半新一半旧的组合状态）
+     */
+    suspend fun saveSecretaryShip(shipName: String, figureUrl: String, avatarUrl: String, webChibiUrl: String) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_SHIP_NAME_KEY] = shipName
             prefs[SECRETARY_FIGURE_URL_KEY] = figureUrl
             prefs[SECRETARY_AVATAR_URL_KEY] = avatarUrl
+            prefs[SECRETARY_WEB_CHIBI_URL_KEY] = webChibiUrl
+        }
+    }
+
+    /** 单独更新网页 Q版小人 URL（后台补齐抓取成功后落盘，供冷启动零网络恢复） */
+    suspend fun setSecretaryWebChibiUrl(url: String) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_WEB_CHIBI_URL_KEY] = url
         }
     }
 
@@ -327,9 +344,11 @@ class PlayerSettingsDataStore @Inject constructor(
             prefs.remove(SECRETARY_SHIP_NAME_KEY)
             prefs.remove(SECRETARY_FIGURE_URL_KEY)
             prefs.remove(SECRETARY_AVATAR_URL_KEY)
+            prefs.remove(SECRETARY_WEB_CHIBI_URL_KEY)
             prefs.remove(SECRETARY_SD_SKIN_KEY)
-            prefs.remove(SECRETARY_SD_SCALE_KEY)
             prefs.remove(SECRETARY_SD_RESOURCE_ID_KEY)
+            // 注意：不清 SECRETARY_SD_SCALE_KEY —— 缩放是用户对"悬浮小人"的全局
+            // 尺寸偏好，与具体舰娘无关；换舰/清除不应把尺寸重置回 1.0
         }
     }
 

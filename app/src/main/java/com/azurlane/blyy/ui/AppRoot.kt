@@ -698,7 +698,7 @@ fun AppContent() {
                     }
                     composable("secretary_settings") {
                         // 使用 collectAsState 实现响应式状态更新
-                        val overlayEnabled by MainActivity.overlayState.collectAsState()
+                        val overlayEnabled by secretaryViewModel.overlayRunning.collectAsState()
 
                         SecretaryShipSettingsScreen(
                             secretaryState = secretaryState,
@@ -803,11 +803,15 @@ fun AppContent() {
                 // 只有当悬浮窗未开启时才在应用内显示立绘
                 // 显示条件：figureUrl 非空（网络立绘回退）或 webChibiUrl 非空（网页 Q版小人回退）
                 // 或 sdResourceId 非空（SD 资源直接渲染）
-                val overlayEnabledForChibi by MainActivity.overlayState.collectAsState()
+                // 路由遮蔽：live2d 查看器/秘书舰设置等全屏页不叠加应用内小人（视觉叠压）
+                val overlayEnabledForChibi by secretaryViewModel.overlayRunning.collectAsState()
                 val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
                     secretaryState.webChibiUrl.isNotEmpty() ||
                     secretaryState.sdResourceId.isNotEmpty()
-                if (hasChibiContent && !overlayEnabledForChibi) {
+                val currentRoute = currentDestination?.route
+                val routeAllowsChibi = currentRoute?.startsWith("live2d") != true &&
+                    currentRoute?.startsWith("secretary") != true
+                if (hasChibiContent && !overlayEnabledForChibi && routeAllowsChibi) {
                     SecretaryChibiOverlay(
                         figureUrl = secretaryState.figureUrl,
                         shipName = secretaryState.shipName,
