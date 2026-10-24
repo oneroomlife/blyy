@@ -50,6 +50,8 @@ class MyApplication : Application(), ImageLoaderFactory {
         applicationScope.launch {
             delay(500)
             runCatching { WidgetSync.updateAll(this@MyApplication) }
+            // 自定义头像裁切源临时文件清扫（取消/失败路径的残留缓存文件）
+            runCatching { com.azurlane.blyy.util.CustomAvatarManager.cleanCropCache(this@MyApplication) }
         }
     }
 

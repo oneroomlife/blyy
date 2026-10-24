@@ -66,6 +66,8 @@ import com.azurlane.blyy.ui.components.rememberBlyyHaptics
 import com.azurlane.blyy.ui.screens.AboutScreen
 import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.AssistantScreen
+import com.azurlane.blyy.ui.screens.AvatarCropScreen
+import com.azurlane.blyy.ui.screens.AvatarFigurePickerScreen
 import com.azurlane.blyy.ui.screens.ConversationListScreen
 import com.azurlane.blyy.ui.screens.GalleryScreen
 import com.azurlane.blyy.ui.screens.GuessByImageScreen
@@ -154,6 +156,7 @@ fun AppContent() {
             currentDestination?.route != "leaderboard" &&
             currentDestination?.route != Screen.About.route &&
             currentDestination?.route?.startsWith("secretary") != true &&
+            currentDestination?.route?.startsWith("avatar_") != true &&
             currentDestination?.route != "settings" &&
             currentDestination?.route?.startsWith("live2d") != true &&
             currentDestination?.route != "assistant" &&
@@ -439,6 +442,19 @@ fun AppContent() {
                                     ArchiveType.STUDENT -> navController.navigate("student_gallery/${ship.name}?avatarUrl=${Uri.encode(ship.avatarUrl)}&studentLink=${Uri.encode(ship.link)}")
                                 }
                             },
+                            // 自定义头像：立绘选择页（菜单层已限定 DOCK，此处再兜底一次）
+                            onPickFigureForAvatar = { ship ->
+                                if (state.archiveType == ArchiveType.DOCK) {
+                                    navController.navigate("avatar_figure/${Uri.encode(ship.name)}")
+                                }
+                            },
+                            // 自定义头像：源已就绪进裁切页（相册缓存文件/立绘网络 URL）
+                            onCropAvatar = { ship, source, label ->
+                                navController.navigate(
+                                    "avatar_crop/${ship.archiveType}/${Uri.encode(ship.name)}" +
+                                        "?source=${Uri.encode(source)}&label=${Uri.encode(label)}"
+                                )
+                            },
                             onScrollStateChange = { isScrolling ->
                                 isBottomBarVisible = !isScrolling
                             },
@@ -498,6 +514,50 @@ fun AppContent() {
                             avatarUrl = avatarUrl,
                             state = galleryState,
                             viewModel = viewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    // ── 自定义头像：立绘选择 → 3:4 裁切 ──
+                    composable(
+                        route = "avatar_figure/{shipName}",
+                        arguments = listOf(
+                            navArgument("shipName") { type = NavType.StringType }
+                        )
+                    ) { entry ->
+                        val shipName = entry.arguments?.getString("shipName") ?: ""
+                        val viewModel: ShipGalleryViewModel = hiltViewModel()
+                        AvatarFigurePickerScreen(
+                            shipName = shipName,
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            onCropFigure = { url, label ->
+                                navController.navigate(
+                                    "avatar_crop/DOCK/${Uri.encode(shipName)}" +
+                                        "?source=${Uri.encode(url)}&label=${Uri.encode(label)}"
+                                )
+                            }
+                        )
+                    }
+                    composable(
+                        route = "avatar_crop/{archiveType}/{shipName}?source={source}&label={label}",
+                        arguments = listOf(
+                            navArgument("archiveType") { type = NavType.StringType },
+                            navArgument("shipName") { type = NavType.StringType },
+                            navArgument("source") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            },
+                            navArgument("label") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            }
+                        )
+                    ) { entry ->
+                        AvatarCropScreen(
+                            shipName = entry.arguments?.getString("shipName") ?: "",
+                            archiveType = entry.arguments?.getString("archiveType") ?: "DOCK",
+                            source = entry.arguments?.getString("source") ?: "",
+                            label = entry.arguments?.getString("label") ?: "",
                             onBack = { navController.popBackStack() }
                         )
                     }

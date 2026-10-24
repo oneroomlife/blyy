@@ -3,6 +3,9 @@ package com.azurlane.blyy.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -73,11 +76,15 @@ import com.azurlane.blyy.viewmodel.GalleryIntent
 import com.azurlane.blyy.viewmodel.GalleryViewState
 import com.azurlane.blyy.ui.components.rememberBlyyHaptics
 import com.azurlane.blyy.ui.components.BlyyHaptic
+import androidx.core.net.toUri
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.azurlane.blyy.ui.screens.gallery.AdaptiveGalleryTopBar
 import com.azurlane.blyy.ui.screens.gallery.ModernFilterBottomSheet
 import com.azurlane.blyy.ui.screens.gallery.StudentFilterBottomSheet
@@ -94,6 +101,14 @@ fun GalleryScreen(
     onShipClick: (Ship) -> Unit,
     onShowGallery: (Ship) -> Unit,
     /**
+     * 自定义头像：跳转「选择立绘」页（仅 DOCK 舰娘；学生档案无皮肤立绘数据）
+     */
+    onPickFigureForAvatar: (Ship) -> Unit = {},
+    /**
+     * 自定义头像：源（file:// 缓存文件或立绘网络 URL）已就绪，跳转裁切页
+     */
+    onCropAvatar: (Ship, source: String, label: String) -> Unit = { _, _, _ -> },
+    /**
      * 船坞顶栏「舰娘/学生」档案切换按钮开关（设置页控制）。
      * null=设置尚未加载完成：切换器跳过首组合（不播动画），避免冷启动重播收拢动画
      */
@@ -106,6 +121,33 @@ fun GalleryScreen(
     val focusManager = LocalFocusManager.current
     var showFilterSheet by remember { mutableStateOf(false) }
     val gridState = rememberLazyGridState()
+
+    // 长按菜单：目标舰娘非空时展示精致底部菜单（自定义图片/誓约/立绘/Wiki）
+    var contextMenuShip by remember { mutableStateOf<Ship?>(null) }
+    // 相册选图目标（PhotoPicker 回调是异步的，须记住当时操作的舰娘）
+    var pendingAlbumShip by remember { mutableStateOf<Ship?>(null) }
+    val galleryScope = rememberCoroutineScope()
+
+    // 相册选图 → 立即拷贝到私有缓存（content Uri 读取权限随回调销毁失效）→ 进裁切
+    val pickAlbumImage = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        val ship = pendingAlbumShip
+        pendingAlbumShip = null
+        if (uri != null && ship != null) {
+            galleryScope.launch {
+                val cached = withContext(Dispatchers.IO) {
+                    com.azurlane.blyy.util.CustomAvatarManager.copyToCacheFile(context, uri)
+                }
+                if (cached != null) {
+                    onCropAvatar(ship, cached.toUri().toString(), "相册图片")
+                } else {
+                    Toast.makeText(context, "无法读取所选图片", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     val allowDecorAnimation by remember {
         derivedStateOf { !gridState.isScrollInProgress }
     }
@@ -344,6 +386,10 @@ fun GalleryScreen(
                                     haptic(BlyyHaptic.Tick)
                                     onShowGallery(ship)
                                 },
+                                // 船坞长按统一走外部长按菜单（精致底部弹窗），
+                                // 内置 DropdownMenu 不再弹出；上方的 onLongClick/onOathClick
+                                // 保留作为菜单内「誓约」动作的执行体
+                                onRequestContextMenu = { contextMenuShip = it },
                                 modifier = with(sharedTransitionScope) {
                                     Modifier.sharedElement(
                                         sharedContentState = rememberSharedContentState(key = "avatar-${ship.name}"),
@@ -474,6 +520,43 @@ fun GalleryScreen(
                 allRarities = allRarities
             )
         }
+    }
+
+    // 长按菜单（船坞专属精致底部弹窗）
+    contextMenuShip?.let { ship ->
+        com.azurlane.blyy.ui.screens.gallery.ShipContextMenuSheet(
+            ship = ship,
+            onDismiss = { contextMenuShip = null },
+            onOpenGallery = { onShowGallery(ship) },
+            onOpenWiki = { openWiki(ship) },
+            onToggleOath = {
+                onIntent(GalleryIntent.ToggleFavorite(ship))
+                Toast.makeText(
+                    context,
+                    if (ship.isFavorite) "已解除与${ship.name}的誓约" else "已与${ship.name}誓约",
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onPickFigure = {
+                if (ship.archiveType == com.azurlane.blyy.viewmodel.ArchiveType.DOCK.name) {
+                    onPickFigureForAvatar(ship)
+                } else {
+                    // 学生档案无皮肤立绘数据：入口在菜单层已禁用，此处兜底提示
+                    Toast.makeText(context, "学生档案请使用「从相册选择」", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onPickAlbum = {
+                pendingAlbumShip = ship
+                pickAlbumImage.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        ActivityResultContracts.PickVisualMedia.ImageOnly
+                    )
+                )
+            },
+            onResetAvatar = {
+                Toast.makeText(context, "已恢复默认头像", Toast.LENGTH_SHORT).show()
+            }
+        )
     }
 }
 

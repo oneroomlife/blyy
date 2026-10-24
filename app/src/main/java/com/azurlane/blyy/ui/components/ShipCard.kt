@@ -40,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.azurlane.blyy.data.model.Ship
-import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.*
 import com.azurlane.blyy.ui.components.adaptiveCardShape
 
@@ -54,6 +53,12 @@ fun ShipCard(
     onWikiClick: (() -> Unit)? = null,
     onOathClick: (() -> Unit)? = null,
     onGalleryClick: (() -> Unit)? = null,
+    /**
+     * 外部长按菜单宿主（船坞等复杂场景）。非空时长按直接转交宿主展示
+     * 精致底部菜单，内置 DropdownMenu 不再弹出；null 时保持旧行为
+     * （有快捷回调则弹内置菜单，否则透传 onLongClick）。
+     */
+    onRequestContextMenu: ((Ship) -> Unit)? = null,
     /** 列表滚动等场景关闭无限动画，保障 60fps */
     decorativeAnimation: Boolean = true
 ) {
@@ -128,7 +133,10 @@ fun ShipCard(
                 },
                 onLongClick = {
                     hapticFeedback(BlyyHaptic.LongPress)
-                    if (onWikiClick != null || onOathClick != null || onGalleryClick != null) {
+                    val externalHost = onRequestContextMenu
+                    if (externalHost != null) {
+                        externalHost(ship)
+                    } else if (onWikiClick != null || onOathClick != null || onGalleryClick != null) {
                         showMenu = true
                     } else {
                         onLongClick()
@@ -390,13 +398,28 @@ private fun ShipImage(
     contentDescription: String
 ) {
     val context = LocalContext.current
-    // 优先使用本地高清头像（誓约状态优先匹配 _h 婚皮），匹配不到时回退到网络 URL
-    val effectiveAvatar = remember(shipName, avatarUrl, archiveType, isOathed) {
-        com.azurlane.blyy.util.LocalAvatarResolver.resolveOrDefault(context, shipName, archiveType, isOathed, avatarUrl)
+    // 解析链：自定义头像（长按菜单设置）> 本地高清 assets（誓约状态优先 _h 婚皮）> 网络 URL。
+    // revision 纳入 remember key：应用/移除自定义头像后所有卡片立即重组刷新
+    val avatarRevision by com.azurlane.blyy.util.CustomAvatarManager.revision.collectAsState()
+    val effectiveAvatar = remember(shipName, avatarUrl, archiveType, isOathed, avatarRevision) {
+        com.azurlane.blyy.util.CustomAvatarManager.resolveOrDefault(
+            context, shipName, archiveType,
+            com.azurlane.blyy.util.LocalAvatarResolver.resolveOrDefault(context, shipName, archiveType, isOathed, avatarUrl)
+        )
     }
-    val request = remember(effectiveAvatar) {
+    // 自定义头像走同一路径覆盖写：必须用 lastModified 组进内存缓存键，
+    // 否则 Coil 内存缓存命中旧图，覆盖/重选后卡片显示不变
+    val customFile = remember(shipName, archiveType, avatarRevision) {
+        com.azurlane.blyy.util.CustomAvatarManager.resolveFile(context, shipName, archiveType)
+    }
+    val request = remember(effectiveAvatar, customFile?.lastModified()) {
         ImageRequest.Builder(context)
             .data(effectiveAvatar)
+            .apply {
+                customFile?.let {
+                    memoryCacheKey("${it.absolutePath}#rev${it.lastModified()}")
+                }
+            }
             .crossfade(true)
             .build()
     }
