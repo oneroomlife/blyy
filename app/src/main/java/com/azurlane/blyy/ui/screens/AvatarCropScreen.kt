@@ -2,17 +2,26 @@ package com.azurlane.blyy.ui.screens
 
 // 自定义头像·裁切页：3:4（舰娘卡片纵横比）自由缩放裁切并应用
 //
-// 与 ImageCropperScreen（应用图标，1:1/432px）同源的变换手势，泛化为任意纵横比：
-// - 裁剪框 = 屏宽 80% × (宽/0.75) 高，所见即所得（ShipCard 即 3:4 Crop 显示）
-// - 单指拖动平移、双指缩放 1x~5x，两轴独立 clamp
+// v2 裁切模型（与 CustomAvatarManager.applyFromCrop 严格一致）：
+// - 预览基准 ContentScale.Fit：初始（scale=1）完整可见整张立绘。立绘多为
+//   2:3~1:2 竖长图，旧版 Crop 基准在最小缩放时只显示中段（头脚被裁），
+//   表现为"立绘被错误裁切过导致不全"；Fit 基准下用户从全图出发自选范围。
+// - 裁剪框尺寸用 onSizeChanged 实测：旧版按屏宽推导（0.8×屏宽）与真实框
+//   （0.8×(屏宽−左右padding)）有 ~10% 偏差，平移量换算进原图坐标随偏移
+//   放大，表现为"选区与实际应用范围不一致"。
+// - 缩放带手势质心补偿（手指下的图像点在缩放前后保持不动），平移按
+//   "图像超出框的一半"两轴独立 clamp（Fit 下未覆盖轴 clamp=0）。
+// - 图像未覆盖区域为黑边（OUTPUT_BANDS_COLOR），应用输出以同色补齐——
+//   预览与产物逐像素一致。
 // 源物化：网络立绘先经 Coil 下载到缓存文件，相册 content Uri 先拷贝到私有缓存
 // （读取权限是临时的，不能推迟到应用时再读），本页裁切与应用只面对 file:// 源。
 
 import android.content.Context
-import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -44,11 +53,12 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import coil.Coil
+import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.size.Size
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
@@ -63,10 +73,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** 源物化阶段 */
+/** 缩放上限（Fit 基准下 1 = 整图，5 = 放大 5 倍细选） */
+private const val MAX_SCALE = 5f
+
+/** 源物化阶段（Ready 附带原图尺寸，供手势 clamp 与缩放计算） */
 private sealed interface CropSourceState {
     data object Loading : CropSourceState
-    data class Ready(val file: File) : CropSourceState
+    data class Ready(val file: File, val srcW: Int, val srcH: Int) : CropSourceState
     data class Failed(val reason: String) : CropSourceState
 }
 
@@ -81,44 +94,54 @@ fun AvatarCropScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // ── 阶段一：源物化为本地文件 ──
+    // ── 阶段一：源物化为本地文件（含尺寸探测）──
     var sourceState by remember(source) { mutableStateOf<CropSourceState>(CropSourceState.Loading) }
     LaunchedEffect(source) {
         sourceState = withContext(Dispatchers.IO) {
             runCatching {
-                when {
+                val file: File? = when {
                     source.startsWith("file://") -> {
                         val f = File(Uri.parse(source).path ?: "")
-                        if (f.isFile) CropSourceState.Ready(f)
-                        else CropSourceState.Failed("源文件不存在")
+                        if (f.isFile) f else null
                     }
                     source.startsWith("content://") -> {
                         // 相册 Uri 理论上已在入口处拷贝；兜底再拷一次（入口遗漏/进程重启场景）
                         CustomAvatarManager.copyToCacheFile(context, Uri.parse(source))
-                            ?.let { CropSourceState.Ready(it) }
-                            ?: CropSourceState.Failed("无法读取所选图片")
                     }
-                    source.startsWith("http") -> {
-                        downloadToCache(context, source)
-                            ?.let { CropSourceState.Ready(it) }
-                            ?: CropSourceState.Failed("立绘下载失败，请检查网络")
-                    }
-                    else -> CropSourceState.Failed("不支持的图片来源")
+                    source.startsWith("http") -> downloadToCache(context, source)
+                    else -> null
+                }
+                if (file == null || !file.isFile) {
+                    return@runCatching CropSourceState.Failed(
+                        when {
+                            source.startsWith("http") -> "立绘下载失败，请检查网络"
+                            source.startsWith("content://") -> "无法读取所选图片"
+                            else -> "源文件不存在"
+                        }
+                    )
+                }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    CropSourceState.Failed("图片解码失败")
+                } else {
+                    CropSourceState.Ready(file, bounds.outWidth, bounds.outHeight)
                 }
             }.getOrElse { CropSourceState.Failed(it.message ?: "图片加载失败") }
         }
     }
 
-    // ── 裁剪状态（Ready 后有意义）──
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    // ── 裁切状态 ──
+    var scale by remember(source) { mutableFloatStateOf(1f) }
+    var offset by remember(source) { mutableStateOf(Offset.Zero) }
     var isApplying by remember { mutableStateOf(false) }
 
-    // 裁剪框：宽 = 屏宽 80%，高 = 宽 / 0.75（与舰娘卡片纵横比一致，所见即所得）
-    val cropBoxWidthPx = with(LocalDensity.current) {
-        (LocalConfiguration.current.screenWidthDp.dp * 0.8f).toPx()
-    }
-    val cropBoxHeightPx = cropBoxWidthPx / AppSpacing.Card.AspectRatio
+    // 裁剪框实际渲染尺寸（onSizeChanged 实测）——apply 与 clamp 共用，
+    // 杜绝"推导尺寸 ≠ 真实框"导致的应用范围漂移
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+
+    val srcDims = (sourceState as? CropSourceState.Ready)?.let { it.srcW to it.srcH }
+    val boxReady = boxSize.width > 0 && boxSize.height > 0 && srcDims != null
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -155,28 +178,48 @@ fun AvatarCropScreen(
                             BlyySecondaryButton(text = "返回", onClick = onBack)
                         }
                         is CropSourceState.Ready -> {
+                            val bandsColor = Color(CustomAvatarManager.OUTPUT_BANDS_COLOR)
                             Box(
                                 modifier = Modifier
                                     .aspectRatio(AppSpacing.Card.AspectRatio)
                                     .fillMaxWidth(0.8f)
                                     .clip(RectangleShape)
+                                    .background(bandsColor)
                                     .border(2.dp, Color.White, RectangleShape)
-                                    .pointerInput(Unit) {
-                                        detectTransformGestures { _, pan, zoom, _ ->
-                                            val newScale = (scale * zoom).coerceIn(1f, 5f)
-                                            // 两轴独立 clamp：scale≥1 保证 maxOffset 非负，
-                                            // 约束维（Crop 贴合维）maxOffset≈0 自然锁死该轴
-                                            val maxOffX = cropBoxWidthPx * (newScale - 1f) / 2f
-                                            val maxOffY = cropBoxHeightPx * (newScale - 1f) / 2f
+                                    .onSizeChanged { boxSize = it }
+                                    .pointerInput(st.srcW, st.srcH) {
+                                        detectTransformGestures { centroid, pan, zoom, _ ->
+                                            if (boxSize.width <= 0 || boxSize.height <= 0) return@detectTransformGestures
+                                            val boxW = boxSize.width.toFloat()
+                                            val boxH = boxSize.height.toFloat()
+                                            val oldScale = scale
+                                            val newScale = (oldScale * zoom).coerceIn(1f, MAX_SCALE)
+
+                                            // 质心补偿：保持手指下的图像点不动。
+                                            // screen = c + (q−c)*s + t → 变换后
+                                            // t' = centroid − c − (centroid − t − c) * (s'/s)
+                                            val cx = boxW / 2f
+                                            val cy = boxH / 2f
+                                            var nx = centroid.x - cx -
+                                                (centroid.x - offset.x - cx) * (newScale / oldScale) + pan.x
+                                            var ny = centroid.y - cy -
+                                                (centroid.y - offset.y - cy) * (newScale / oldScale) + pan.y
+
+                                            // 两轴独立 clamp：图像超出框的一半（Fit 下未覆盖轴为 0）
+                                            val base = minOf(boxW / st.srcW, boxH / st.srcH)
+                                            val maxOffX = ((st.srcW * base * newScale - boxW) / 2f)
+                                                .coerceAtLeast(0f)
+                                            val maxOffY = ((st.srcH * base * newScale - boxH) / 2f)
+                                                .coerceAtLeast(0f)
+                                            nx = nx.coerceIn(-maxOffX, maxOffX)
+                                            ny = ny.coerceIn(-maxOffY, maxOffY)
+
                                             scale = newScale
-                                            offset = Offset(
-                                                x = (offset.x + pan.x).coerceIn(-maxOffX, maxOffX),
-                                                y = (offset.y + pan.y).coerceIn(-maxOffY, maxOffY)
-                                            )
+                                            offset = Offset(nx, ny)
                                         }
                                     }
                             ) {
-                                coil.compose.AsyncImage(
+                                AsyncImage(
                                     model = remember(st.file) {
                                         ImageRequest.Builder(context)
                                             .data(st.file)
@@ -191,7 +234,8 @@ fun AvatarCropScreen(
                                             translationX = offset.x,
                                             translationY = offset.y
                                         ),
-                                    contentScale = ContentScale.Crop
+                                    // Fit 基准：scale=1 完整可见整图（黑边补齐未覆盖区域）
+                                    contentScale = ContentScale.Fit
                                 )
                             }
                         }
@@ -211,7 +255,7 @@ fun AvatarCropScreen(
                         text = if (isApplying) "应用中..." else "应用",
                         onClick = {
                             val st = sourceState
-                            if (st is CropSourceState.Ready && !isApplying) {
+                            if (st is CropSourceState.Ready && boxReady && !isApplying) {
                                 isApplying = true
                                 scope.launch {
                                     val result = CustomAvatarManager.applyFromCrop(
@@ -222,8 +266,8 @@ fun AvatarCropScreen(
                                         scale = scale,
                                         offsetX = offset.x,
                                         offsetY = offset.y,
-                                        boxW = cropBoxWidthPx,
-                                        boxH = cropBoxHeightPx
+                                        boxW = boxSize.width.toFloat(),
+                                        boxH = boxSize.height.toFloat()
                                     )
                                     isApplying = false
                                     result.fold(
@@ -242,7 +286,7 @@ fun AvatarCropScreen(
                             }
                         },
                         modifier = Modifier.weight(1f),
-                        enabled = sourceState is CropSourceState.Ready && !isApplying
+                        enabled = boxReady && !isApplying
                     )
                 }
 
@@ -264,7 +308,7 @@ private suspend fun downloadToCache(context: Context, url: String): File? =
             val bitmap = (Coil.imageLoader(context).execute(request).drawable as? BitmapDrawable)?.bitmap
                 ?: return@runCatching null
             val dest = File(context.cacheDir, "avatar_crop_src_net_${System.currentTimeMillis()}.png")
-            dest.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            dest.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
             dest
         }.getOrNull()
     }

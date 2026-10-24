@@ -3,7 +3,6 @@ package com.azurlane.blyy.util
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.BitmapRegionDecoder
 import android.net.Uri
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -13,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.URLEncoder
-import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
@@ -31,10 +30,17 @@ import kotlin.math.roundToInt
  *   （同路径文件被覆盖时内容变了但路径没变，Coil 内存缓存会一直命中旧图，
  *   必须用 lastModified 组进缓存键主动失效）。
  *
- * 裁剪数学（[computeCropRect]）与 [com.azurlane.blyy.util.AppIconManager]
- * 的方形图标裁剪同源，泛化到任意宽高比的裁剪框：
- * 预览层图片以 ContentScale.Crop 填满裁剪框（baseScale = max 比例），
- * 用户在此基础上叠加 scale 缩放与 offset 平移；裁剪区域反推回原图坐标。
+ * 裁剪模型（v2，与裁切页预览严格一致）：
+ * - 预览：图片以 ContentScale.**Fit** 基准居中放入 3:4 裁剪框（scale=1 时
+ *   完整可见整图——立绘多为 2:3~1:2 竖长图，旧 Crop 基准在最小缩放时只露
+ *   中段、头脚被裁，表现为"立绘被错误裁切过"），用户在其上叠加
+ *   scale（1x~5x）与 offset（绕框中心缩放后平移）。
+ * - 裁剪窗口 = 裁剪框反推回原图坐标的矩形（[computeCropWindow]），
+ *   **允许越出原图边界**——越出部分在输出中以 [OUTPUT_BANDS_COLOR]
+ *   底色补齐（黑边），与预览所见完全一致（所见即所得）。
+ * - 输出：按 source→box→canvas 的线性矩阵整体绘制（Canvas.drawBitmap），
+ *   不再走"区域解码+坐标钳制"多级换算（旧法钳制与采样换算的舍入会让
+ *   选区与实际应用范围漂移）。
  */
 object CustomAvatarManager {
 
@@ -44,22 +50,32 @@ object CustomAvatarManager {
     /** 自定义头像输出长边（px）：卡片显示宽度约 120dp（高密度 ~320px），720px 足够且控制文件体积 */
     private const val OUTPUT_MAX_SIDE = 720
 
+    /**
+     * 图像未覆盖裁剪框时的补齐底色（深海黑，与 ShipCard 底部渐晕同色族）。
+     * 预览框背景与输出画布共用此值——黑边在预览与应用结果中完全一致。
+     */
+    const val OUTPUT_BANDS_COLOR: Long = 0xFF05101E
+
     /** 供 Compose 订阅的版本号：apply/remove 后所有 ShipImage 重组并按新缓存键加载 */
     private val _revision = MutableStateFlow(0)
     val revision: StateFlow<Int> = _revision.asStateFlow()
 
-    /** 裁剪结果（原图坐标系） */
-    data class CropRect(val left: Int, val top: Int, val width: Int, val height: Int)
+    /** 裁剪窗口（原图坐标系；left/top 可为负、right/bottom 可越界——越界即黑边） */
+    data class CropWindow(val left: Float, val top: Float, val width: Float, val height: Float)
 
     /**
-     * 计算裁剪区域（纯函数，JVM 可单测）。
+     * 计算裁剪窗口（纯函数，JVM 可单测）。
+     *
+     * 语义与预览层逐像素对应：图片 Fit 居中（baseScale = min 两轴比例），
+     * graphicsLayer 绕框中心 scale 缩放后 offset 平移（屏幕像素）。
      *
      * @param srcW/srcH 原图尺寸
-     * @param boxW/boxH 裁剪框尺寸（px，与预览层显示一致）
-     * @param scale 用户缩放（≥1）
-     * @param offsetX/offsetY 用户平移（预览层图片中心相对裁剪框中心的偏移）
+     * @param boxW/boxH 裁剪框尺寸（px，须为**实测渲染尺寸**——推导值与真实框
+     *   有偏差时 offset 换算进原图坐标会按比例漂移，表现为选区与应用不一致）
+     * @param scale 用户缩放（≥1，1 = 整图 Fit 可见）
+     * @param offsetX/offsetY 用户平移（预览像素，图片中心相对框中心的偏移）
      */
-    fun computeCropRect(
+    fun computeCropWindow(
         srcW: Int,
         srcH: Int,
         boxW: Float,
@@ -67,22 +83,25 @@ object CustomAvatarManager {
         scale: Float,
         offsetX: Float,
         offsetY: Float
-    ): CropRect {
-        // ContentScale.Crop 的基础缩放：等比缩放原图至完全覆盖裁剪框
-        val baseScale = max(boxW / srcW, boxH / srcH)
+    ): CropWindow {
+        // Fit 基准缩放：整图可见地放入裁剪框
+        val baseScale = min(boxW / srcW, boxH / srcH)
         val actualScale = baseScale * scale
 
-        // 裁剪框两维反推到原图坐标；Crop 覆盖保证约束维等于原图对应维，另一维 ≤
-        val cropW = (boxW / actualScale).coerceAtMost(srcW.toFloat())
-        val cropH = (boxH / actualScale).coerceAtMost(srcH.toFloat())
+        // 窗口尺寸：裁剪框反推回原图坐标（scale=1 时 ≥ 原图对应维 → 黑边）
+        val cropW = boxW / actualScale
+        val cropH = boxH / actualScale
 
-        // 图片中心相对裁剪框中心偏移 offset → 原图坐标反推；Crop 默认居中
+        // 窗口中心：图片平移 offset（屏幕px）反推到原图 = 原图中心 − offset/actualScale
         val centerX = srcW / 2f - offsetX / actualScale
         val centerY = srcH / 2f - offsetY / actualScale
 
-        val left = (centerX - cropW / 2f).roundToInt().coerceIn(0, (srcW - cropW).roundToInt())
-        val top = (centerY - cropH / 2f).roundToInt().coerceIn(0, (srcH - cropH).roundToInt())
-        return CropRect(left, top, cropW.roundToInt(), cropH.roundToInt())
+        return CropWindow(
+            left = centerX - cropW / 2f,
+            top = centerY - cropH / 2f,
+            width = cropW,
+            height = cropH
+        )
     }
 
     // ── 解析链 ──
@@ -104,7 +123,10 @@ object CustomAvatarManager {
     // ── 应用 / 移除 ──
 
     /**
-     * 按裁剪参数生成本地自定义头像并原子落盘。
+     * 按裁剪参数渲染自定义头像并原子落盘。
+     *
+     * 渲染 = 预览的离屏重放：source→裁剪框→输出画布 的线性矩阵整体绘制，
+     * 黑边用 [OUTPUT_BANDS_COLOR] 补齐——预览与产物严格逐像素一致。
      *
      * @param sourceUri 本地文件 Uri（file://；网络/相册源须先物化为缓存文件，
      *   相册 content Uri 的读取权限是临时的，不能延迟到本方法再读）
@@ -129,42 +151,52 @@ object CustomAvatarManager {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(srcFile.absolutePath, bounds)
             require(bounds.outWidth > 0 && bounds.outHeight > 0) { "无法解码图片: $path" }
+            val srcW = bounds.outWidth
+            val srcH = bounds.outHeight
 
-            val rect = computeCropRect(
-                srcW = bounds.outWidth, srcH = bounds.outHeight,
-                boxW = boxW, boxH = boxH,
-                scale = scale, offsetX = offsetX, offsetY = offsetY
-            )
-            require(rect.width > 0 && rect.height > 0) { "裁剪区域无效: $rect" }
-
-            // 区域解码 + 采样：目标输出长边 OUTPUT_MAX_SIDE
-            val maxSide = max(rect.width, rect.height)
+            // 采样解码：长边保留 ≥ 2× 输出分辨率即可（绘制裁剪窗口按需放大）
             var sampleSize = 1
-            while (maxSide / (sampleSize * 2) >= OUTPUT_MAX_SIDE) sampleSize *= 2
-            @Suppress("DEPRECATION")
-            val decoder = BitmapRegionDecoder.newInstance(srcFile.absolutePath, false)
-                ?: throw IllegalStateException("BitmapRegionDecoder 创建失败: $path")
-            val region = decoder.decodeRegion(
-                android.graphics.Rect(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height),
+            while (maxOf(srcW, srcH) / (sampleSize * 2) >= OUTPUT_MAX_SIDE * 2) sampleSize *= 2
+            val source = BitmapFactory.decodeFile(
+                srcFile.absolutePath,
                 BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            )
-            decoder.recycle()
-            checkNotNull(region) { "区域解码失败: $rect" }
+            ) ?: throw IllegalStateException("图片解码失败: $path")
 
-            // 精确缩放到目标尺寸（保持裁剪框纵横比）
-            val targetW: Int
-            val targetH: Int
-            if (rect.width >= rect.height) {
-                targetW = OUTPUT_MAX_SIDE.coerceAtMost(rect.width)
-                targetH = (targetW * (rect.height.toFloat() / rect.width)).roundToInt().coerceAtLeast(1)
+            // 输出画布：长边 OUTPUT_MAX_SIDE，纵横比与裁剪框一致
+            val outH: Int
+            val outW: Int
+            if (boxH >= boxW) {
+                outH = OUTPUT_MAX_SIDE
+                outW = (OUTPUT_MAX_SIDE * (boxW / boxH)).roundToInt().coerceAtLeast(1)
             } else {
-                targetH = OUTPUT_MAX_SIDE.coerceAtMost(rect.height)
-                targetW = (targetH * (rect.width.toFloat() / rect.height)).roundToInt().coerceAtLeast(1)
+                outW = OUTPUT_MAX_SIDE
+                outH = (OUTPUT_MAX_SIDE * (boxH / boxW)).roundToInt().coerceAtLeast(1)
             }
-            val output = if (region.width == targetW && region.height == targetH) region
-            else Bitmap.createScaledBitmap(region, targetW, targetH, true).also {
-                if (it !== region) region.recycle()
+            // 原图 → 采样图 坐标缩放（src 坐标除以 sample = bitmap 坐标）
+            val sample = sampleSize.toFloat()
+
+            // 变换链（每轴独立推导，out = k*s*base*bitmap + k*(c + s*(f0 − c) + t)）：
+            //   bitmap →(×base, Fit 居中 f0)→ 裁剪框坐标 →(绕框中心 ×s, +t)→ 层坐标 →(×k)→ 画布
+            val baseScale = min(boxW / srcW, boxH / srcH)
+            val k = outW / boxW
+            val matrix = android.graphics.Matrix().apply {
+                val s = scale
+                setScale(k * s * baseScale / sample, k * s * baseScale / sample)
+                postTranslate(
+                    k * (boxW / 2f + s * ((boxW - srcW * baseScale) / 2f - boxW / 2f) + offsetX),
+                    k * (boxH / 2f + s * ((boxH - srcH * baseScale) / 2f - boxH / 2f) + offsetY)
+                )
             }
+
+            val output = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(output)
+            canvas.drawColor(OUTPUT_BANDS_COLOR.toInt())
+            val paint = android.graphics.Paint().apply {
+                isFilterBitmap = true
+                isAntiAlias = true
+            }
+            canvas.drawBitmap(source, matrix, paint)
+            source.recycle()
 
             val outFile = File(File(context.filesDir.resolve(ROOT_DIR), archiveType?.takeIf { it.isNotBlank() } ?: "DOCK"), encodeName(shipName) + ".png")
             outFile.parentFile?.mkdirs()
@@ -180,7 +212,7 @@ object CustomAvatarManager {
             output.recycle()
 
             _revision.value = _revision.value + 1
-            Log.i(TAG, "applyFromCrop: ${outFile.name} ${targetW}x${targetH} (source ${bounds.outWidth}x${bounds.outHeight}, crop ${rect})")
+            Log.i(TAG, "applyFromCrop: ${outFile.name} ${outW}x${outH} (source ${srcW}x${srcH} sample=$sampleSize, window=${computeCropWindow(srcW, srcH, boxW, boxH, scale, offsetX, offsetY)})")
             outFile
         }
     }

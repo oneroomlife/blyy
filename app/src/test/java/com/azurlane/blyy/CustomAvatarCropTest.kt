@@ -7,97 +7,101 @@ import org.junit.Test
 import kotlin.math.abs
 
 /**
- * 自定义头像裁剪数学（computeCropRect）纯逻辑单测。
+ * 自定义头像裁剪窗口数学（computeCropWindow）纯逻辑单测。
  *
- * 预览层语义：图片 ContentScale.Crop 填满裁剪框（baseScale = max 两轴比例），
- * 用户叠加 scale 缩放与 offset 平移（图片中心相对框中心的偏移）。
+ * v2 语义：预览 = ContentScale.Fit 居中基准 + graphicsLayer 绕框中心 scale
+ * 缩放后 offset 平移；裁剪窗口 = 裁剪框反推回原图坐标的矩形，
+ * 允许越出原图（越出部分 = 输出黑边），窗口纵横比恒等于裁剪框。
  */
 class CustomAvatarCropTest {
 
-    private fun rect(vararg p: Int) =
-        intArrayOf(p[0], p[1], p[2], p[3])
+    private fun window(srcW: Int, srcH: Int, boxW: Float, boxH: Float, s: Float, ox: Float, oy: Float) =
+        CustomAvatarManager.computeCropWindow(srcW, srcH, boxW, boxH, s, ox, oy)
 
-    private fun assertRect(expected: IntArray, actual: CustomAvatarManager.CropRect) {
-        assertEquals(
-            "left,top,w,h",
-            expected.joinToString(),
-            rect(actual.left, actual.top, actual.width, actual.height).joinToString()
-        )
+    private fun assertClose(expected: Float, actual: Float, msg: String) {
+        assertTrue("$msg: expected=$expected actual=$actual", abs(expected - actual) < 0.01f)
     }
 
     // ── 3:4 裁剪框（舰娘卡片纵横比 0.75）──
 
     @Test
-    fun `3x4 box on square source scale1 centers full width`() {
-        // 600×600 原图，框 300×400：Crop 由高度约束 → 裁剪区域 450×600（宽反推），水平居中
-        val r = CustomAvatarManager.computeCropRect(600, 600, 300f, 400f, 1f, 0f, 0f)
-        assertRect(rect(75, 0, 450, 600), r)
+    fun `tall artwork at scale1 shows full image with side bands`() {
+        // 竖长立绘 600×1200，框 300×400：高度约束 Fit → 整图可见，左右黑边
+        val w = window(600, 1200, 300f, 400f, 1f, 0f, 0f)
+        assertClose(-150f, w.left, "left")
+        assertClose(0f, w.top, "top")
+        assertClose(900f, w.width, "width")
+        assertClose(1200f, w.height, "height")
     }
 
     @Test
-    fun `3x4 box on 3x4 source scale1 crops nothing`() {
-        // 原图与裁剪框同比例：baseScale 两轴同时约束，裁剪区域 = 整图
-        val r = CustomAvatarManager.computeCropRect(450, 600, 300f, 400f, 1f, 0f, 0f)
-        assertRect(rect(0, 0, 450, 600), r)
+    fun `wide image at scale1 shows full image with top bottom bands`() {
+        val w = window(1200, 600, 300f, 400f, 1f, 0f, 0f)
+        assertClose(0f, w.left, "left")
+        assertClose(-500f, w.top, "top")
+        assertClose(1200f, w.width, "width")
+        assertClose(1600f, w.height, "height")
     }
 
     @Test
-    fun `3x4 box on wide source scale1 centers horizontally`() {
-        // 1200×600 宽图：高度约束 → 裁剪 450×600，水平居中
-        val r = CustomAvatarManager.computeCropRect(1200, 600, 300f, 400f, 1f, 0f, 0f)
-        assertRect(rect(375, 0, 450, 600), r)
+    fun `same aspect image at scale1 crops nothing and has no bands`() {
+        val w = window(450, 600, 300f, 400f, 1f, 0f, 0f)
+        assertClose(0f, w.left, "left")
+        assertClose(0f, w.top, "top")
+        assertClose(450f, w.width, "width")
+        assertClose(600f, w.height, "height")
     }
 
     @Test
-    fun `offset shifts crop rect and clamps at borders`() {
-        // 1200×600 宽图，水平平移：offsetX=+120（图片右移）→ 裁剪窗口左移 180px（120/actualScale=120/(400/600)=180）
-        val actualScale = 400f / 600f
-        val r = CustomAvatarManager.computeCropRect(1200, 600, 300f, 400f, 1f, 120f, 0f)
-        assertEquals((120f / actualScale).toInt(), 375 - r.left)
-        // 超界平移被 clamp：offsetX 巨大 → left=0
-        val rClamped = CustomAvatarManager.computeCropRect(1200, 600, 300f, 400f, 1f, 100000f, 0f)
-        assertEquals(0, rClamped.left)
-        val rClampedNeg = CustomAvatarManager.computeCropRect(1200, 600, 300f, 400f, 1f, -100000f, 0f)
-        assertEquals(1200 - rClampedNeg.width, rClampedNeg.left)
+    fun `square image keeps box aspect with bands`() {
+        val w = window(800, 800, 300f, 400f, 1f, 0f, 0f)
+        assertClose(0f, w.left, "left")
+        assertClose(-400f / 3f, w.top, "top")
+        assertClose(800f, w.width, "width")
+        assertClose(800f * 4f / 3f, w.height, "height")
     }
 
     @Test
-    fun `zoom halves crop region around center`() {
-        // scale=2：裁剪区域两维减半，仍居中
-        val r1 = CustomAvatarManager.computeCropRect(450, 600, 300f, 400f, 1f, 0f, 0f)
-        val r2 = CustomAvatarManager.computeCropRect(450, 600, 300f, 400f, 2f, 0f, 0f)
-        assertEquals(r1.width / 2, r2.width)
-        assertEquals(r1.height / 2, r2.height)
-        assertEquals(450 / 2 - r2.width / 2, r2.left)
-        assertEquals(600 / 2 - r2.height / 2, r2.top)
+    fun `zoom halves window around center`() {
+        val w1 = window(450, 600, 300f, 400f, 1f, 0f, 0f)
+        val w2 = window(450, 600, 300f, 400f, 2f, 0f, 0f)
+        assertClose(w1.width / 2f, w2.width, "width")
+        assertClose(w1.height / 2f, w2.height, "height")
+        // 居中保持：窗口中心 = 原图中心
+        assertClose(225f, w2.left + w2.width / 2f, "centerX")
+        assertClose(300f, w2.top + w2.height / 2f, "centerY")
     }
 
     @Test
-    fun `square box on square source crops full image`() {
-        // 图标裁剪（1:1）兼容路径：与 AppIconManager 方形数学一致
-        val r = CustomAvatarManager.computeCropRect(800, 800, 400f, 400f, 1f, 0f, 0f)
-        assertRect(rect(0, 0, 800, 800), r)
+    fun `offset shifts window opposite to pan`() {
+        // 450×600 对框 300×400：base = 2/3（同纵横比），scale=2 → actual = 4/3；
+        // offsetY=+120（图片下移）→ 窗口中心上移 120/(4/3)=90
+        val w = window(450, 600, 300f, 400f, 2f, 0f, 120f)
+        assertClose(300f - 90f, w.top + w.height / 2f, "centerY")
+        assertClose(225f, w.left + w.width / 2f, "centerX 不受 Y 平移影响")
     }
 
     @Test
-    fun `tiny and odd-sized sources stay in bounds`() {
-        // 小图：baseScale<1 时 Crop 放大铺满，约束维（宽）贴满，另一维按框比例反推（40≠41）
-        val r = CustomAvatarManager.computeCropRect(30, 41, 300f, 400f, 1f, 0f, 0f)
-        assertEquals(30, r.width)
-        assertEquals(40, r.height)
-        assertTrue(r.left >= 0 && r.top >= 0 && r.left + r.width <= 30 && r.top + r.height <= 41)
-        // 非整除尺寸：裁剪区域不越界
-        val r2 = CustomAvatarManager.computeCropRect(301, 601, 300f, 400f, 1.5f, 33f, -40f)
-        assertTrue(r2.left >= 0 && r2.top >= 0)
-        assertTrue(r2.left + r2.width <= 301)
-        assertTrue(r2.top + r2.height <= 601)
+    fun `window aspect always equals box aspect`() {
+        val cases = listOf(
+            Triple(1234, 777, 1.7f), Triple(30, 41, 1f), Triple(2000, 900, 3.3f)
+        )
+        for ((sw, sh, s) in cases) {
+            val w = window(sw, sh, 300f, 400f, s, 55f, -40f)
+            assertClose(
+                0.75f, w.width / w.height,
+                "窗口纵横比 ($sw x $sh, s=$s)"
+            )
+        }
     }
 
     @Test
-    fun `aspect ratio of crop region matches box`() {
-        val r = CustomAvatarManager.computeCropRect(1234, 777, 300f, 400f, 1.7f, 55f, -40f)
-        val boxRatio = 300f / 400f
-        val cropRatio = r.width.toFloat() / r.height.toFloat()
-        assertTrue("裁剪区域纵横比应等于裁剪框（${r.width}x${r.height}）", abs(boxRatio - cropRatio) < 0.01f)
+    fun `tiny image gets hairline bands instead of aspect loss`() {
+        // 旧版此处会钳制成 30×40（丢纵横比，卡片 Crop 再裁 → 选区≠所见）；
+        // v2 窗口保持 3:4，左右 ~0.4px 黑边
+        val w = window(30, 41, 300f, 400f, 1f, 0f, 0f)
+        assertClose(30.75f, w.width, "width")
+        assertClose(41f, w.height, "height")
+        assertClose(0.75f, w.width / w.height, "aspect")
     }
 }
