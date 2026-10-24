@@ -803,14 +803,16 @@ fun AppContent() {
                 // 只有当悬浮窗未开启时才在应用内显示立绘
                 // 显示条件：figureUrl 非空（网络立绘回退）或 webChibiUrl 非空（网页 Q版小人回退）
                 // 或 sdResourceId 非空（SD 资源直接渲染）
-                // 路由遮蔽：live2d 查看器/秘书舰设置等全屏页不叠加应用内小人（视觉叠压）
+                // 路由遮蔽：仅 live2d 查看器（全屏 GL 手势区与小人交互冲突）。
+                // 今日秘书舰系列页（secretary_*）此前被整体遮蔽，导致"点击打开今日秘书舰
+                // 界面 SD 小人异常消失"，且秘书舰设置页的大小滑块因此失去实时预览——
+                // 小人正是这些页面的操作主体，应保持可见（2026-10-24 解除遮蔽）。
                 val overlayEnabledForChibi by secretaryViewModel.overlayRunning.collectAsState()
                 val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
                     secretaryState.webChibiUrl.isNotEmpty() ||
                     secretaryState.sdResourceId.isNotEmpty()
                 val currentRoute = currentDestination?.route
-                val routeAllowsChibi = currentRoute?.startsWith("live2d") != true &&
-                    currentRoute?.startsWith("secretary") != true
+                val routeAllowsChibi = currentRoute?.startsWith("live2d") != true
                 if (hasChibiContent && !overlayEnabledForChibi && routeAllowsChibi) {
                     SecretaryChibiOverlay(
                         figureUrl = secretaryState.figureUrl,

@@ -135,6 +135,20 @@ private fun findImageFile(dirPath: String, assetName: String): String? {
     }
 }
 
+/**
+ * 应用内小人位置的进程级锚点。
+ *
+ * 拖拽位置此前只存在组合内 remember 中：进入遮蔽路由（live2d）或系统悬浮窗
+ * 互斥切换导致组合销毁时位置丢失，回到可见路由后小人跳回默认落点。
+ * 锚点让位置在组合重建间保留；仅进程级，不持久化跨重启（重启回默认位，
+ * 与系统悬浮窗的 DataStore 持久化定位分工不同）。
+ */
+private object InAppChibiPositionAnchor {
+    var initialized = false
+    var offsetX = 0f
+    var offsetY = 0f
+}
+
 @Composable
 fun SecretaryChibiOverlay(
     figureUrl: String,
@@ -427,8 +441,21 @@ fun SecretaryChibiOverlay(
             baseHeightPx * (CHIBI_VIEWPORT_USAGE * displayScale - CHIBI_DRAG_MARGIN_RATIO))
             .coerceAtLeast(dragMinY)
 
-    var localOffsetX by remember { mutableFloatStateOf(screenWidth - baseWidthPx - 24f) }
-    var localOffsetY by remember { mutableFloatStateOf(screenHeight * 0.5f - baseHeightPx / 2) }
+    // 首次组合以默认落点初始化进程级锚点；此后组合重建从锚点恢复拖拽位置
+    // （live2d 遮蔽/悬浮窗互斥销毁组合不再跳回默认位），并按当前屏幕夹取边界，
+    // 防止恢复值在转屏/折叠后越界闪现
+    if (!InAppChibiPositionAnchor.initialized) {
+        InAppChibiPositionAnchor.offsetX = screenWidth - baseWidthPx - 24f
+        InAppChibiPositionAnchor.offsetY = screenHeight * 0.5f - baseHeightPx / 2
+        InAppChibiPositionAnchor.initialized = true
+    }
+    val restoreMaxX = (screenWidth - baseWidthPx).coerceAtLeast(0f)
+    var localOffsetX by remember {
+        mutableFloatStateOf(InAppChibiPositionAnchor.offsetX.coerceIn(0f, restoreMaxX))
+    }
+    var localOffsetY by remember {
+        mutableFloatStateOf(InAppChibiPositionAnchor.offsetY.coerceIn(dragMinY, dragMaxY))
+    }
 
     // 角色尺寸变化（用户调整 sdScale）时自动收紧位置边界
     // 依赖 displayScale：放大/缩小时拖动边界变化，需重新检查 localOffsetY 是否越界
@@ -527,7 +554,11 @@ fun SecretaryChibiOverlay(
                         localOffsetX = (localOffsetX + dx).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
                         localOffsetY = (localOffsetY + dy).coerceIn(dragMinY, dragMaxY)
                     },
-                    onDragEnd = { isDragging = false }
+                    onDragEnd = {
+                        isDragging = false
+                        InAppChibiPositionAnchor.offsetX = localOffsetX
+                        InAppChibiPositionAnchor.offsetY = localOffsetY
+                    }
                 )
             } else {
                 // ── 静态图片资源 / 网页 Q版小人 / 网络立绘回退 ──
@@ -571,7 +602,11 @@ fun SecretaryChibiOverlay(
                             isDragging = true
                             hapticFeedback(BlyyHaptic.LongPress)
                         },
-                        onDragEnd = { isDragging = false },
+                        onDragEnd = {
+                            isDragging = false
+                            InAppChibiPositionAnchor.offsetX = localOffsetX
+                            InAppChibiPositionAnchor.offsetY = localOffsetY
+                        },
                         onDrag = { dx, dy ->
                             localOffsetX = (localOffsetX + dx).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
                             localOffsetY = (localOffsetY + dy).coerceIn(dragMinY, dragMaxY)
