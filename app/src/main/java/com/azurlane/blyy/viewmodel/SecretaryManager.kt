@@ -246,15 +246,45 @@ class SecretaryManager @Inject constructor(
         val startTime = System.currentTimeMillis()
         Log.d(TAG, "applyShipSelection: 开始选择 ${ship.name}")
 
+        // 【切舰即时更新】换舰时旧舰的立绘/静态小人图源必须立即失效——否则 wiki 抓取
+        // 完成前（弱网可达数秒）小人/立绘一直显示旧舰，表现为"切换后不更新"。
+        // figureUrl 先降级为新舰头像做占位，抓取完成后按优先级链升级。
+        val shipChanged = _state.value.shipName != ship.name
+
+        // 【SD 钉选重估】自定义 SD 资源钉的是选它时的那艘舰；换舰后若该资源不属于
+        // 新舰（拼音反查不一致），解除钉选让舰名匹配置换新舰资源——否则小人会一直
+        // 停留在旧舰的静态 SD 资源上，表现为"SD 静态小人切换后不更新"
+        val pinnedSdId = _state.value.sdResourceId
+        var clearSdPin = false
+        if (shipChanged && pinnedSdId.isNotBlank()) {
+            val pinnedOwner = resolveShipNameByPinyin(pinnedSdId)
+            if (pinnedOwner != ship.name) {
+                clearSdPin = true
+                Log.d(TAG, "applyShipSelection: 解除 SD 钉选 '$pinnedSdId'（不属于新舰 ${ship.name}）")
+            }
+        }
+
         updateState {
             // 立即更新舰名/头像让 UI 先反馈"正在加载"（语音/图源随后就位）；
             // 同步作废旧舰语音归属，防止在途旧舰加载结果落盘
             it.copy(
                 shipName = ship.name,
                 avatarUrl = ship.avatarUrl,
+                figureUrl = if (shipChanged) ship.avatarUrl else it.figureUrl,
+                webChibiUrl = if (shipChanged) "" else it.webChibiUrl,
                 voices = emptyList(),
-                isLoadingVoices = true
+                isLoadingVoices = true,
+                sdResourceId = if (clearSdPin) "" else it.sdResourceId,
+                sdSkin = if (clearSdPin) "" else it.sdSkin
             )
+        }
+        if (clearSdPin) {
+            scope.launch {
+                withContext(NonCancellable) {
+                    settingsDataStore.setSecretarySdResourceId("")
+                    settingsDataStore.setSecretarySdSkin("")
+                }
+            }
         }
         voicesOwnerShip = ship.name
 
