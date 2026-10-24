@@ -167,16 +167,25 @@
     }
 
     /**
-     * 待机循环守护：队列空闲时保证待机在播。
-     * 节流 2s + 动作结束后 500ms 内不介入（先让运行时自行接续，避免双发）。
+     * 待机循环守护：队列空闲时保证待机在播（无缝衔接）。
+     * 运行时在每个 update 帧同步重启待机（同帧无间隙）；仅在运行时接不上
+     * （groups.idle 组名不匹配等）时兜底介入。判定顺序：
+     *   动作结束宽限 250ms（让运行时先接）→ 队列必须空闲 →
+     *   运行时未预订待机（reserved* 已置位 = 待机文件加载中，绝不双发）。
      */
     function kickIdleIfNeeded(force) {
         if (!companion.on || !model) return;
         var now = performance.now();
-        if (!force && now - lastIdleKickAt < 2000) return;
-        if (now - lastMotionFinishAt < 500) return;
+        if (!force && now - lastIdleKickAt < 1000) return;
+        if (now - lastMotionFinishAt < 250) return;
         try {
-            if (!model.internalModel.motionManager.isFinished()) return; // 动作/待机播放中
+            var mg = model.internalModel.motionManager;
+            if (!mg.isFinished()) return;
+            var st = mg.state;
+            if (st) {
+                if (st.currentGroup !== undefined) return;
+                if (st.reservedGroup !== undefined || st.reservedIdleGroup !== undefined) return;
+            }
         } catch (e) { return; }
         lastIdleKickAt = now;
         startIdleMotion();
@@ -586,8 +595,9 @@
                     var markStart = function () { lastMotionStartAt = performance.now(); };
                     var markFinish = function () {
                         lastMotionFinishAt = performance.now();
-                        // 陪伴模式：动作结束后稍候即检查待机是否接上（运行时接不上则显式兜底）
-                        setTimeout(function () { kickIdleIfNeeded(true); }, 560);
+                        // 陪伴模式：动作结束后短暂宽限即检查待机是否接上
+                        //（运行时同帧自动接；接不上（组名不匹配）时 280ms 兜底，肉眼无定格）
+                        setTimeout(function () { kickIdleIfNeeded(true); }, 280);
                     };
                     mg.on('motionFinish', function () {
                         markFinish();
@@ -609,6 +619,18 @@
                 })();
 
                 post({ t: 'loaded' });
+                // 预载全部动作文件（本地虚拟域、几 KB 级）：运行时默认只预载待机组，
+                // 陪伴兜底选中的其他组首播会有一帧加载间隙——预载后全程无缝
+                try {
+                    var defs = m.internalModel.motionManager.definitions;
+                    Object.keys(defs).forEach(function (g) {
+                        if (defs[g] && defs[g].length) {
+                            for (var i = 0; i < defs[g].length; i++) {
+                                try { mg.loadMotion(g, i); } catch (err) { /* 单个预载失败不影响 */ }
+                            }
+                        }
+                    });
+                } catch (err) { /* 预载不可用不影响渲染 */ }
                 // 等待待机动作把模型摆出姿势后再截缩略图
                 setTimeout(captureThumb, 1400);
                 setTimeout(function () {

@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -88,6 +87,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
@@ -97,11 +97,13 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Shadow
 
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
@@ -1170,9 +1172,11 @@ private fun readBatteryStatus(context: android.content.Context): Pair<Int, Boole
     }.getOrNull()
 
 /**
- * 陪伴模式右下角信息角标：时间/日期每秒刷新，电量读粘性广播每 20 秒重读。
- * 深色玻璃卡设计：纵向渐变底 + 细描边，大号等宽数字时钟 + 「陪伴中」状态点 +
- * 电量细条（充电/低电变色），压在立绘上仍清晰可读。
+ * 陪伴模式右下角锁屏风时钟角标：
+ * 大号细体 12 小时制时间 + 基线小号 AM/PM → 通栏细白分隔线 →
+ * 左侧电量（图标+百分比，充电显闪电、低电变红）右侧大写英文日期
+ * （WEEKDAY / MON / D / YYYY）。无卡片底，白字+柔投影直接压在立绘上，
+ * 与系统锁屏时钟同款气质。时间/日期每秒刷新，电量粘性广播 20 秒重读。
  */
 @Composable
 private fun CompanionHud(
@@ -1192,106 +1196,125 @@ private fun CompanionHud(
             delay(1000)
         }
     }
-    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val dateFmt = remember { SimpleDateFormat("M月d日 EEEE", Locale.CHINESE) }
+    val timeFmt = remember { SimpleDateFormat("h:mm", Locale.US) }
+    val ampmFmt = remember { SimpleDateFormat("a", Locale.US) }
+    val dateFmt = remember { SimpleDateFormat("EEEE / MMM / d / yyyy", Locale.US) }
     val calendar = remember { Calendar.getInstance() }
     calendar.timeInMillis = nowMs
 
-    // 电量配色：充电主题色 / ≤20% 警示红 / ≤50% 琥珀 / 常态月白
+    val textShadow = Shadow(
+        color = Color.Black.copy(alpha = 0.55f),
+        offset = Offset(0f, 2f),
+        blurRadius = 12f
+    )
     val (pct, charging) = battery ?: (100 to false)
-    val batteryColor = when {
-        charging -> MaterialTheme.colorScheme.tertiary
-        pct <= 20 -> MaterialTheme.colorScheme.error
-        pct <= 50 -> Color(0xFFF2C14E)
-        else -> Color(0xFFE8F1FA)
+    val lowBattery = pct <= 20
+    val infoColor = when {
+        lowBattery -> MaterialTheme.colorScheme.error
+        else -> Color.White
     }
 
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(
-                Brush.verticalGradient(listOf(Color(0x99101A2C), Color(0x590E1626)))
-            )
-            .border(
-                width = AppSpacing.Border.Thin,
-                color = Color.White.copy(alpha = 0.16f),
-                shape = RoundedCornerShape(18.dp)
-            )
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.End
-    ) {
+    Column(modifier.width(252.dp)) {
         if (showClock) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // 陪伴中状态点：呼吸的心形徽标，一眼可辨模式在运行
-                Icon(
-                    imageVector = Icons.Rounded.Favorite,
-                    contentDescription = "陪伴中",
-                    tint = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier
-                        .padding(end = 7.dp)
-                        .size(12.dp)
-                        .alpha(0.9f)
-                )
-                // tnum 等宽数字：秒级跳字时宽度稳定不抖动
+            // 大号细体时间 + 基线对齐的小号 AM/PM
+            Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     text = timeFmt.format(calendar.time),
-                    style = AppTypography.HeadlineMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontFeatureSettings = "tnum"
+                    style = TextStyle(
+                        fontSize = 54.sp,
+                        lineHeight = 54.sp,
+                        fontWeight = FontWeight.Light,
+                        fontFeatureSettings = "tnum",
+                        color = Color.White,
+                        shadow = textShadow
+                    )
+                )
+                Text(
+                    text = ampmFmt.format(calendar.time).uppercase(Locale.US),
+                    style = TextStyle(
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Light,
+                        color = Color.White,
+                        shadow = textShadow
                     ),
-                    color = Color.White.copy(alpha = 0.96f)
+                    modifier = Modifier.padding(start = 5.dp, bottom = 9.dp)
                 )
             }
-            Text(
-                text = dateFmt.format(calendar.time),
-                style = AppTypography.LabelSmall.copy(letterSpacing = 1.sp),
-                color = Color.White.copy(alpha = 0.72f),
-                modifier = Modifier.padding(top = 2.dp)
-            )
-        }
-        if (showClock && showBattery) {
-            // 发丝分隔线：只在上钟下电结构之间出现
+            // 通栏细白分隔线
             Box(
                 Modifier
-                    .padding(vertical = 8.dp)
                     .fillMaxWidth()
+                    .padding(top = 2.dp)
                     .height(1.dp)
-                    .background(Color.White.copy(alpha = 0.12f))
+                    .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(1.dp))
             )
-        }
-        if (showBattery) {
+            // 电量（左）· 日期（右）
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = if (showBattery) Arrangement.SpaceBetween else Arrangement.End
+            ) {
+                if (showBattery) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (charging) Icons.Rounded.Bolt else Icons.Rounded.BatteryStd,
+                            contentDescription = if (charging) "充电中" else "电量",
+                            tint = infoColor,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = "$pct%",
+                            style = TextStyle(
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                fontFeatureSettings = "tnum",
+                                color = infoColor,
+                                shadow = textShadow
+                            )
+                        )
+                    }
+                }
+                if (showClock) {
+                    Text(
+                        text = dateFmt.format(calendar.time).uppercase(Locale.US),
+                        style = TextStyle(
+                            fontSize = 10.sp,
+                            letterSpacing = 0.8.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Color.White,
+                            shadow = textShadow
+                        ),
+                        maxLines = 1
+                    )
+                }
+            }
+        } else if (showBattery) {
+            // 仅电量：左对齐单行
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp)
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                // 电量细条：54dp 轨道 + 按比例填充
-                Box(
-                    modifier = Modifier
-                        .size(width = 54.dp, height = 5.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color.White.copy(alpha = 0.18f))
-                ) {
-                    Box(
-                        Modifier
-                            .fillMaxHeight()
-                            .fillMaxWidth(pct / 100f)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(batteryColor)
-                    )
-                }
+                Icon(
+                    imageVector = if (charging) Icons.Rounded.Bolt else Icons.Rounded.BatteryStd,
+                    contentDescription = if (charging) "充电中" else "电量",
+                    tint = infoColor,
+                    modifier = Modifier.size(13.dp)
+                )
                 Text(
                     text = "$pct%",
-                    style = AppTypography.LabelSmall.copy(fontFeatureSettings = "tnum"),
-                    color = batteryColor
-                )
-                if (charging) {
-                    Icon(
-                        imageVector = Icons.Rounded.Bolt,
-                        contentDescription = "充电中",
-                        tint = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(13.dp)
+                    style = TextStyle(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        fontFeatureSettings = "tnum",
+                        color = infoColor,
+                        shadow = textShadow
                     )
-                }
+                )
             }
         }
     }
