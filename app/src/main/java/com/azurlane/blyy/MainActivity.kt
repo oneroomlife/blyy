@@ -29,6 +29,9 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.util.OverlayPermissionHelper
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -45,11 +48,45 @@ class MainActivity : ComponentActivity() {
     companion object {
         // 悬浮窗相关日志使用独立 TAG，便于按功能模块过滤
         private const val TAG_OVERLAY = "SecretaryOverlay"
+
+        /** 外部入口（桌面小组件/通知）跳转 App 内路由的 Intent extra：值为 NavHost 路由串 */
+        const val EXTRA_NAV_ROUTE = "blyy.extra.NAV_ROUTE"
+    }
+
+    /**
+     * 外部 → Compose 导航桥：onCreate/onNewIntent 解析 extra 或 blyy:// URI 后写入
+     * 待跳转路由，AppRoot 侧收集并导航。这是桌面小组件/通知等外部入口进入指定页面的
+     * 唯一通道（NavHost 的 navDeepLink 仅在应用内导航生效，外部 intent 需此桥转发）。
+     */
+    private val _pendingNavRoute = MutableStateFlow<String?>(null)
+    val pendingNavRoute: StateFlow<String?> = _pendingNavRoute.asStateFlow()
+
+    fun requestNavRoute(route: String?) {
+        if (!route.isNullOrBlank()) _pendingNavRoute.value = route
+    }
+
+    fun consumePendingNavRoute() {
+        _pendingNavRoute.value = null
+    }
+
+    /** 解析外部 Intent 的导航请求；路由串与 NavHost 声明一致（如 "voice/xx"） */
+    private fun handleIntentExtras(intent: Intent?) {
+        intent ?: return
+        intent.getStringExtra(EXTRA_NAV_ROUTE)?.let { requestNavRoute(it) }
+        // blyy://voice/xxx?avatarUrl=yyy 去掉 scheme 即为 NavHost 路由串
+        intent.data?.takeIf { it.scheme == "blyy" }?.let { uri ->
+            requestNavRoute(uri.toString().substringAfter("blyy://"))
+        }
     }
 
     @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 冷启动的外部入口路由解析（重建场景 savedInstanceState != null，不重复导航）
+        if (savedInstanceState == null) {
+            handleIntentExtras(intent)
+        }
 
         // 标准 edge-to-edge：系统栏透明覆盖在内容之上，由 WindowInsets 处理避让
         enableEdgeToEdge()
@@ -195,5 +232,11 @@ class MainActivity : ComponentActivity() {
         stopService(intent)
 
         Toast.makeText(this, "悬浮窗已关闭", Toast.LENGTH_SHORT).show()
+    }
+
+    /** singleTop 下 Activity 已在栈顶时，外部入口（小组件/通知/deeplink）经此投递 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntentExtras(intent)
     }
 }

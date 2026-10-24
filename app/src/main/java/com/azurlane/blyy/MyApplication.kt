@@ -11,7 +11,13 @@ import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.util.DebugLogger
 import com.azurlane.blyy.util.RefererResolver
+import com.azurlane.blyy.widget.WidgetSync
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import javax.inject.Inject
 
@@ -32,6 +38,22 @@ class MyApplication : Application(), ImageLoaderFactory {
      */
     @Inject
     lateinit var sharedOkHttpClient: OkHttpClient
+
+    /**
+     * 进程启动自愈：进程被杀/应用重装后，桌面小组件会停留在 loading 布局，
+     * Glance 不会主动重新渲染（每日推荐件甚至无周期更新）。
+     * 每次进程冷启动补一次刷新，让用户打开 App 或点击组件后小组件必然恢复。
+     * 延迟 500ms 错开冷启动高峰，Hilt 图此时已就绪（onCreate 先于本协程生效）。
+     */
+    override fun onCreate() {
+        super.onCreate()
+        applicationScope.launch {
+            delay(500)
+            runCatching { WidgetSync.updateAll(this@MyApplication) }
+        }
+    }
+
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun newImageLoader(): ImageLoader {
         val imageOkHttpClient = sharedOkHttpClient.newBuilder()

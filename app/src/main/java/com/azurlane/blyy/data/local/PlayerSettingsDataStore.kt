@@ -6,6 +6,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
@@ -59,6 +60,17 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_AVATAR_URL_KEY = stringPreferencesKey("secretary_avatar_url")
         // wiki 网页 Q版小人回退图（冷启动零网络恢复悬浮小人，避免弱网/离线时悬浮窗空白）
         private val SECRETARY_WEB_CHIBI_URL_KEY = stringPreferencesKey("secretary_web_chibi_url")
+        // 桌面小组件独立角色域：组件「换人」选出的舰娘与应用内秘书舰完全隔离，
+        // 组件展示/语音播放只读写这两个键，绝不触碰 secretary_* 系列
+        private val WIDGET_SHIP_NAME_KEY = stringPreferencesKey("widget_ship_name")
+        private val WIDGET_SHIP_AVATAR_KEY = stringPreferencesKey("widget_ship_avatar_url")
+        // 桌面小组件台词：换人/播放语音时捕获的一句真实台词（空=未捕获/已失效，
+        // 小组件回退到内置时段问候语）；_at 为捕获时间戳，超期后小组组件不再使用
+        private val SECRETARY_WIDGET_LINE_KEY = stringPreferencesKey("secretary_widget_line")
+        private val SECRETARY_WIDGET_LINE_AT_KEY = longPreferencesKey("secretary_widget_line_at")
+        // 桌面小组件语音表持久缓存（单 key：仅当前组件舰，JSON 含舰名/时间戳/台词表），
+        // 换人/语音/进程重启后免二次 wiki 抓取，点击秒级响应
+        private val WIDGET_VOICES_CACHE_KEY = stringPreferencesKey("widget_voices_cache")
         private val SECRETARY_AUTO_PLAY_ENABLED_KEY = booleanPreferencesKey("secretary_auto_play_enabled")
         private val SECRETARY_AUTO_PLAY_INTERVAL_KEY = intPreferencesKey("secretary_auto_play_interval")
         private val SECRETARY_DIALOGUE_ENABLED_KEY = booleanPreferencesKey("secretary_dialogue_enabled")
@@ -247,6 +259,21 @@ class PlayerSettingsDataStore @Inject constructor(
 
     /** wiki 网页 Q版小人回退图 URL（本地 SD 资源未匹配时的悬浮小人显示图） */
     val secretaryWebChibiUrl: Flow<String> = safeData.map { it[SECRETARY_WEB_CHIBI_URL_KEY] ?: "" }
+
+    /** 桌面小组件独立角色：舰名（空=从未抽选，组件显示引导文案） */
+    val widgetShipName: Flow<String> = safeData.map { it[WIDGET_SHIP_NAME_KEY] ?: "" }
+
+    /** 桌面小组件独立角色：头像 URL */
+    val widgetShipAvatarUrl: Flow<String> = safeData.map { it[WIDGET_SHIP_AVATAR_KEY] ?: "" }
+
+    /** 桌面小组件台词文本（空=未捕获，小组件回退内置问候语） */
+    val secretaryWidgetLine: Flow<String> = safeData.map { it[SECRETARY_WIDGET_LINE_KEY] ?: "" }
+
+    /** 组件语音表持久缓存原文（JSON，空=无缓存）；解码见 widget 包 decodeWidgetVoicesCache */
+    val widgetVoicesCacheJson: Flow<String> = safeData.map { it[WIDGET_VOICES_CACHE_KEY] ?: "" }
+
+    /** 桌面小组件台词捕获时间戳（0=无效） */
+    val secretaryWidgetLineAt: Flow<Long> = safeData.map { it[SECRETARY_WIDGET_LINE_AT_KEY] ?: 0L }
     val secretaryAutoPlayEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_AUTO_PLAY_ENABLED_KEY] ?: false }
     val secretaryAutoPlayIntervalMinutes: Flow<Int> = safeData.map { it[SECRETARY_AUTO_PLAY_INTERVAL_KEY] ?: 5 }
     val secretaryDialogueEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_DIALOGUE_ENABLED_KEY] ?: true }
@@ -332,6 +359,40 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setSecretaryWebChibiUrl(url: String) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_WEB_CHIBI_URL_KEY] = url
+        }
+    }
+
+    /**
+     * 桌面小组件独立角色落盘（舰名/头像一次成组原子写入）。
+     * 与 secretary_* 域完全隔离——组件换人绝不影响应用内秘书舰。
+     */
+    suspend fun setWidgetShip(shipName: String, avatarUrl: String) {
+        context.dataStore.edit { prefs ->
+            prefs[WIDGET_SHIP_NAME_KEY] = shipName
+            prefs[WIDGET_SHIP_AVATAR_KEY] = avatarUrl
+        }
+    }
+
+    /**
+     * 保存桌面小组件台词（文本与时间戳一次成组原子写入）。
+     * 空行表示"无有效台词"，时间戳同步清零让小组件立即回退问候语。
+     */
+    suspend fun setSecretaryWidgetLine(line: String) {
+        context.dataStore.edit { prefs ->
+            if (line.isBlank()) {
+                prefs[SECRETARY_WIDGET_LINE_KEY] = ""
+                prefs[SECRETARY_WIDGET_LINE_AT_KEY] = 0L
+            } else {
+                prefs[SECRETARY_WIDGET_LINE_KEY] = line.trim()
+                prefs[SECRETARY_WIDGET_LINE_AT_KEY] = System.currentTimeMillis()
+            }
+        }
+    }
+
+    /** 组件语音表持久缓存写入（覆盖式单 key，仅保留当前组件舰） */
+    suspend fun setWidgetVoicesCache(json: String) {
+        context.dataStore.edit { prefs ->
+            prefs[WIDGET_VOICES_CACHE_KEY] = json
         }
     }
 

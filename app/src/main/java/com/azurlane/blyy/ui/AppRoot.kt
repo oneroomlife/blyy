@@ -177,6 +177,21 @@ fun AppContent() {
         }
     }
 
+    // 外部入口（桌面小组件/通知/deeplink）导航桥：MainActivity 解析 extra/uri 后写入
+    // pendingNavRoute，此处统一执行导航。runCatching 兜底路由参数异常，避免闪退。
+    val pendingNavRoute = (context as? MainActivity)
+        ?.pendingNavRoute
+        ?.collectAsStateWithLifecycle()
+        ?.value
+    LaunchedEffect(pendingNavRoute) {
+        if (!pendingNavRoute.isNullOrBlank()) {
+            runCatching {
+                navController.navigate(pendingNavRoute) { launchSingleTop = true }
+            }
+            (context as? MainActivity)?.consumePendingNavRoute()
+        }
+    }
+
     // 屏幕方向变化时自动关闭菜单，防止横屏模式下侧拉菜单错误保持显示
     val configuration = LocalConfiguration.current
     LaunchedEffect(configuration.orientation) {
@@ -434,7 +449,12 @@ fun AppContent() {
                         route = "voice/{shipName}?avatarUrl={avatarUrl}",
                         arguments = listOf(
                             navArgument("shipName") { type = NavType.StringType },
-                            navArgument("avatarUrl") { type = NavType.StringType }
+                            // 可选参数：deeplink（blyy://voice/企业）与小组件跳转可能不带 query，
+                            // 缺省空串由 VoiceScreen 的头像兜底逻辑处理
+                            navArgument("avatarUrl") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            }
                         ),
                         deepLinks = listOf(
                             navDeepLink { uriPattern = "blyy://voice/{shipName}?avatarUrl={avatarUrl}" }

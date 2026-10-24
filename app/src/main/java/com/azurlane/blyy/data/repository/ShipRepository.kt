@@ -29,6 +29,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.azurlane.blyy.widget.WidgetSync
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "ShipRepository"
@@ -191,6 +192,10 @@ class ShipRepository @Inject constructor(
                 // 删除本地已不存在的舰船，保持数据库整洁（限定 archiveType 避免误删学生记录）
                 shipDao.deleteStaleShips(archiveType.name, ships.map { it.name })
                 Log.d(TAG, "Successfully refreshed ${ships.size} ships")
+                // 图鉴从空到有/内容变化影响「今日推荐舰娘」候选池，同步刷新桌面小组件
+                if (archiveType == ArchiveType.DOCK) {
+                    WidgetSync.enqueueUpdate(context)
+                }
             },
             onFailure = { e ->
                 Log.e(TAG, "Failed to refresh ships", e)
@@ -555,6 +560,8 @@ class ShipRepository @Inject constructor(
 
     suspend fun toggleFav(name: String, archiveType: String, current: Boolean) {
         shipDao.updateFavorite(name, archiveType, !current)
+        // 收藏变化影响"今日推荐舰娘"的候选池（收藏 ≥3 时只用收藏池），同步刷新小组件
+        WidgetSync.enqueueUpdate(context)
     }
 
     suspend fun fetchCharacterInfo(shipName: String): ShipCharacterInfo = withContext(Dispatchers.IO) {

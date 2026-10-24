@@ -53,12 +53,23 @@
         <activity
             android:name="com.azurlane.blyy.MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Blyy">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- blyy://voice/{shipName} deeplink：桌面小组件/通知/外部链接直达语音页
+                 （AppRoot 的 navDeepLink 早已声明，此前缺 manifest filter 一直无法从外部触达） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="blyy"
+                    android:host="voice" />
             </intent-filter>
         </activity>
 
@@ -94,6 +105,44 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="companion_overlay" />
         </service>
+
+        <!-- 桌面小组件：秘书舰问候（4x2，头像/台词/换人/悬浮窗开关） -->
+        <receiver
+            android:name=".widget.SecretaryGreetingWidgetReceiver"
+            android:exported="false"
+            android:label="@string/secretary_greeting_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/secretary_greeting_widget_info" />
+        </receiver>
+
+        <!-- 桌面小组件：今日推荐舰娘（2x2，按日期确定性推荐） -->
+        <receiver
+            android:name=".widget.DailyShipWidgetReceiver"
+            android:exported="false"
+            android:label="@string/daily_ship_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/daily_ship_widget_info" />
+        </receiver>
+
+        <!-- 跨零点/时间与时区变化：刷新小组件（每日推荐换舰、问候语切时段）。
+             三者均为豁免隐式广播，manifest 注册可正常收到 -->
+        <receiver
+            android:name=".widget.WidgetDateChangeReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.DATE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

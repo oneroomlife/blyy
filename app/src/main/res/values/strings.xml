@@ -1,4 +1,10 @@
 <resources>
     <string name="app_name">碧蓝语音</string>
     <string name="playback_channel_name">Playback</string>
+
+    <!-- 桌面小组件 -->
+    <string name="secretary_greeting_widget_name">秘书舰问候</string>
+    <string name="secretary_greeting_widget_description">组件专属舰娘：一键换人、播放语音与台词问候</string>
+    <string name="daily_ship_widget_name">今日推荐舰娘</string>
+    <string name="daily_ship_widget_description">每天为你推荐一位舰娘，点击直达语音页</string>
 </resources>

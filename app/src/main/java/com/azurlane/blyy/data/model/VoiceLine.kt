@@ -1,8 +1,10 @@
 package com.azurlane.blyy.data.model
 
 import androidx.compose.runtime.Immutable
+import kotlinx.serialization.Serializable
 
 @Immutable
+@Serializable
 data class VoiceLine(
     val skinName: String,
     val scene: String,

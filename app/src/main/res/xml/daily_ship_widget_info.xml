@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 今日推荐舰娘小组件（2x2）：
+     推荐结果按日期确定性生成，跨零点由 WidgetDateChangeReceiver 刷新；
+     周期更新仅作自愈兜底（进程死亡/漏收广播后 30 分钟内必然恢复），不做耗电轮询 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:maxResizeWidth="180dp"
+    android:maxResizeHeight="180dp"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/widget_initial_stub"
+    android:widgetCategory="home_screen"
+    android:description="@string/daily_ship_widget_description" />

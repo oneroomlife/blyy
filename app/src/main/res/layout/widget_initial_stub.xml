@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小组件 initialLayout：Glance 首次组合前 / 应用被系统停止时的静态兜底视图。
+     用提示卡替代默认 loading 圈——用户至少知道"为什么没内容、该做什么"。 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_bg_dark"
+    android:gravity="center"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="碧蓝语音"
+        android:textColor="#E8F1F8"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:text="组件待命中，打开应用即可激活"
+        android:textColor="#8FB0CC"
+        android:textSize="11sp" />
+</LinearLayout>

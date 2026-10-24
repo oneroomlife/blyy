@@ -177,6 +177,12 @@ dependencies {
     /** ---------------- UI 扩展 ---------------- */
     implementation(libs.compose.shimmer)
 
+    /** ---------------- 桌面小组件（Glance） ----------------
+     *  版本已在 libs.versions.toml 声明（glance = "1.1.1"）。
+     *  声明式 AppWidget：GlanceAppWidget + GlanceAppWidgetReceiver，
+     *  数据全部来自 DataStore / Room，无独立进程。 */
+    implementation(libs.androidx.glance.appwidget)
+
     /** ---------------- 水印相机 ----------------
      *  拍照走系统相机（ACTION_IMAGE_CAPTURE + FileProvider），无需 CameraX 依赖。
      *  ExifInterface：API 24-27 无 ImageDecoder 时手动处理图片 EXIF 旋转。 */

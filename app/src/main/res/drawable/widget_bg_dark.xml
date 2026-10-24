@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 小组件深色底：深海渐变 + 顶部主色光带 + 细描边，对齐 AppColors.CommandCenter 深色体系 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="315"
+                android:startColor="#0A1628"
+                android:centerColor="#0E1E33"
+                android:endColor="#16293F"
+                android:type="linear" />
+            <corners android:radius="18dp" />
+            <stroke
+                android:width="1.5dp"
+                android:color="#3D5A80" />
+        </shape>
+    </item>
+    <!-- 顶部主色光带：左实右透，面板顶部的"科技感"点缀 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="0"
+                android:startColor="#8048CAE4"
+                android:endColor="#0048CAE4"
+                android:type="linear" />
+            <corners
+                android:topLeftRadius="17dp"
+                android:topRightRadius="17dp"
+                android:bottomLeftRadius="0dp"
+                android:bottomRightRadius="0dp" />
+        </shape>
+    </item>
+</layer-list>
