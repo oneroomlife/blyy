@@ -106,6 +106,11 @@ class PlayerSettingsDataStore @Inject constructor(
         // Live2D 查看器语音台词气泡开关
         private val LIVE2D_BUBBLE_ENABLED_KEY = booleanPreferencesKey("live2d_bubble_enabled")
 
+        // Live2D 查看器陪伴模式：随机动作触发间隔（秒）/ 显示时钟日期 / 显示电量
+        private val LIVE2D_COMPANION_INTERVAL_SEC_KEY = intPreferencesKey("live2d_companion_interval_sec")
+        private val LIVE2D_COMPANION_SHOW_CLOCK_KEY = booleanPreferencesKey("live2d_companion_show_clock")
+        private val LIVE2D_COMPANION_SHOW_BATTERY_KEY = booleanPreferencesKey("live2d_companion_show_battery")
+
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
@@ -325,6 +330,18 @@ class PlayerSettingsDataStore @Inject constructor(
     /** Live2D 查看器：语音播放时同步显示台词气泡，默认开启 */
     val live2dBubbleEnabled: Flow<Boolean> = safeData.map { it[LIVE2D_BUBBLE_ENABLED_KEY] ?: true }
 
+    /** Live2D 查看器陪伴模式：随机动作触发间隔（秒），默认 3 分钟 */
+    val live2dCompanionIntervalSec: Flow<Int> =
+        safeData.map { it[LIVE2D_COMPANION_INTERVAL_SEC_KEY] ?: 180 }
+
+    /** Live2D 查看器陪伴模式：右下角显示当前时间日期，默认开启 */
+    val live2dCompanionShowClock: Flow<Boolean> =
+        safeData.map { it[LIVE2D_COMPANION_SHOW_CLOCK_KEY] ?: true }
+
+    /** Live2D 查看器陪伴模式：右下角显示设备电量，默认开启 */
+    val live2dCompanionShowBattery: Flow<Boolean> =
+        safeData.map { it[LIVE2D_COMPANION_SHOW_BATTERY_KEY] ?: true }
+
     /** 自动检测更新开关，默认开启 */
     val autoCheckUpdateEnabled: Flow<Boolean> = safeData.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
 
@@ -500,6 +517,15 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setLive2dBubbleEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[LIVE2D_BUBBLE_ENABLED_KEY] = enabled
+        }
+    }
+
+    /** 陪伴模式三选项一次落盘（间隔钳制到 30 秒 ~ 30 分钟） */
+    suspend fun setLive2dCompanionConfig(intervalSec: Int, showClock: Boolean, showBattery: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[LIVE2D_COMPANION_INTERVAL_SEC_KEY] = intervalSec.coerceIn(30, 1800)
+            prefs[LIVE2D_COMPANION_SHOW_CLOCK_KEY] = showClock
+            prefs[LIVE2D_COMPANION_SHOW_BATTERY_KEY] = showBattery
         }
     }
 

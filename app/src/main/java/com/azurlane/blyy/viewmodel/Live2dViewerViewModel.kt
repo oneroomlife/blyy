@@ -26,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -76,7 +77,15 @@ class Live2dViewerViewModel @Inject constructor(
         /** 可播放的台词（空 = 该舰无语音数据，功能静默降级） */
         val voiceLines: List<VoiceLine> = emptyList(),
         /** 当前展示的台词气泡（null = 隐藏） */
-        val voiceBubble: VoiceBubble? = null
+        val voiceBubble: VoiceBubble? = null,
+        /** 陪伴模式开关（运行时态：每次进查看器默认关闭，不跨会话记忆） */
+        val companionEnabled: Boolean = false,
+        /** 陪伴模式：随机动作触发间隔（秒，持久化） */
+        val companionIntervalSec: Int = 180,
+        /** 陪伴模式：右下角显示当前时间日期（持久化） */
+        val companionShowClock: Boolean = true,
+        /** 陪伴模式：右下角显示设备电量（持久化） */
+        val companionShowBattery: Boolean = true
     )
 
     /** 语音台词气泡：随互动语音同步显示，超时/点按/关闭后消失 */
@@ -114,6 +123,24 @@ class Live2dViewerViewModel @Inject constructor(
             settingsDataStore.live2dBubbleEnabled.collect { enabled ->
                 _state.update { it.copy(bubbleEnabled = enabled) }
                 if (!enabled) dismissVoiceBubble()
+            }
+        }
+        // 陪伴模式三选项（持久化）：进页即恢复上次配置，开关本身是运行时态
+        viewModelScope.launch {
+            combine(
+                settingsDataStore.live2dCompanionIntervalSec,
+                settingsDataStore.live2dCompanionShowClock,
+                settingsDataStore.live2dCompanionShowBattery
+            ) { interval, clock, battery ->
+                Triple(interval, clock, battery)
+            }.collect { (interval, clock, battery) ->
+                _state.update {
+                    it.copy(
+                        companionIntervalSec = interval,
+                        companionShowClock = clock,
+                        companionShowBattery = battery
+                    )
+                }
             }
         }
         // 舰名反查就绪后补拉台词（查台词用的舰名此时才可解析）
@@ -201,6 +228,23 @@ class Live2dViewerViewModel @Inject constructor(
         }
     }
 
+    // ---------- 陪伴模式 ----------
+
+    /** 陪伴模式开关（运行时态：调度在渲染端 ticker 上，退后台自动暂停） */
+    fun setCompanionEnabled(enabled: Boolean) {
+        _state.update { it.copy(companionEnabled = enabled) }
+    }
+
+    /**
+     * 陪伴模式设置落盘（间隔/时钟/电量三选项一次成组原子写入）。
+     * 调用方必须传全量三项（读取自同一快照），避免单项更新与 DataStore 回流竞态互相覆盖。
+     */
+    fun updateCompanionConfig(intervalSec: Int, showClock: Boolean, showBattery: Boolean) {
+        viewModelScope.launch {
+            settingsDataStore.setLive2dCompanionConfig(intervalSec, showClock, showBattery)
+        }
+    }
+
     /** 点按气泡立即收起 */
     fun dismissVoiceBubble() {
         bubbleHideJob?.cancel()
@@ -253,19 +297,31 @@ class Live2dViewerViewModel @Inject constructor(
     /** 语音查询用的基础中文舰名（调用时即时反查，规避舰船库异步加载竞态） */
     private fun currentShipName(): String = nameResolver.baseShipName(modelId).orEmpty()
 
-    /** 后台加载台词（wiki 数据，30 分钟缓存；失败静默，仅影响语音可用性） */
+    /** 上次语音加载失败时间：冷却窗口内不重试（避免断网时每次点击都打 wiki） */
+    private var lastVoiceLoadFailedAt = 0L
+
+    /** 后台加载台词（wiki 数据，30 分钟缓存；失败静默并允许冷却后重试） */
     private fun ensureVoicesLoaded() {
         if (_state.value.voiceLoaded || _state.value.voiceLoading) return
+        if (System.currentTimeMillis() - lastVoiceLoadFailedAt < VOICE_RETRY_COOLDOWN_MS) return
         val ship = currentShipName()
         if (ship.isBlank()) return
         _state.update { it.copy(voiceLoading = true) }
         viewModelScope.launch {
-            val lines = runCatching {
+            val result = runCatching {
                 CacheManager.getOrPutSuspend(CacheNamespaces.SHIP_VOICES, ship) {
                     val (voices, _, _) = getVoicesUseCase(ship)
                     voices
                 }
-            }.onFailure { Log.w(TAG, "加载 $ship 语音失败：${it.message}") }.getOrDefault(emptyList())
+            }
+            if (result.isFailure) {
+                // 加载失败 ≠ 无语音：不置 voiceLoaded，60 秒冷却后下次触发自动重试
+                Log.w(TAG, "加载 $ship 语音失败：${result.exceptionOrNull()?.message}")
+                lastVoiceLoadFailedAt = System.currentTimeMillis()
+                _state.update { it.copy(voiceLoading = false) }
+                return@launch
+            }
+            val lines = result.getOrDefault(emptyList())
             // 按皮肤分组 + 分类：首表/未命名表 = 默认装扮，换装N = 第 N 张实名表，
             // 誓约/改造表各自单独对应（规则详见 SkinVoiceIndex）
             linesBySkin = lines.groupBy { it.skinName }
@@ -374,5 +430,8 @@ class Live2dViewerViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "Live2dViewerVM"
+
+        /** 语音加载失败后的重试冷却（毫秒） */
+        private const val VOICE_RETRY_COOLDOWN_MS = 60_000L
     }
 }

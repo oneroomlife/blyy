@@ -1,7 +1,10 @@
 package com.azurlane.blyy.ui.screens.live2d
 
 import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ActivityInfo
+import android.os.BatteryManager
 import android.util.Base64
 import android.util.Log
 import android.view.View
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,17 +41,23 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.ArrowBackIosNew
+import androidx.compose.material.icons.rounded.BatteryStd
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CenterFocusWeak
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Mood
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.VolumeOff
 import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.AssistChip
@@ -58,6 +68,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -96,6 +107,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
@@ -123,9 +135,13 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.viewmodel.Live2dViewerViewModel
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 
 /** 渲染桥 → UI 的页面阶段 */
 private enum class ViewerPhase { LOADING, READY, ERROR }
@@ -173,6 +189,10 @@ private sealed class BridgeMessage {
     data class Log(val message: String) : BridgeMessage()
     /** 用户点击模型互动（group = 渲染端随机选中的触摸系动作组） */
     data class Tap(val group: String) : BridgeMessage()
+    /** 陪伴模式定时触发（group = 渲染端随机选中的非待机动作组，动作已在渲染端播放） */
+    data class Companion(val group: String) : BridgeMessage()
+    /** 用户触摸画布（任意手势按下）：陪伴沉浸模式下恢复界面显示 */
+    data object Touch : BridgeMessage()
 }
 
 private val bridgeJson = Json { ignoreUnknownKeys = true }
@@ -186,6 +206,8 @@ private fun parseBridgeMessage(json: String): BridgeMessage? = runCatching {
         "motionStart" -> BridgeMessage.MotionStart(obj["group"]?.jsonPrimitive?.content ?: "")
         "motionFinish" -> BridgeMessage.MotionFinish
         "tap" -> BridgeMessage.Tap(obj["group"]?.jsonPrimitive?.content ?: "")
+        "companion" -> BridgeMessage.Companion(obj["group"]?.jsonPrimitive?.content ?: "")
+        "touch" -> BridgeMessage.Touch
         "thumb" -> BridgeMessage.Thumb(obj["data"]?.jsonPrimitive?.content ?: "")
         "log" -> BridgeMessage.Log(obj["message"]?.jsonPrimitive?.content ?: "")
         else -> null
@@ -232,6 +254,7 @@ fun Live2dViewerScreen(
     var bgMode by rememberSaveable { mutableStateOf(L2dBgMode.DEEP_SEA) }
     var showMotionSheet by remember { mutableStateOf(false) }
     var showExpressionSheet by remember { mutableStateOf(false) }
+    var showCompanionSheet by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableIntStateOf(0) }
 
     // 底部控制条可见性 + 交互计数（任意控件交互重置自动收起计时）
@@ -240,6 +263,15 @@ fun Live2dViewerScreen(
 
     // 横屏查看模式：强制横屏，退出查看器时恢复系统方向
     var landscapeMode by rememberSaveable { mutableStateOf(false) }
+
+    // 陪伴模式首次开启时自动弹一次设置层（间隔/时钟/电量），后续手动进
+    var companionHintShown by rememberSaveable { mutableStateOf(false) }
+
+    // 陪伴沉浸模式：开启即收齐全部界面；触摸画布恢复；10s 无操作再收齐
+    var uiRevealed by rememberSaveable { mutableStateOf(true) }
+    var companionUiTick by remember { mutableIntStateOf(0) }
+    // 进入沉浸时的一次性操作提示（2.6s 后自动淡出）
+    var showImmersiveHint by remember { mutableStateOf(false) }
 
     // AndroidView factory 与控制回调之间共享 WebView 引用
     val webViewHolder = remember { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
@@ -264,6 +296,13 @@ fun Live2dViewerScreen(
                 is BridgeMessage.MotionStart -> activeMotion = msg.group
                 is BridgeMessage.MotionFinish -> activeMotion = null
                 is BridgeMessage.Tap -> viewModel.playInteractionVoice(msg.group)
+                is BridgeMessage.Companion -> viewModel.playInteractionVoice(msg.group)
+                is BridgeMessage.Touch -> if (viewModel.state.value.companionEnabled) {
+                    // 陪伴沉浸模式：任意触摸画布 → 恢复界面并重置 10s 收起计时
+                    uiRevealed = true
+                    controlsVisible = true
+                    companionUiTick++
+                }
                 is BridgeMessage.Thumb -> {
                     runCatching {
                         val b64 = msg.data.substringAfter("base64,")
@@ -316,11 +355,39 @@ fun Live2dViewerScreen(
     }
 
     // 控制条 5 秒无操作自动收起为迷你浮标，保持观看沉浸性；controlsTick 变化即重置计时
-    LaunchedEffect(controlsVisible, controlsTick) {
-        if (controlsVisible) {
-            kotlinx.coroutines.delay(5000)
+    // （陪伴模式下禁用本计时：由下面 10s 沉浸计时统一收齐全部界面）
+    LaunchedEffect(controlsVisible, controlsTick, state.companionEnabled) {
+        if (controlsVisible && !state.companionEnabled) {
+            delay(5000)
             controlsVisible = false
         }
+    }
+
+    // 陪伴沉浸计时：界面恢复后 10 秒无操作（画布触摸/控件交互均重置）→ 再次收齐
+    LaunchedEffect(state.companionEnabled, uiRevealed, companionUiTick, controlsTick) {
+        if (state.companionEnabled && uiRevealed) {
+            delay(10_000)
+            uiRevealed = false
+        }
+    }
+
+    // 沉浸提示一次性自动淡出
+    LaunchedEffect(showImmersiveHint) {
+        if (showImmersiveHint) {
+            delay(2600)
+            showImmersiveHint = false
+        }
+    }
+
+    // 陪伴模式配置下发渲染端：开关/间隔变化、模型就绪、重试重建 WebView 后都要重推
+    // （渲染端 ticker 驱动计时，退后台自动暂停，无需宿主额外门控）
+    LaunchedEffect(
+        state.companionEnabled,
+        state.companionIntervalSec,
+        phase,
+        reloadToken
+    ) {
+        callViewer("setCompanion(${state.companionEnabled}, ${state.companionIntervalSec * 1000})")
     }
 
     Box(
@@ -366,7 +433,7 @@ fun Live2dViewerScreen(
             )
         }
 
-        // ── 顶部信息栏（渐变衬底保证可读性） ──
+        // ── 顶部信息栏（渐变衬底保证可读性；陪伴沉浸模式下随界面一起收起） ──
         // 暗色下立绘常顶到上半屏，两段直落渐变对浅色发饰遮蔽不足 → 三段更实更平滑
         val topScrim = if (isDark) {
             Brush.verticalGradient(
@@ -375,14 +442,20 @@ fun Live2dViewerScreen(
         } else {
             Brush.verticalGradient(listOf(Color(0xB3FFFFFF), Color.Transparent))
         }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(topScrim)
-                .statusBarsPadding()
-                .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xs),
-            verticalAlignment = Alignment.CenterVertically
+        AnimatedVisibility(
+            visible = !state.companionEnabled || uiRevealed,
+            modifier = Modifier.fillMaxWidth(),
+            enter = fadeIn(tween(220)),
+            exit = fadeOut(tween(300))
         ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(topScrim)
+                    .statusBarsPadding()
+                    .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xs),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             IconButton(onClick = {
                 haptic(BlyyHaptic.Tick)
                 onBack()
@@ -426,6 +499,7 @@ fun Live2dViewerScreen(
                 }
             }
         }
+        }
 
         // ── 语音台词气泡（顶部左侧：模型水平居中且头部偏上，角落最不易遮挡立绘；点按即收起） ──
         val voiceBubble = state.voiceBubble
@@ -458,8 +532,10 @@ fun Live2dViewerScreen(
         val overlayBorderAlpha = if (isDark) 0.55f else 0.4f
         val info = state.info
         val controlsGate = phase == ViewerPhase.READY && info != null
+        // 陪伴沉浸：界面未恢复时控制条一并收齐（收齐期间只剩 HUD 与台词气泡）
+        val immersiveHidden = state.companionEnabled && !uiRevealed
         AnimatedVisibility(
-            visible = controlsGate && controlsVisible,
+            visible = controlsGate && controlsVisible && !immersiveHidden,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 28.dp),
@@ -528,6 +604,43 @@ fun Live2dViewerScreen(
                             }
                         )
                     }
+                    // 陪伴模式开关：循环待机 + 每到间隔随机一个动作并配语音
+                    ViewerControlPill(
+                        icon = if (state.companionEnabled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                        label = "陪伴",
+                        active = state.companionEnabled,
+                        onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            controlsTick++
+                            val turningOn = !state.companionEnabled
+                            viewModel.setCompanionEnabled(turningOn)
+                            if (turningOn) {
+                                // 进入沉浸：收齐界面并给一次性提示
+                                uiRevealed = false
+                                showImmersiveHint = true
+                                if (!companionHintShown) {
+                                    companionHintShown = true
+                                    showCompanionSheet = true
+                                }
+                            } else {
+                                // 退出沉浸：恢复常规界面状态
+                                uiRevealed = true
+                                controlsVisible = true
+                            }
+                        }
+                    )
+                    // 陪伴设置入口：仅陪伴中显示，减少常驻按钮
+                    if (state.companionEnabled) {
+                        ViewerControlPill(
+                            icon = Icons.Rounded.Tune,
+                            label = "陪伴设置",
+                            onClick = {
+                                haptic(BlyyHaptic.Tick)
+                                controlsTick++
+                                showCompanionSheet = true
+                            }
+                        )
+                    }
                     ViewerControlPill(
                         icon = Icons.Rounded.Palette,
                         label = bgMode.label,
@@ -566,15 +679,20 @@ fun Live2dViewerScreen(
                         onClick = {
                             haptic(BlyyHaptic.Tick)
                             controlsVisible = false
+                            // 陪伴模式下"收起"即进入沉浸：连迷你浮标一起收齐
+                            if (state.companionEnabled) {
+                                uiRevealed = false
+                                showImmersiveHint = true
+                            }
                         }
                     )
                 }
             }
         }
 
-        // ── 收起后的迷你浮标（右下角半透明，点击恢复控制条） ──
+        // ── 收起后的迷你浮标（右下角半透明，点击恢复控制条；沉浸收齐期间隐藏） ──
         AnimatedVisibility(
-            visible = controlsGate && !controlsVisible,
+            visible = controlsGate && !controlsVisible && !immersiveHidden,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(bottom = 24.dp, end = 20.dp),
@@ -607,6 +725,45 @@ fun Live2dViewerScreen(
                     )
                 }
             }
+        }
+
+        // ── 陪伴模式右下角信息角标（时钟日期 + 电量，半透明不抢戏） ──
+        if (controlsGate && state.companionEnabled &&
+            (state.companionShowClock || state.companionShowBattery)
+        ) {
+            CompanionHud(
+                showClock = state.companionShowClock,
+                showBattery = state.companionShowBattery,
+                // 控制条展开时抬高避让（条体+内边距约占 28..~92dp），收起后只让开迷你浮标
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 20.dp, bottom = if (controlsVisible && !immersiveHidden) 100.dp else 72.dp)
+            )
+        }
+
+        // ── 进入沉浸时的一次性提示（点屏幕可唤回界面） ──
+        AnimatedVisibility(
+            visible = showImmersiveHint,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 40.dp),
+            enter = fadeIn(tween(200)),
+            exit = fadeOut(tween(450))
+        ) {
+            Text(
+                "点击屏幕可恢复界面",
+                style = AppTypography.LabelMedium,
+                color = Color.White.copy(alpha = 0.92f),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(Color(0x990B1220))
+                    .border(
+                        width = AppSpacing.Border.Thin,
+                        color = Color.White.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(999.dp)
+                    )
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
         }
 
         // ── 加载态 ──
@@ -774,14 +931,46 @@ fun Live2dViewerScreen(
             }
         }
     }
+    // ── 陪伴模式设置弹层 ──
+    if (showCompanionSheet) {
+        CompanionSettingsSheet(
+            intervalSec = state.companionIntervalSec,
+            showClock = state.companionShowClock,
+            showBattery = state.companionShowBattery,
+            // 传全量三参落盘：避免只传单项时 VM 读到未回流的旧状态互相覆盖
+            onIntervalChange = {
+                viewModel.updateCompanionConfig(
+                    intervalSec = it,
+                    showClock = state.companionShowClock,
+                    showBattery = state.companionShowBattery
+                )
+            },
+            onClockChange = {
+                viewModel.updateCompanionConfig(
+                    intervalSec = state.companionIntervalSec,
+                    showClock = it,
+                    showBattery = state.companionShowBattery
+                )
+            },
+            onBatteryChange = {
+                viewModel.updateCompanionConfig(
+                    intervalSec = state.companionIntervalSec,
+                    showClock = state.companionShowClock,
+                    showBattery = it
+                )
+            },
+            onDismiss = { showCompanionSheet = false }
+        )
+    }
 }
 
-/** 底部控制条的胶囊按钮（label = null 时渲染为纯图标模式） */
+/** 底部控制条的胶囊按钮（label = null 时渲染为纯图标模式；active 高亮陪伴等开启态） */
 @Composable
 private fun ViewerControlPill(
     icon: ImageVector,
     label: String?,
     showPulse: Boolean = false,
+    active: Boolean = false,
     contentDescription: String? = null,
     onClick: () -> Unit
 ) {
@@ -795,6 +984,10 @@ private fun ViewerControlPill(
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
+            .background(
+                if (active) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f)
+                else Color.Transparent
+            )
             .clickable(onClick = onClick)
             .padding(horizontal = if (label != null) 10.dp else 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -803,7 +996,8 @@ private fun ViewerControlPill(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            tint = MaterialTheme.colorScheme.primary,
+            tint = if (active) MaterialTheme.colorScheme.onTertiaryContainer
+            else MaterialTheme.colorScheme.primary,
             modifier = Modifier
                 .size(18.dp)
                 .alpha(if (showPulse) pulseAlpha else 1f)
@@ -812,7 +1006,8 @@ private fun ViewerControlPill(
             Text(
                 text = label,
                 style = AppTypography.LabelMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                color = if (active) MaterialTheme.colorScheme.onTertiaryContainer
+                else MaterialTheme.colorScheme.onSurface
             )
         }
     }
@@ -947,4 +1142,269 @@ private fun brushForBg(mode: L2dBgMode): Brush = when (mode) {
     L2dBgMode.NIGHT -> Brush.verticalGradient(
         listOf(Color(0xFF0B0E14), Color(0xFF14181F), Color(0xFF0B0E14))
     )
+}
+
+// ---------- 陪伴模式 ----------
+
+/** 陪伴模式触发间隔档位（秒 → 标签） */
+private val COMPANION_INTERVALS = listOf(
+    30 to "30秒",
+    60 to "1分钟",
+    180 to "3分钟",
+    300 to "5分钟",
+    600 to "10分钟"
+)
+
+/** 读取设备电量（粘性广播，非注册式监听）：返回 百分比 to 是否充电中，失败 null */
+private fun readBatteryStatus(context: android.content.Context): Pair<Int, Boolean>? =
+    runCatching {
+        val intent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        if (level >= 0 && scale > 0) {
+            val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+                status == BatteryManager.BATTERY_STATUS_FULL
+            (level * 100 / scale).coerceIn(0, 100) to charging
+        } else null
+    }.getOrNull()
+
+/**
+ * 陪伴模式右下角信息角标：时间/日期每秒刷新，电量读粘性广播每 20 秒重读。
+ * 深色玻璃卡设计：纵向渐变底 + 细描边，大号等宽数字时钟 + 「陪伴中」状态点 +
+ * 电量细条（充电/低电变色），压在立绘上仍清晰可读。
+ */
+@Composable
+private fun CompanionHud(
+    showClock: Boolean,
+    showBattery: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    var battery by remember { mutableStateOf<Pair<Int, Boolean>?>(null) }
+    LaunchedEffect(Unit) {
+        var tick = 0
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            if (tick % 20 == 0) battery = readBatteryStatus(context)
+            tick++
+            delay(1000)
+        }
+    }
+    val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val dateFmt = remember { SimpleDateFormat("M月d日 EEEE", Locale.CHINESE) }
+    val calendar = remember { Calendar.getInstance() }
+    calendar.timeInMillis = nowMs
+
+    // 电量配色：充电主题色 / ≤20% 警示红 / ≤50% 琥珀 / 常态月白
+    val (pct, charging) = battery ?: (100 to false)
+    val batteryColor = when {
+        charging -> MaterialTheme.colorScheme.tertiary
+        pct <= 20 -> MaterialTheme.colorScheme.error
+        pct <= 50 -> Color(0xFFF2C14E)
+        else -> Color(0xFFE8F1FA)
+    }
+
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(
+                Brush.verticalGradient(listOf(Color(0x99101A2C), Color(0x590E1626)))
+            )
+            .border(
+                width = AppSpacing.Border.Thin,
+                color = Color.White.copy(alpha = 0.16f),
+                shape = RoundedCornerShape(18.dp)
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        horizontalAlignment = Alignment.End
+    ) {
+        if (showClock) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 陪伴中状态点：呼吸的心形徽标，一眼可辨模式在运行
+                Icon(
+                    imageVector = Icons.Rounded.Favorite,
+                    contentDescription = "陪伴中",
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier
+                        .padding(end = 7.dp)
+                        .size(12.dp)
+                        .alpha(0.9f)
+                )
+                // tnum 等宽数字：秒级跳字时宽度稳定不抖动
+                Text(
+                    text = timeFmt.format(calendar.time),
+                    style = AppTypography.HeadlineMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontFeatureSettings = "tnum"
+                    ),
+                    color = Color.White.copy(alpha = 0.96f)
+                )
+            }
+            Text(
+                text = dateFmt.format(calendar.time),
+                style = AppTypography.LabelSmall.copy(letterSpacing = 1.sp),
+                color = Color.White.copy(alpha = 0.72f),
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
+        if (showClock && showBattery) {
+            // 发丝分隔线：只在上钟下电结构之间出现
+            Box(
+                Modifier
+                    .padding(vertical = 8.dp)
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.12f))
+            )
+        }
+        if (showBattery) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                // 电量细条：54dp 轨道 + 按比例填充
+                Box(
+                    modifier = Modifier
+                        .size(width = 54.dp, height = 5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Color.White.copy(alpha = 0.18f))
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(pct / 100f)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(batteryColor)
+                    )
+                }
+                Text(
+                    text = "$pct%",
+                    style = AppTypography.LabelSmall.copy(fontFeatureSettings = "tnum"),
+                    color = batteryColor
+                )
+                if (charging) {
+                    Icon(
+                        imageVector = Icons.Rounded.Bolt,
+                        contentDescription = "充电中",
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 陪伴模式设置弹层：触发间隔档位 + 时钟/电量显示开关 */
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun CompanionSettingsSheet(
+    intervalSec: Int,
+    showClock: Boolean,
+    showBattery: Boolean,
+    onIntervalChange: (Int) -> Unit,
+    onClockChange: (Boolean) -> Unit,
+    onBatteryChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = AppSpacing.Screen.Horizontal)
+                .padding(bottom = AppSpacing.Xl)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Rounded.Favorite,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(AppSpacing.Xs))
+                Text(
+                    "陪伴模式",
+                    style = AppTypography.TitleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.height(AppSpacing.Xs))
+            Text(
+                "待机动作自动循环，每到设定间隔随机播放一个其他动作并配上对应语音",
+                style = AppTypography.CaptionSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = AppSpacing.Md)
+            )
+            Text(
+                "动作触发间隔",
+                style = AppTypography.LabelLarge,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = AppSpacing.Sm)
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm),
+                modifier = Modifier.padding(bottom = AppSpacing.Md)
+            ) {
+                COMPANION_INTERVALS.forEach { (sec, label) ->
+                    val selected = sec == intervalSec
+                    AssistChip(
+                        onClick = { onIntervalChange(sec) },
+                        label = { Text(label, style = AppTypography.LabelMedium) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = if (selected) MaterialTheme.colorScheme.tertiaryContainer
+                            else MaterialTheme.colorScheme.surfaceContainerHigh,
+                            labelColor = if (selected) MaterialTheme.colorScheme.onTertiaryContainer
+                            else MaterialTheme.colorScheme.onSurface
+                        )
+                    )
+                }
+            }
+            CompanionSettingRow(
+                icon = { Icon(Icons.Rounded.Schedule, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) },
+                title = "显示时间与日期",
+                subtitle = "右下角常驻时钟角标",
+                checked = showClock,
+                onCheckedChange = onClockChange
+            )
+            CompanionSettingRow(
+                icon = { Icon(Icons.Rounded.BatteryStd, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) },
+                title = "显示设备电量",
+                subtitle = "电量偏低或充电时变色提示",
+                checked = showBattery,
+                onCheckedChange = onBatteryChange
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompanionSettingRow(
+    icon: @Composable () -> Unit,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AppSpacing.Sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        icon()
+        Spacer(Modifier.width(AppSpacing.Md))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = AppTypography.BodyMedium)
+            Text(
+                subtitle,
+                style = AppTypography.CaptionSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
 }

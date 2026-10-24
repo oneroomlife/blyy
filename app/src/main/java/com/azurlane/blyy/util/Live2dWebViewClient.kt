@@ -99,7 +99,11 @@ class Live2dWebViewClient(
         val relPath = rest.joinToString("/")
 
         if (rest.size == 1 && rest[0] == MANIFEST_NAME) {
-            val info = infoProvider()
+            // infoProvider 异步加载存在竞态（WebView 起动快于库层 IO 时拿到 null 直接报错）；
+            // 本回调运行在 WebView 后台线程，null 时兜底同步扫一次目录（结果通常已被磁盘缓存）
+            val info = infoProvider() ?: runCatching {
+                kotlinx.coroutines.runBlocking { library.findById(id) }
+            }.getOrNull()
                 ?: return jsonResponse("{\"error\":\"model not found\"}")
             val manifest = JsonObject(
                 mapOf(
