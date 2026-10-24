@@ -7,7 +7,9 @@
  *  - 视线跟随指针（model.focus）
  *  - 待机动作自动循环（idle 组由运行时自动接管）
  *  - 模型加载完成后渲染 1024x1024 缩略图并回传宿主保存
- *  - 帧率治理：无交互且仅待机时降到 30fps，交互/非待机动作期间恢复满帧（省电）
+ *  - 帧率治理：无交互且仅待机时 GPU 渲染 2:1 抽帧（约 30fps，参数更新仍 60Hz），
+ *    交互/非待机动作期间恢复逐帧渲染（省电且帧距恒定无 setTimeout 抖动）
+ *  - 待机无缝循环：idle 淡入缩短为 400ms + 剩余 400ms 时预排队下一条交叉淡化
  *  - 陪伴模式：每 N 毫秒随机触发一个非待机动作并通知宿主配语音
  *
  * 与宿主通信：
@@ -43,6 +45,19 @@
 
     var app = null;
     var model = null;
+
+    // ---------- 待机循环无缝化（必须在任何模型构造之前生效） ----------
+    // 库默认 idleMotionFadingDuration=2000：待机动作的淡入/淡出被烙成 2s（AL 模型
+    // motion3.json 均不声明 Fade 时间，走该默认值）。上一条待机结束→参数冻结一帧→
+    // 新待机以 2s 缓慢淡入接管，前 ~0.5s 权重趋零 → 观感即"卡一下再慢慢苏醒"。
+    // 缩短为 400ms：结束姿态迅速交棒；同时给预排队交叉淡化提供合理淡出时长。
+    // 注意淡入时长在动作"创建时"烙进缓存，此覆盖必须先于 Live2DModel.from 执行。
+    try {
+        if (window.PIXI && PIXI.live2d && PIXI.live2d.config) {
+            PIXI.live2d.config.idleMotionFadingDuration = 400;
+        }
+    } catch (e) { /* config 不可达则退回库默认 */ }
+
     var fitScale = 1;
     var userScale = 1, userX = 0, userY = 0;
     var MIN_SCALE = 0.25, MAX_SCALE = 8;
@@ -56,14 +71,17 @@
     // 手势指针表（模块级：陪伴调度器需要感知"用户正在交互"以顺延触发）
     var pointers = new Map();
 
-    // ---------- 帧率治理 ----------
-    // 空闲（仅待机动作在循环）时把 ticker 限到 30fps，显著降低 GPU/CPU 占用；
-    // 用户手势、手动/陪伴动作播放期间恢复满帧，视觉无感知切换。
-    var IDLE_FPS = 30;
-    var BOOST_MS = 2500;            // 最近一次交互后的满帧保持时长
+    // ---------- 帧率治理 v2（渲染抽帧） ----------
+    // 不用 PIXI ticker.maxFPS 限帧：其实现是 rAF + setTimeout 补时，WebView 的
+    // setTimeout 有 4~15ms 调度漂移 → 30fps 限帧帧距忽长忽短，动作衔接处呈
+    // 周期性顿挫。改为：ticker 全速 rAF（参数更新/视线跟随 60Hz 均匀采样），
+    // GPU 渲染按 2:1 抽帧（渲染是功耗大头，省一半），帧距恒定 33.3ms 零抖动。
+    var BOOST_MS = 2500;            // 最近一次交互后的满帧渲染保持时长
     var lastBoostAt = 0;
     var lastMotionStartAt = 0;      // 动作开始/结束时间戳（判"非待机动作在播"）
     var lastMotionFinishAt = 0;
+    var renderEvery2Frames = false; // true = 空闲态，渲染抽帧
+    var frameParity = 0;
 
     function boostFrames() { lastBoostAt = performance.now(); }
 
@@ -84,12 +102,11 @@
         if (!app) return;
         var g = currentMotionGroup();
         // 动作已结束（finish 晚于 start）且没有新动作接续 → 不算"在播"，
-        // 覆盖无 idle 组的模型：播完一个动作后不应永远保持满帧
+        // 覆盖无 idle 组的模型：播完一个动作后不应永远保持满帧渲染
         var running = lastMotionStartAt > lastMotionFinishAt;
         var active = (performance.now() - lastBoostAt < BOOST_MS) ||
             (running && g && idleGroupNames().indexOf(g) < 0);
-        var want = active ? 0 : IDLE_FPS; // 0 = 不限帧
-        if (app.ticker.maxFPS !== want) app.ticker.maxFPS = want;
+        renderEvery2Frames = !active;
     }
 
     // ---------- 陪伴模式调度 ----------
@@ -141,7 +158,7 @@
     // ---------- 陪伴模式待机接管 ----------
     // 运行时在动作队列清空时会自动请求待机（startRandomMotion(groups.idle, IDLE)），
     // 但 groups.idle 名字与模型定义不匹配时是 no-op → 动作播完模型定格。
-    // 陪伴模式下显式兜底：队列空闲 500ms 后按"运行时配置组 → idle → 首个组"接续待机。
+    // 陪伴模式下显式兜底：宽限 250ms 后按"运行时配置组 → idle → 首个组"接续待机。
     var lastIdleKickAt = 0;
 
     /** 随机播一条待机动作；找不到可用待机组返回 false */
@@ -189,6 +206,42 @@
         } catch (e) { return; }
         lastIdleKickAt = now;
         startIdleMotion();
+    }
+
+    // ---------- 待机预排队（消除结束空档帧） ----------
+    // 运行时重启待机要等上一条完全结束（IDLE 优先级门控要求 currentPriority=0），
+    // 中间存在参数冻结的空档帧。预排队在剩余 <400ms 时以 NORMAL(2) 优先级提前
+    // 启动同组下一条（2>1 越过门控；startRandomMotion 天然排除在播条目）→
+    // Cubism 队列对新条目自动给现行条目 setFadeOut → 新旧 400ms 重叠交叉淡化。
+    // 单动作待机组无可切条目，退回"短淡入 + 循环姿态首尾连续"路径。
+    var idlePrequeued = false;
+
+    function prequeueNextIdle() {
+        if (!model || idlePrequeued || lastMotionStartAt === 0) return;
+        var mg, group, index, motion;
+        try {
+            mg = model.internalModel.motionManager;
+            group = mg.state.currentGroup;
+            index = mg.state.currentIndex;
+            if (group === undefined || index === undefined) return;
+            motion = mg.motionGroups[group] && mg.motionGroups[group][index];
+        } catch (e) { return; }
+        if (!motion) return;
+        // 仅对"正在播的确实是待机组"预排队（非待机动作交给结束后的接续逻辑）
+        var idleNames = idleGroupNames();
+        if (idleNames.indexOf(group) < 0) return;
+        var duration = -1;
+        try { duration = motion.getDuration(); } catch (e) { return; }
+        if (!(duration > 0)) return;
+        var remaining = duration - (performance.now() - lastMotionStartAt) / 1000;
+        if (!(remaining > 0) || remaining > 0.4) return;
+        if (groupMotionCount(group) < 2) return; // 单条待机：无可切，短淡入兜底
+        idlePrequeued = true;
+        try {
+            mg.startRandomMotion(group, 2).catch(function () { idlePrequeued = false; });
+        } catch (e) {
+            idlePrequeued = false;
+        }
     }
 
     function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -510,11 +563,24 @@
         appliedW = window.innerWidth;
         appliedH = window.innerHeight;
         bindGestures(canvas);
-        // 每帧驱动：帧率治理 + 陪伴调度 + 待机守护（ticker 停止时全部自动冻结）
+        // 摘掉 Application 自带的整帧渲染，改为治理器控制的抽帧渲染
+        //（LOW 优先级 = 在动作/参数更新监听之后执行，抽帧不影响参数采样）
+        app.ticker.remove(app.render, app);
+        app.ticker.add(
+            function () {
+                if (!renderEvery2Frames || (frameParity ^= 1) === 0) {
+                    app.render();
+                }
+            },
+            undefined,
+            PIXI.UPDATE_PRIORITY.LOW
+        );
+        // 每帧驱动：帧率治理 + 陪伴调度 + 待机守护/预排队（ticker 停止时全部自动冻结）
         app.ticker.add(function () {
             applyFpsGovernor();
             companionTick();
             kickIdleIfNeeded(false);
+            prequeueNextIdle();
         });
         document.addEventListener('visibilitychange', function () {
             if (!app) return;
@@ -592,7 +658,10 @@
                 // start/finish 时间戳同时供帧率治理判断"非待机动作是否在播"
                 try {
                     var mg = m.internalModel.motionManager;
-                    var markStart = function () { lastMotionStartAt = performance.now(); };
+                    var markStart = function () {
+                        lastMotionStartAt = performance.now();
+                        idlePrequeued = false; // 新动作已接棒，待机预排队周期复位
+                    };
                     var markFinish = function () {
                         lastMotionFinishAt = performance.now();
                         // 陪伴模式：动作结束后短暂宽限即检查待机是否接上
