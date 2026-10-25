@@ -35,7 +35,7 @@
 
 ## 📖 项目简介
 
-碧蓝语音（BLYY）是一款专为碧蓝航线玩家设计的多功能舰娘应用，基于 Kotlin 2.1 + Jetpack Compose 构建，涵盖**语音播放、舰娘图鉴、秘书舰桌面互动、AI 角色扮演对话、猜舰娘小游戏、水印相机**等能力。应用内置全量舰娘本地头像匹配引擎，支持双主题风格（经典紫色 / 指挥中心 HUD）与流畅的动画体验。
+碧蓝语音（BLYY）是一款专为碧蓝航线玩家设计的多功能舰娘应用，基于 Kotlin 2.1 + Jetpack Compose 构建，涵盖**语音播放、舰娘图鉴、秘书舰悬浮窗、桌面小组件、AI 角色扮演对话、猜舰娘小游戏、Live2D 皮肤库、水印相机**等能力。应用内置全量舰娘本地头像匹配引擎，支持双主题风格（经典紫色 / 指挥中心 HUD）与流畅的动画体验。
 
 <a id="features"></a>
 
@@ -50,8 +50,9 @@
 #### 船坞（Gallery）
 - 完整舰娘图鉴，按阵营/舰种/稀有度多维筛选，支持搜索
 - **双档案模式**：舰船档案（DOCK）/ 成员档案（STUDENT）动态切换
-- **长按舰娘头像誓约/解除誓约**，誓约后立绘自动切换婚皮
-- **本地头像匹配引擎**：内置 1000+ 高清头像资产，全量 wiki 图鉴 999/999 命中（详见[头像匹配系统](#avatar-matcher)）
+- **长按舰娘卡片弹出精致操作菜单**：誓约/解除誓约（誓约后立绘自动切换婚皮）、查看立绘、前往 Wiki
+- **自定义头像**：从相册/文件挑选图片，经 3:4 裁切页所见即所得应用；头像解析链优先级为 **自定义 > 本地 assets（誓约婚皮/默认）> 网络**，随时可恢复默认
+- **本地头像匹配引擎**：内置 1100+ 高清头像资产，全量 wiki 图鉴 1004/1004 命中（详见[头像匹配系统](#avatar-matcher)）
 - 骨架屏加载 + 卡片飞入动画
 
 #### 关于（About）
@@ -65,9 +66,14 @@
 - Media3 ExoPlayer + MediaSession：锁屏控制、耳机线控、前台服务
 
 ### 🎭 秘书舰模式
-- 可拖动的舰娘小人悬浮窗（SYSTEM_ALERT_WINDOW），点击随机播放语音
+- 可拖动的舰娘小人悬浮窗（SYSTEM_ALERT_WINDOW），点击随机播放语音，拖拽位置自动记忆、重启后原地恢复
 - **随机秘书舰**：按稀有度权重从船坞抽取每日秘书舰
-- Spine 骨骼动画渲染 SD 小人，支持誓约婚皮立绘
+- Spine 骨骼动画渲染 SD 小人，静态图兜底，均支持誓约婚皮
+
+### 🧩 桌面小组件（Glance）
+- **今日推荐舰娘（2×2）**：每天为你推荐一位舰娘，点击直达她的语音页
+- **秘书舰问候（4×2）**：头像 + 舰名 + 台词问候，一键换人、播放语音；组件舰娘与应用内秘书舰**完全隔离**，可各自指定
+- 纯后台交互 + 头像限时加载（弱网自动回退占位图），刷新绝不阻塞
 
 ### 🐦 啾信（AI 角色扮演对话）
 - 与 AI 舰娘进行沉浸式角色扮演对话，支持多轮上下文
@@ -89,6 +95,7 @@
 ### 🎨 更多功能
 - **SD 资源图鉴**：浏览 Spine 骨骼动画 SD 小人资源，支持本地导入整理（zstd 压缩解析）
 - **Live2D 皮肤库**：导入本地 Cubism 3/4 模型（文件夹/zip 免权限导入），内置 pixi-live2d-display 渲染，支持动作/表情/手势交互与真实缩略图
+  - **陪伴模式**：循环待机无缝衔接，每到设定间隔随机播放动作并配语音；锁屏风时钟/电量角标；沉浸模式自动收齐全部界面，触摸画布唤出
 - **水印相机**：CameraX 拍照 + 可定制水印排版（相框/标题/署名），支持截图编辑
 - **应用图标设置**：多种启动器图标风格任选
 
@@ -117,7 +124,7 @@
 | Android Studio | 最新稳定版（AGP 9.1.1 需较新版本支持） |
 | JDK | 17（Gradle Toolchain 自动对齐） |
 | Kotlin | 2.1.10（Compose Compiler 插件随版本启用） |
-| Gradle | 9.6.1（项目自带 wrapper，无需手动安装） |
+| Gradle | 9.8.0（项目自带 wrapper，无需手动安装） |
 | Android SDK | minSdk 24 / targetSdk 35 / compileSdk 36 |
 | 设备 | Android 7.0 (API 24) 或更高 |
 
@@ -164,7 +171,26 @@
 ### 导航结构
 
 - **底部三个主页面**：后宅 / 船坞（舰船⇆成员档案切换）/ 关于
-- **侧拉菜单**：语音播放、秘书舰、啾信、碧蓝航线助手、猜舰娘、SD 资源图鉴、Live2D 皮肤、水印相机、设置
+- **侧拉菜单**：语音播放、秘书舰、啾信、碧蓝航线助手、看图/听音识舰娘、SD 资源图鉴、Live2D 皮肤、水印相机、设置
+- **桌面小组件**：在启动器小组件列表添加「今日推荐舰娘」「秘书舰问候」
+
+### 桌面小组件
+
+1. 长按桌面空白处进入 **小组件** 列表，找到 BLYY
+2. 拖出「今日推荐舰娘（2×2）」或「秘书舰问候（4×2）」添加到桌面
+3. 秘书舰问候组件上点 **换人** 切换舰娘、点 **语音** 播放台词问候；组件舰娘与应用内秘书舰互不影响
+
+### 自定义舰娘头像
+
+1. 船坞 **长按舰娘卡片** 打开操作菜单，选择 **自定义图片**（相册/文件）
+2. 在裁切页自由缩放定位 3:4 取景框后应用，全应用头像即时生效
+3. 想还原时再次长按选择 **恢复默认头像**
+
+### Live2D 陪伴模式
+
+1. 侧拉菜单进入 **Live2D 皮肤**，导入模型（文件夹或 zip）后进入播放页
+2. 点 **陪伴** 开启：舰娘循环待机并无缝衔接，每到设定间隔随机播放动作与语音
+3. 在陪伴设置层调整间隔、开关 **时钟/电量角标**；开启后界面自动收齐，触摸画布即可唤出
 
 ### 碧蓝航线助手
 
@@ -205,6 +231,8 @@
 | [Hilt](https://dagger.dev/hilt/) | 2.59.2 | 依赖注入（KSP 编译） |
 | [Room](https://developer.android.com/training/data-storage/room) | 2.8.4 | 本地数据库（舰娘/答题历史） |
 | [DataStore Preferences](https://developer.android.com/topic/libraries/architecture/datastore) | 1.2.0 | 偏好与玩家设置存储 |
+| [Glance](https://developer.android.com/jetpack/compose/glance) | 1.1.1 | 桌面小组件（Compose 风格 API） |
+| [WorkManager](https://developer.android.com/topic/libraries/background-work) | 2.11.1 | 小组件后台刷新任务 |
 | [Media3 ExoPlayer](https://developer.android.com/media/media3) | 1.3.1 | 音频播放 + MediaSession |
 | [Coil](https://coil-kt.github.io/coil/) | 2.7.0 | 图片加载（含 GIF） |
 | [OkHttp](https://square.github.io/okhttp/) | 4.12.0 | 网络请求 |
@@ -234,10 +262,12 @@ blyy/
 │       │   ├── assets/
 │       │   │   ├── blhx_avatar/        # 舰娘本地头像资产（1100+，拼音命名）
 │       │   │   ├── blhx_sd/            # 舰娘 SD 小人资源（Spine 骨骼）
+│       │   │   ├── live2d/             # Live2D 渲染运行时（pixi.js 内置资源）
 │       │   │   └── photo_frame/        # 水印相机相框素材
 │       │   ├── java/com/azurlane/blyy/
 │       │   │   ├── MainActivity.kt     # 主入口
 │       │   │   ├── SecretaryOverlayService.kt  # 秘书舰悬浮窗服务
+│       │   │   ├── widget/             # Glance 桌面小组件（今日推荐舰娘/秘书舰问候）
 │       │   │   ├── data/               # 数据层
 │       │   │   │   ├── local/          # Room（AppDatabase/DAO）+ DataStore
 │       │   │   │   ├── model/          # 数据模型
@@ -248,18 +278,22 @@ blyy/
 │       │   │   ├── ui/
 │       │   │   │   ├── components/     # 公共 UI 组件（ShipCard 等）
 │       │   │   │   ├── icons/          # 自定义图标
-│       │   │   │   ├── screens/        # 26 个界面屏幕
+│       │   │   │   ├── screens/        # 27 个界面屏幕（guess/live2d/chat 等共享子包）
 │       │   │   │   └── theme/          # 主题与设计系统（Token/Depth 阴影）
 │       │   │   ├── util/               # 工具层
 │       │   │   │   ├── AvatarMatcher.kt        # 头像匹配核心（纯 Kotlin）
 │       │   │   │   ├── LocalAvatarResolver.kt  # assets 头像解析壳
+│       │   │   │   ├── CustomAvatarManager.kt  # 自定义头像存储与解析（第一优先级）
 │       │   │   │   ├── SDResourceManager.kt    # SD 资源管理
 │       │   │   │   ├── WebViewHtmlFetcher.kt   # wiki 抓取器
 │       │   │   │   └── ...             # 更新检查/缓存/权限/水印合成等
-│       │   │   └── viewmodel/          # ViewModel 层（20+）
+│       │   │   └── viewmodel/          # ViewModel 层（22）
 │       │   └── res/                    # 资源（图片、字符串、主题）
 │       └── test/                       # JVM 单元测试
-│           └── util/AvatarMatcherTest.kt       # 头像匹配全量回归测试
+│           ├── util/AvatarMatcherTest.kt       # 头像匹配全量回归测试
+│           ├── util/PinyinSyllableAlignTest.kt # 拼音音节边界对齐测试
+│           ├── widget/WidgetLogicTest.kt       # 小组件逻辑测试
+│           ├── ...                             # 裁切几何/悬浮窗几何/语音解析等
 │           └── resources/                      # wiki 全量舰名 + 资产快照
 ├── docs/                               # 项目文档
 │   ├── ARCHITECTURE.md                 # 架构与 API 文档
@@ -289,7 +323,7 @@ blyy/
 - **资产约定**：`assets/blhx_avatar/` 下以「舰名无声调全拼 + 皮肤后缀」命名（如 `boge.webp` ← 博格、`z23_h.webp` ← Z23 婚皮、`dafeng_alter.webp` ← 大凤·META）
 - **十级匹配策略**：手动映射 → 特殊变体（META/μ兵装/幼女）→ 改造/尾部标记 → 原始名/拼音精确 → 去后缀变体 → 包含/反向包含/模糊子串兜底
 - **皮肤形态硬规则**：META/μ兵装/改造立绘缺失时拒绝回退基础形态（避免错图），改走网络 URL 兜底
-- **全量回归测试**：`AvatarMatcherTest` 用 wiki 图鉴 999 个舰名逐一校验，当前 **999/999 命中、零碰撞**；新增资源或舰娘后运行 `./gradlew :app:testDebugUnitTest --tests "*AvatarMatcherTest*"` 防回归
+- **全量回归测试**：`AvatarMatcherTest` 用 wiki 图鉴 1004 个舰名逐一校验，当前 **1004/1004 命中、零碰撞**；新增资源或舰娘后运行 `./gradlew :app:testDebugUnitTest --tests "*AvatarMatcherTest*"` 防回归
 
 <a id="testing"></a>
 
@@ -299,9 +333,11 @@ blyy/
 # 运行全部 JVM 单元测试
 ./gradlew :app:testDebugUnitTest
 
-# 头像匹配全量回归（999 舰名逐一校验）
+# 头像匹配全量回归（1004 舰名逐一校验）
 ./gradlew :app:testDebugUnitTest --tests "com.azurlane.blyy.util.AvatarMatcherTest"
 ```
+
+除头像匹配全量回归外，测试还覆盖拼音音节边界对齐（防跨字误配）、自定义头像裁切几何、悬浮窗几何与拖拽、语音块解析、小组件逻辑、猜舰娘退出流程等纯 Kotlin 逻辑。
 
 提交前建议运行 `./gradlew :app:lint`（项目带 lint-baseline.xml）。
 
