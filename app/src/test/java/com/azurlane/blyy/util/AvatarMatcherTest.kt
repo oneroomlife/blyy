@@ -9,7 +9,7 @@ import java.io.File
  *
  * 数据来源：
  * - `ship_names.txt`：wiki 舰船图鉴（https://wiki.biligame.com/blhx/舰船图鉴）
- *   解析出的全量舰娘中文名（999 个，与 ShipRepository 抓取逻辑同源）。
+ *   解析出的全量舰娘中文名（与 ShipRepository 抓取逻辑同源，条数随 wiki 实装增长）。
  * - 资产文件清单优先读取真实 `src/main/assets/blhx_avatar/` 目录（始终与打包内容同步），
  *   读不到时回退到 `avatar_files_snapshot.txt` 快照。
  *
@@ -25,7 +25,7 @@ class AvatarMatcherTest {
         private val KNOWN_MISSING = setOf<String>(
             // 水星号（NO.759 风帆V，2026-10-22 实装）曾登记于此：assets 无 shuixinghao 资源，
             // 修复前经模糊子串跨字拼接误配"彗星"(s[huixing]hao)，音节边界闸门上线后正确失配。
-            // 2026-10-23 shuixinghao.webp 已补充并同步快照，恢复 999/999 全量命中，条目移除。
+            // 2026-10-23 shuixinghao.webp 已补充并同步快照，恢复全量命中，条目移除。
         )
 
         private fun loadShipNames(): List<String> {

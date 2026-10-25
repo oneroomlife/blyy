@@ -528,7 +528,7 @@ leigensibao.webp
 leigensibao_alter.webp
 leiming.webp
 leiniya.webp
-leiyierbei.webp
+leiyierbeihao.webp
 lemaer.webp
 lemaer_g.webp
 lian.webp
@@ -738,7 +738,7 @@ safuke.webp
 safuke_g.webp
 saidelici.webp
 saili.webp
-sailimiye.webp
+sailimiyehao.webp
 saiwasituoboer.webp
 salana.webp
 salatuojia.webp
