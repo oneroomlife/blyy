@@ -17,7 +17,13 @@
  *    {t:'ready'} {t:'loaded'} {t:'error',message} {t:'motionStart',group}
  *    {t:'motionFinish'} {t:'thumb',data} {t:'log',message}
  *    {t:'tap',group}（点击模型） {t:'companion',group}（陪伴模式定时触发）
- *  - Kotlin → JS：window.__viewer.playMotion / playExpression / resetView / setPaused / setCompanion
+ *  - Kotlin → JS：window.__viewer.playMotion / playExpression / resetView / setPaused /
+ *    setCompanion / setGyro（陀螺仪开关与灵敏度） / setGyroTilt（倾斜信号流）
+ *
+ * 陀螺仪注视/视差：宿主监听旋转矢量传感器，把"屏幕系重力倾斜"归一化信号
+ * （sx, sy ∈ [-1,1]，右倾/后仰为正）经 setGyroTilt 持续下发；渲染端指数平滑后
+ * 驱动 model.focus 视线与轻微同向位移（贴纸随重力下垂隐喻）。指针交互期间
+ * 陀螺仪让位（指针持有视线 1.5s），倾斜变化期间短时满帧渲染，静止即回落抽帧。
  */
 (function () {
     'use strict';
@@ -77,13 +83,16 @@
     // 周期性顿挫。改为：ticker 全速 rAF（参数更新/视线跟随 60Hz 均匀采样），
     // GPU 渲染按 2:1 抽帧（渲染是功耗大头，省一半），帧距恒定 33.3ms 零抖动。
     var BOOST_MS = 2500;            // 最近一次交互后的满帧渲染保持时长
-    var lastBoostAt = 0;
+    var boostUntil = 0;             // 满帧渲染保持到的时刻（交互 2500ms / 陀螺仪倾斜 600ms）
     var lastMotionStartAt = 0;      // 动作开始/结束时间戳（判"非待机动作在播"）
     var lastMotionFinishAt = 0;
     var renderEvery2Frames = false; // true = 空闲态，渲染抽帧
     var frameParity = 0;
 
-    function boostFrames() { lastBoostAt = performance.now(); }
+    /** 交互后保持满帧渲染；ms 缺省 = 完整 BOOST_MS，陀螺仪等持续信号源用短时长 */
+    function boostFrames(ms) {
+        boostUntil = performance.now() + (ms || BOOST_MS);
+    }
 
     function currentMotionGroup() {
         try {
@@ -104,7 +113,7 @@
         // 动作已结束（finish 晚于 start）且没有新动作接续 → 不算"在播"，
         // 覆盖无 idle 组的模型：播完一个动作后不应永远保持满帧渲染
         var running = lastMotionStartAt > lastMotionFinishAt;
-        var active = (performance.now() - lastBoostAt < BOOST_MS) ||
+        var active = (performance.now() < boostUntil) ||
             (running && g && idleGroupNames().indexOf(g) < 0);
         renderEvery2Frames = !active;
     }
@@ -153,6 +162,75 @@
         companion.acc = 0;
         triggerCompanionMotion();
         kickIdleIfNeeded(false);
+    }
+
+    // ---------- 陀螺仪注视/视差 ----------
+    // 宿主以 ~16Hz 下发"屏幕系重力倾斜"归一化信号（右倾/后仰为正），
+    // 此处指数平滑（τ=120ms）后每帧驱动 model.focus 视线与轻微同向位移。
+    // 模型隐喻：贴在屏幕玻璃上的存在随重力轻微下垂——位移与视线同向。
+    var gyro = {
+        enabled: false,
+        gain: 1,
+        tx: 0, ty: 0,           // 宿主最新目标（-1..1）
+        sx: 0, sy: 0,           // 平滑后的当前值（驱动视线/位移）
+        ox: 0, oy: 0            // 当前视差位移（px，随 sx/sy 派生）
+    };
+    var GYRO_SMOOTH_TAU_MS = 120;   // 指数平滑时间常数：响应跟手且无抖动
+    var GYRO_BOOST_MS = 600;        // 倾斜变化期间的满帧保持（静止后迅速回落抽帧省电）
+    var GYRO_POINTER_OWNER_MS = 1500; // 指针移动后接管视线的时长
+    var lastPointerFocusAt = -1e9;  // 最近一次指针视线跟随时间戳
+
+    /** 宿主下发开关与灵敏度（percent 40..220，缺省 100） */
+    function setGyro(enabled, gainPercent) {
+        gyro.enabled = !!enabled;
+        var percent = typeof gainPercent === 'number' ? gainPercent : 100;
+        gyro.gain = clamp(percent / 100, 0.4, 2.2);
+        // 关闭即目标归零：平滑回中，不突跳
+        if (!gyro.enabled) {
+            gyro.tx = 0;
+            gyro.ty = 0;
+        }
+    }
+
+    /** 宿主倾斜信号流（-1..1）；未启用时忽略 */
+    function setGyroTilt(x, y) {
+        if (!gyro.enabled || typeof x !== 'number' || typeof y !== 'number') return;
+        gyro.tx = clamp(x, -1, 1);
+        gyro.ty = clamp(y, -1, 1);
+    }
+
+    /** 每帧驱动：平滑 → 视线（指针优先）→ 视差位移 → 变化期间短时满帧 */
+    function gyroTick(deltaMS) {
+        if (!model) return;
+        var now = performance.now();
+        // 指数平滑（帧率归一）
+        var k = 1 - Math.exp(-deltaMS / GYRO_SMOOTH_TAU_MS);
+        gyro.sx += (gyro.tx - gyro.sx) * k;
+        gyro.sy += (gyro.ty - gyro.sy) * k;
+        var moving = Math.abs(gyro.tx - gyro.sx) + Math.abs(gyro.ty - gyro.sy) > 0.01;
+        if (moving) boostFrames(GYRO_BOOST_MS);
+
+        // 视线：指针交互期间让位（避免陀螺仪与指针互相拉扯）
+        var pointerOwns = pointers.size > 0 || (now - lastPointerFocusAt < GYRO_POINTER_OWNER_MS);
+        if (gyro.enabled && !pointerOwns) {
+            // 焦点绕画面上部（脸部区域）随倾斜偏移，纵向幅度略小
+            try {
+                model.focus(
+                    window.innerWidth / 2 + gyro.sx * window.innerWidth * 0.42,
+                    window.innerHeight * 0.42 + gyro.sy * window.innerHeight * 0.38
+                );
+            } catch (err) { /* focus 不可用时仅视差降级 */ }
+        }
+
+        // 视差位移：满偏 ≈ 画面短边 1.2%（纵向再收 40%，只做"轻微位移"）
+        var amp = 0.012 * Math.min(window.innerWidth, window.innerHeight);
+        gyro.ox = gyro.sx * amp;
+        gyro.oy = gyro.sy * amp * 0.6;
+        // 变换动画（复位/旋转重适配）期间不直接写 position（动画目标已含视差），
+        // 否则会与 animateTransformTo 的逐帧插值互相覆盖
+        if (!transformAnim) {
+            applyTransform();
+        }
     }
 
     // ---------- 陪伴模式待机接管 ----------
@@ -249,9 +327,10 @@
     function applyTransform() {
         if (!model) return;
         model.scale.set(fitScale * userScale);
+        // 陀螺仪视差位移叠加在用户平移之上（贴纸随重力轻微下垂）
         model.position.set(
-            window.innerWidth / 2 + userX,
-            window.innerHeight * 0.52 + userY
+            window.innerWidth / 2 + userX + gyro.ox,
+            window.innerHeight * 0.52 + userY + gyro.oy
         );
     }
 
@@ -300,12 +379,12 @@
         transformAnim = { raf: requestAnimationFrame(step) };
     }
 
-    /** 按当前 user* 参数平滑滑向适配布局 */
+    /** 按当前 user* 参数平滑滑向适配布局（目标含陀螺仪视差，动画结束无跳变） */
     function animateToCurrentFit(duration) {
         animateTransformTo(
             fitScale * userScale,
-            window.innerWidth / 2 + userX,
-            window.innerHeight * 0.52 + userY,
+            window.innerWidth / 2 + userX + gyro.ox,
+            window.innerHeight * 0.52 + userY + gyro.oy,
             duration
         );
     }
@@ -443,8 +522,10 @@
         });
 
         canvas.addEventListener('pointermove', function (e) {
-            // 视线跟随：无论是否按住，指针移动都会吸引模型视线
+            // 视线跟随：无论是否按住，指针移动都会吸引模型视线；
+            // 同时记录接管时间戳，1.5s 内陀螺仪注视让位（避免两者互相拉扯）
             boostFrames();
+            lastPointerFocusAt = performance.now();
             maybePostTouch(false); // 长按拖拽期间心跳上报，维持宿主界面显示
             if (model) {
                 try { model.focus(e.clientX, e.clientY); } catch (err) { /* 忽略 */ }
@@ -575,10 +656,11 @@
             undefined,
             PIXI.UPDATE_PRIORITY.LOW
         );
-        // 每帧驱动：帧率治理 + 陪伴调度 + 待机守护/预排队（ticker 停止时全部自动冻结）
+        // 每帧驱动：帧率治理 + 陪伴调度 + 陀螺仪注视 + 待机守护/预排队（ticker 停止时全部自动冻结）
         app.ticker.add(function () {
             applyFpsGovernor();
             companionTick();
+            gyroTick(app.ticker.deltaMS);
             kickIdleIfNeeded(false);
             prequeueNextIdle();
         });
@@ -731,7 +813,11 @@
                 lastIdleKickAt = 0;
                 kickIdleIfNeeded(true);
             }
-        }
+        },
+        /** 陀螺仪注视/视差：开关 + 灵敏度（百分比 40..220，缺省 100） */
+        setGyro: setGyro,
+        /** 陀螺仪倾斜信号流（-1..1，右倾/后仰为正；宿主 ~16Hz 持续下发） */
+        setGyroTilt: setGyroTilt
     };
 
     post({ t: 'ready' });

@@ -85,7 +85,11 @@ class Live2dViewerViewModel @Inject constructor(
         /** 陪伴模式：右下角显示当前时间日期（持久化） */
         val companionShowClock: Boolean = true,
         /** 陪伴模式：右下角显示设备电量（持久化） */
-        val companionShowBattery: Boolean = true
+        val companionShowBattery: Boolean = true,
+        /** 陀螺仪注视/视差开关（持久化，默认开启；无传感器设备渲染端自动静默） */
+        val gyroEnabled: Boolean = true,
+        /** 陀螺仪灵敏度百分比（40..220，持久化） */
+        val gyroGainPercent: Int = 100
     )
 
     /** 语音台词气泡：随互动语音同步显示，超时/点按/关闭后消失 */
@@ -141,6 +145,17 @@ class Live2dViewerViewModel @Inject constructor(
                         companionShowBattery = battery
                     )
                 }
+            }
+        }
+        // 陀螺仪注视/视差两选项（持久化）：进页即恢复，变化即时下发渲染端
+        viewModelScope.launch {
+            combine(
+                settingsDataStore.live2dGyroEnabled,
+                settingsDataStore.live2dGyroGainPercent
+            ) { enabled, gain ->
+                enabled to gain
+            }.collect { (enabled, gain) ->
+                _state.update { it.copy(gyroEnabled = enabled, gyroGainPercent = gain) }
             }
         }
         // 舰名反查就绪后补拉台词（查台词用的舰名此时才可解析）
@@ -242,6 +257,16 @@ class Live2dViewerViewModel @Inject constructor(
     fun updateCompanionConfig(intervalSec: Int, showClock: Boolean, showBattery: Boolean) {
         viewModelScope.launch {
             settingsDataStore.setLive2dCompanionConfig(intervalSec, showClock, showBattery)
+        }
+    }
+
+    /**
+     * 陀螺仪注视/视差设置落盘（开关 + 灵敏度成组原子写入）。
+     * 同样必须传全量两项，理由同 [updateCompanionConfig]。
+     */
+    fun updateGyroConfig(enabled: Boolean, gainPercent: Int) {
+        viewModelScope.launch {
+            settingsDataStore.setLive2dGyroConfig(enabled, gainPercent)
         }
     }
 

@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.CenterFocusWeak
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -257,6 +258,7 @@ fun Live2dViewerScreen(
     var showMotionSheet by remember { mutableStateOf(false) }
     var showExpressionSheet by remember { mutableStateOf(false) }
     var showCompanionSheet by remember { mutableStateOf(false) }
+    var showGyroSheet by remember { mutableStateOf(false) }
     var reloadToken by remember { mutableIntStateOf(0) }
 
     // 底部控制条可见性 + 交互计数（任意控件交互重置自动收起计时）
@@ -390,6 +392,40 @@ fun Live2dViewerScreen(
         reloadToken
     ) {
         callViewer("setCompanion(${state.companionEnabled}, ${state.companionIntervalSec * 1000})")
+    }
+
+    // 陀螺仪注视配置下发：开关/灵敏度变化、模型就绪、重建 WebView 后重推
+    LaunchedEffect(state.gyroEnabled, state.gyroGainPercent, phase, reloadToken) {
+        callViewer("setGyro(${state.gyroEnabled}, ${state.gyroGainPercent})")
+    }
+
+    // 陀螺仪传感器：前台注册、退后台注销（省电）；无传感器设备 start() 静默 no-op
+    val gyroContext = LocalContext.current
+    val gyroController = remember {
+        GyroFocusController(gyroContext) { x, y ->
+            // 主线程回调（注册时指定了主 Handler），可直接 evaluateJavascript
+            callViewer("setGyroTilt($x, $y)")
+        }
+    }
+    DisposableEffect(lifecycleOwner, state.gyroEnabled) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> if (state.gyroEnabled) gyroController.start()
+                Lifecycle.Event.ON_PAUSE -> gyroController.stop()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        // 组合时若已处于前台（如开关从关到开），立即启动
+        if (state.gyroEnabled &&
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        ) {
+            gyroController.start()
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            gyroController.stop()
+        }
     }
 
     Box(
@@ -606,6 +642,17 @@ fun Live2dViewerScreen(
                             }
                         )
                     }
+                    // 陀螺仪注视/视差设置入口（默认开启；罗盘图标随开启态高亮）
+                    ViewerControlPill(
+                        icon = Icons.Rounded.Explore,
+                        label = "陀螺仪",
+                        active = state.gyroEnabled,
+                        onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            controlsTick++
+                            showGyroSheet = true
+                        }
+                    )
                     // 陪伴模式开关：循环待机 + 每到间隔随机一个动作并配语音
                     ViewerControlPill(
                         icon = if (state.companionEnabled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -962,6 +1009,22 @@ fun Live2dViewerScreen(
                 )
             },
             onDismiss = { showCompanionSheet = false }
+        )
+    }
+
+    // ── 陀螺仪注视/视差设置弹层 ──
+    if (showGyroSheet) {
+        GyroSettingsSheet(
+            enabled = state.gyroEnabled,
+            gainPercent = state.gyroGainPercent,
+            // 传全量两参落盘，理由同陪伴设置
+            onEnabledChange = {
+                viewModel.updateGyroConfig(it, state.gyroGainPercent)
+            },
+            onGainChange = {
+                viewModel.updateGyroConfig(state.gyroEnabled, it)
+            },
+            onDismiss = { showGyroSheet = false }
         )
     }
 }
@@ -1429,5 +1492,94 @@ private fun CompanionSettingRow(
             )
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+// ---------- 陀螺仪注视/视差 ----------
+
+/** 陀螺仪灵敏度档位（百分比 → 标签） */
+private val GYRO_GAIN_OPTIONS = listOf(
+    60 to "轻",
+    100 to "标准",
+    160 to "灵敏"
+)
+
+/**
+ * 陀螺仪注视/视差设置弹层：开关 + 灵敏度档位。
+ * 生效链路：DataStore → VM State → LaunchedEffect 下发 setGyro（即时生效，
+ * 无需重建渲染端）；倾斜信号本身由 GyroFocusController 以 ~16Hz 持续下发。
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun GyroSettingsSheet(
+    enabled: Boolean,
+    gainPercent: Int,
+    onEnabledChange: (Boolean) -> Unit,
+    onGainChange: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = AppSpacing.Screen.Horizontal)
+                .padding(bottom = AppSpacing.Xl)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Rounded.Explore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(AppSpacing.Xs))
+                Text(
+                    "陀螺仪注视",
+                    style = AppTypography.TitleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(Modifier.height(AppSpacing.Xs))
+            Text(
+                "倾斜设备时，模型的视线与位置朝倾斜方向轻微跟随；指针交互期间自动让位",
+                style = AppTypography.CaptionSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = AppSpacing.Md)
+            )
+            CompanionSettingRow(
+                icon = { Icon(Icons.Rounded.Explore, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) },
+                title = "启用陀螺仪注视",
+                subtitle = "无需额外权限，退后台自动停止",
+                checked = enabled,
+                onCheckedChange = onEnabledChange
+            )
+            if (enabled) {
+                Text(
+                    "跟随灵敏度",
+                    style = AppTypography.LabelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = AppSpacing.Sm, bottom = AppSpacing.Sm)
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm),
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+                ) {
+                    GYRO_GAIN_OPTIONS.forEach { (percent, label) ->
+                        val selected = percent == gainPercent
+                        AssistChip(
+                            onClick = { onGainChange(percent) },
+                            label = { Text(label, style = AppTypography.LabelMedium) },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = if (selected) MaterialTheme.colorScheme.tertiaryContainer
+                                else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                labelColor = if (selected) MaterialTheme.colorScheme.onTertiaryContainer
+                                else MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 }

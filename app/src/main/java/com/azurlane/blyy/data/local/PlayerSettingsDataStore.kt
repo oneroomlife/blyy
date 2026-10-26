@@ -111,6 +111,10 @@ class PlayerSettingsDataStore @Inject constructor(
         private val LIVE2D_COMPANION_SHOW_CLOCK_KEY = booleanPreferencesKey("live2d_companion_show_clock")
         private val LIVE2D_COMPANION_SHOW_BATTERY_KEY = booleanPreferencesKey("live2d_companion_show_battery")
 
+        // Live2D 查看器陀螺仪注视/视差：开关 + 灵敏度（百分比）
+        private val LIVE2D_GYRO_ENABLED_KEY = booleanPreferencesKey("live2d_gyro_enabled")
+        private val LIVE2D_GYRO_GAIN_KEY = intPreferencesKey("live2d_gyro_gain_percent")
+
         // 自动检测更新
         private val AUTO_CHECK_UPDATE_ENABLED_KEY = booleanPreferencesKey("auto_check_update_enabled")
         private val SKIPPED_UPDATE_VERSION_KEY = stringPreferencesKey("skipped_update_version")
@@ -187,6 +191,11 @@ class PlayerSettingsDataStore @Inject constructor(
 
         /** 档案缓存过期时间：5 分钟（毫秒） */
         const val ARCHIVE_CACHE_EXPIRY_MS = 5 * 60 * 1000L
+
+        /** 陀螺仪灵敏度百分比边界与默认值 */
+        const val GYRO_GAIN_MIN = 40
+        const val GYRO_GAIN_MAX = 220
+        const val GYRO_GAIN_DEFAULT = 100
     }
 
     /**
@@ -341,6 +350,14 @@ class PlayerSettingsDataStore @Inject constructor(
     /** Live2D 查看器陪伴模式：右下角显示设备电量，默认开启 */
     val live2dCompanionShowBattery: Flow<Boolean> =
         safeData.map { it[LIVE2D_COMPANION_SHOW_BATTERY_KEY] ?: true }
+
+    /** Live2D 查看器陀螺仪注视/视差：默认开启（幅值轻微不抢戏，可在陪伴设置中关闭） */
+    val live2dGyroEnabled: Flow<Boolean> =
+        safeData.map { it[LIVE2D_GYRO_ENABLED_KEY] ?: true }
+
+    /** Live2D 查看器陀螺仪灵敏度（百分比，40..220），默认 100 */
+    val live2dGyroGainPercent: Flow<Int> =
+        safeData.map { (it[LIVE2D_GYRO_GAIN_KEY] ?: GYRO_GAIN_DEFAULT).coerceIn(GYRO_GAIN_MIN, GYRO_GAIN_MAX) }
 
     /** 自动检测更新开关，默认开启 */
     val autoCheckUpdateEnabled: Flow<Boolean> = safeData.map { it[AUTO_CHECK_UPDATE_ENABLED_KEY] ?: true }
@@ -526,6 +543,14 @@ class PlayerSettingsDataStore @Inject constructor(
             prefs[LIVE2D_COMPANION_INTERVAL_SEC_KEY] = intervalSec.coerceIn(30, 1800)
             prefs[LIVE2D_COMPANION_SHOW_CLOCK_KEY] = showClock
             prefs[LIVE2D_COMPANION_SHOW_BATTERY_KEY] = showBattery
+        }
+    }
+
+    /** 陀螺仪注视/视差两选项一次落盘（灵敏度钳制到 GYRO_GAIN_MIN..MAX） */
+    suspend fun setLive2dGyroConfig(enabled: Boolean, gainPercent: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[LIVE2D_GYRO_ENABLED_KEY] = enabled
+            prefs[LIVE2D_GYRO_GAIN_KEY] = gainPercent.coerceIn(GYRO_GAIN_MIN, GYRO_GAIN_MAX)
         }
     }
 
