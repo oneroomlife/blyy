@@ -32,7 +32,7 @@ object AppModule {
             "blhx_db"
         )
             // 显式注册已知升级路径，避免破坏性迁移清库
-            .addMigrations(DatabaseMigrations.MIGRATION_7_8)
+            .addMigrations(DatabaseMigrations.MIGRATION_7_8, DatabaseMigrations.MIGRATION_8_9)
             // 安全网：仅当未来版本遗漏 Migration 时兜底（避免升级崩溃），
             // 正常升级路径因已注册 Migration 不会触发此处。
             .fallbackToDestructiveMigration()

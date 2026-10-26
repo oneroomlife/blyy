@@ -9,6 +9,9 @@ abstract class ShipDao {
     @Query("SELECT * FROM ships ORDER BY name ASC")
     abstract fun getAllShips(): Flow<List<Ship>>
 
+    /** ships 表 name + birthday 投影（upsert 前读取已有生日用于保留） */
+    data class NameBirthday(val name: String, val birthday: String)
+
     @Query("SELECT * FROM ships WHERE isFavorite = 1 ORDER BY name ASC")
     abstract fun getFavoriteShips(): Flow<List<Ship>>
 
@@ -60,6 +63,10 @@ abstract class ShipDao {
     @Query("SELECT name FROM ships WHERE isFavorite = 1 AND archiveType = :archiveType")
     abstract suspend fun getFavoriteNamesByArchiveType(archiveType: String): List<String>
 
+    /** 已有非空生日的 name → birthday 映射（upsert 保留用，避免 REPLACE 抹掉回填值） */
+    @Query("SELECT name, birthday FROM ships WHERE archiveType = :archiveType AND birthday != ''")
+    abstract suspend fun getBirthdaysByArchiveType(archiveType: String): List<NameBirthday>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertAll(ships: List<Ship>)
 
@@ -68,8 +75,17 @@ abstract class ShipDao {
         if (ships.isEmpty()) return
         val archiveType = ships.first().archiveType
         val favorites = getFavoriteNamesByArchiveType(archiveType).toSet()
-        val shipsToUpsert = ships.map {
-            if (it.name in favorites) it.copy(isFavorite = true) else it
+        // OnConflictStrategy.REPLACE 是"删旧插新"，不在新对象里的列会丢——
+        // 收藏状态与生日都必须从库里带回后再写
+        val birthdays = getBirthdaysByArchiveType(archiveType)
+            .associate { it.name to it.birthday }
+        val shipsToUpsert = ships.map { ship ->
+            var merged = if (ship.name in favorites) ship.copy(isFavorite = true) else ship
+            val existingBirthday = birthdays[ship.name]
+            if (existingBirthday != null && ship.birthday != existingBirthday) {
+                merged = merged.copy(birthday = existingBirthday)
+            }
+            merged
         }
         insertAll(shipsToUpsert)
     }
@@ -109,6 +125,25 @@ abstract class ShipDao {
 
     @Query("UPDATE ships SET isFavorite = :isFav WHERE name = :name AND archiveType = :archiveType")
     abstract suspend fun updateFavorite(name: String, archiveType: String, isFav: Boolean)
+
+    /**
+     * 生日回填：仅当库内值与名单值不同才写（名单是唯一权威源，且未知名单舰不受影响）。
+     * 条件更新让重复调用天然幂等，不触发 Room 无效化监听器的无谓重发射。
+     */
+    @Query("UPDATE ships SET birthday = :birthday WHERE name = :name AND archiveType = 'DOCK' AND birthday != :birthday")
+    abstract suspend fun updateDockBirthdayIfChanged(name: String, birthday: String)
+
+    @Transaction
+    open suspend fun seedDockBirthdays(birthdays: Map<String, String>) {
+        if (birthdays.isEmpty()) return
+        birthdays.forEach { (name, birthday) ->
+            updateDockBirthdayIfChanged(name, birthday)
+        }
+    }
+
+    /** 有生日数据的 DOCK 舰娘（日历页数据源，收藏/头像等字段随行携带） */
+    @Query("SELECT * FROM ships WHERE archiveType = 'DOCK' AND birthday != '' ORDER BY name ASC")
+    abstract fun getDockShipsWithBirthday(): Flow<List<Ship>>
 
     @Query("DELETE FROM ships WHERE archiveType = :archiveType")
     abstract suspend fun deleteByArchiveType(archiveType: String)

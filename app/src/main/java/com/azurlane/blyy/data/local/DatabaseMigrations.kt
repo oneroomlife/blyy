@@ -28,4 +28,17 @@ object DatabaseMigrations {
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_guess_history_mode` ON `guess_history` (`mode`)")
         }
     }
+
+    /**
+     * v8 → v9：为 ships 表补充 birthday 生日列（"MM-DD" 零填充格式，空 = 未知）。
+     *
+     * 仅加列，数据完整保留；列值由打包的静态名单 assets/blhx_birthdays.json
+     * 在运行期回填（见 ShipRepository.ensureDockBirthdaysSeeded），
+     * 迁移本身不携带数据，保持 Migration 纯结构变更的约定。
+     */
+    val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `ships` ADD COLUMN `birthday` TEXT NOT NULL DEFAULT ''")
+        }
+    }
 }

@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import javax.inject.Inject
@@ -33,6 +34,9 @@ import com.azurlane.blyy.widget.WidgetSync
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "ShipRepository"
+
+/** 打包的静态生日名单（assets 根目录，scripts/_fetch_birthdays.py 离线生成） */
+private const val BIRTHDAYS_ASSET = "blhx_birthdays.json"
 
 /**
  * 语音数据解析结果（[ShipRepository.fetchVoices] 返回值）。
@@ -191,6 +195,11 @@ class ShipRepository @Inject constructor(
                 shipDao.upsertShips(ships)
                 // 删除本地已不存在的舰船，保持数据库整洁（限定 archiveType 避免误删学生记录）
                 shipDao.deleteStaleShips(archiveType.name, ships.map { it.name })
+                // 档案刷新后回填生日（覆盖 upsert 新增的空生日行；仅写差异行，幂等）
+                if (archiveType == ArchiveType.DOCK) {
+                    runCatching { seedDockBirthdaysIfNeeded() }
+                        .onFailure { Log.w(TAG, "生日回填失败（不影响档案数据）", it) }
+                }
                 Log.d(TAG, "Successfully refreshed ${ships.size} ships")
                 // 图鉴从空到有/内容变化影响「今日推荐舰娘」候选池，同步刷新桌面小组件
                 if (archiveType == ArchiveType.DOCK) {
@@ -204,8 +213,45 @@ class ShipRepository @Inject constructor(
         )
     }
 
-    private fun formatUrl(url: String): String {
-        if (url.isEmpty()) return ""
+    // ---------- 生日静态名单回填 ----------
+
+    private val birthdayJson = Json { ignoreUnknownKeys = true }
+
+    @Volatile
+    private var cachedBirthdays: Map<String, String>? = null
+    private val birthdayMutex = Mutex()
+
+    /**
+     * 读取打包的静态生日名单（assets/blhx_birthdays.json，舰名 → "MM-DD"）。
+     * 进程内缓存一次；文件缺失/损坏返回空表（生日功能整体静默降级，不影响其他功能）。
+     */
+    suspend fun loadPackagedBirthdays(): Map<String, String> {
+        cachedBirthdays?.let { return it }
+        return withContext(Dispatchers.IO) {
+            birthdayMutex.withLock {
+                cachedBirthdays?.let { return@withContext it }
+                val map = runCatching {
+                    context.assets.open(BIRTHDAYS_ASSET).bufferedReader(Charsets.UTF_8).use { reader ->
+                        birthdayJson.decodeFromString<Map<String, String>>(reader.readText())
+                    }
+                }.onFailure {
+                    Log.w(TAG, "读取生日名单失败（功能降级为无生日）", it)
+                }.getOrDefault(emptyMap())
+                cachedBirthdays = map
+                map
+            }
+        }
+    }
+
+    /** 把静态名单回填进 ships 表（仅写差异行）。档案刷新与生日日历打开时调用 */
+    suspend fun seedDockBirthdaysIfNeeded() {
+        val map = loadPackagedBirthdays()
+        if (map.isNotEmpty()) {
+            shipDao.seedDockBirthdays(map)
+        }
+    }
+
+    private fun formatUrl(url: String): String {        if (url.isEmpty()) return ""
         var res = when {
             url.startsWith("//") -> "https:$url"
             url.startsWith("/") -> "https://wiki.biligame.com$url"

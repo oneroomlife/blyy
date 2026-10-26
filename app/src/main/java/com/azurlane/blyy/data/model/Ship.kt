@@ -29,5 +29,9 @@ data class Ship(
     val archiveType: String = "DOCK", // DOCK or STUDENT
     val isFavorite: Boolean = false, // 用户收藏状态
     // 学生档案 14 维筛选数据（JSON 格式，仅 STUDENT 有效；DOCK 为空字符串）
-    val filterData: String = ""
+    val filterData: String = "",
+    // 生日（"MM-DD" 零填充格式，空 = 未知）。数据源为打包的静态名单
+    // assets/blhx_birthdays.json（wiki「舰船生日」聚合页离线抓取），
+    // 由 BirthdaySeed 首次运行/档案刷新时回填，wiki 在线刷新不覆盖已有值
+    val birthday: String = ""
 )

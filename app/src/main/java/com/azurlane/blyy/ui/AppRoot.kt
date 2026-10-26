@@ -68,6 +68,7 @@ import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.AssistantScreen
 import com.azurlane.blyy.ui.screens.AvatarCropScreen
 import com.azurlane.blyy.ui.screens.AvatarFigurePickerScreen
+import com.azurlane.blyy.ui.screens.birthday.BirthdayCalendarScreen
 import com.azurlane.blyy.ui.screens.ConversationListScreen
 import com.azurlane.blyy.ui.screens.GalleryScreen
 import com.azurlane.blyy.ui.screens.GuessByImageScreen
@@ -167,6 +168,7 @@ fun AppContent() {
             currentDestination?.route != "jiuxin_conversation_list" &&
             currentDestination?.route != "app_icon_settings" &&
             currentDestination?.route != "sd_resource_gallery" &&
+            currentDestination?.route != "birthday_calendar" &&
             currentDestination?.route?.startsWith("image_cropper") != true &&
             currentDestination?.route != "watermark_camera" &&
             currentDestination?.route?.startsWith("watermark_editor") != true
@@ -820,6 +822,15 @@ fun AppContent() {
                                 secretaryViewModel.onIntent(SecretaryShipIntent.SetSdResourceId(resourceId))
                             },
                             onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable("birthday_calendar") {
+                        BirthdayCalendarScreen(
+                            onBack = { navController.popBackStack() },
+                            onOpenVoice = { shipName, avatarUrl ->
+                                // 与船坞入口一致：舰名不编码（路径段直拼），头像 URL 编码
+                                navController.navigate("voice/$shipName?avatarUrl=${Uri.encode(avatarUrl)}")
+                            }
                         )
                     }
                     composable("live2d") {

@@ -53,6 +53,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Cake
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.History
@@ -426,6 +427,14 @@ internal fun ModernDrawerSheet(
             icon = Icons.Rounded.ViewInAr,
             description = "导入并查看本地 Live2D 模型",
             color = MaterialTheme.colorScheme.tertiary,
+            group = "娱乐"
+        ),
+        DrawerMenuItem(
+            route = "birthday_calendar",
+            label = "生日日历",
+            icon = Icons.Rounded.Cake,
+            description = "查看舰娘生日与近期寿星",
+            color = MaterialTheme.colorScheme.primary,
             group = "娱乐"
         ),
         DrawerMenuItem(
