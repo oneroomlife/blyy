@@ -50,6 +50,27 @@ import kotlin.math.min
 private const val TAG = "SpineSdView"
 
 /**
+ * [SpineSdView] 的外部控制器：查看器用它切换动作，而不必重建渲染视图。
+ *
+ * 由 Composable 在视图就绪后接线（内部持有 GLSurfaceView 引用），
+ * 未接线时调用是空操作，不会崩溃。
+ */
+class SpineSdController {
+    internal var playAnimation: ((String) -> Unit)? = null
+    internal var randomAction: (() -> Unit)? = null
+
+    /** 播放指定动画（idle 类循环，其余播放一次后回 idle） */
+    fun play(name: String) {
+        playAnimation?.invoke(name)
+    }
+
+    /** 触发一次随机动作 */
+    fun random() {
+        randomAction?.invoke()
+    }
+}
+
+/**
  * Spine SD 小人 Compose 渲染组件。
  *
  * 在 [AndroidView] 内嵌一个 [GLSurfaceView]，使用 OpenGL ES 2.0 上下文渲染 Spine 3.8.99
@@ -71,6 +92,8 @@ private const val TAG = "SpineSdView"
  * @param scaleMultiplier 缩放倍率（1.0 = 默认自适应到视口 95%，0.5 = 半尺寸，1.5 = 放大 50%）；
  *   通过 AndroidView update 实时生效，无需重建 GLSurfaceView
  * @param onTap 点击小人回调（在 UI 线程触发，用于播放语音等）
+ * @param onLoaded 资源加载完成后回调**全部动画名**（主线程），供查看器列出动作按钮
+ * @param controller 外部控制器（可选）：手动播放指定动画 / 触发随机动作
  */
 @Composable
 fun SpineSdView(
@@ -83,7 +106,9 @@ fun SpineSdView(
     onTap: (() -> Unit)? = null,
     onDragStart: (() -> Unit)? = null,
     onDrag: ((dx: Float, dy: Float) -> Unit)? = null,
-    onDragEnd: (() -> Unit)? = null
+    onDragEnd: (() -> Unit)? = null,
+    onLoaded: ((List<String>) -> Unit)? = null,
+    controller: SpineSdController? = null
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -106,7 +131,8 @@ fun SpineSdView(
                 onTap = onTap,
                 onDragStart = onDragStart,
                 onDrag = onDrag,
-                onDragEnd = onDragEnd
+                onDragEnd = onDragEnd,
+                onLoaded = onLoaded
             ).also { viewRef.value = it }
         },
         update = { view ->
@@ -123,6 +149,19 @@ fun SpineSdView(
         },
         modifier = modifier
     )
+
+    // 控制器接线：把外部调用转发到 GL 线程（切换动画无需重建渲染上下文）
+    DisposableEffect(controller, viewRef.value) {
+        val view = viewRef.value
+        if (controller != null && view != null) {
+            controller.playAnimation = { name -> view.playAnimationNamed(name) }
+            controller.randomAction = { view.triggerRandomAction() }
+        }
+        onDispose {
+            controller?.playAnimation = null
+            controller?.randomAction = null
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = object : DefaultLifecycleObserver {
@@ -155,7 +194,8 @@ private class SpineSdGlSurfaceView(
     private val onTap: (() -> Unit)?,
     private val onDragStart: (() -> Unit)?,
     private val onDrag: ((Float, Float) -> Unit)?,
-    private val onDragEnd: (() -> Unit)?
+    private val onDragEnd: (() -> Unit)?,
+    onLoaded: ((List<String>) -> Unit)? = null
 ) : GLSurfaceView(ctx) {
 
     /** 缩放倍率，可实时更新（由 AndroidView update 回调设置），每帧由 SpineRenderer 读取 */
@@ -193,7 +233,10 @@ private class SpineSdGlSurfaceView(
         dirPath,
         assetName,
         scaleProvider = { scaleMultiplier },
-        viewSizeProvider = { liveWidth to liveHeight }
+        viewSizeProvider = { liveWidth to liveHeight },
+        onLoaded = onLoaded?.let { callback ->
+            { names -> Handler(Looper.getMainLooper()).post { callback(names) } }
+        }
     )
 
     /**
@@ -217,6 +260,16 @@ private class SpineSdGlSurfaceView(
      */
     fun reloadAsset(newDirPath: String, newAssetName: String) {
         queueEvent { spineRenderer.reloadAsset(newDirPath, newAssetName) }
+    }
+
+    /** 播放指定动画（外部控制器用；GL 线程执行） */
+    fun playAnimationNamed(name: String) {
+        queueEvent { spineRenderer.playAnimation(name) }
+    }
+
+    /** 触发一次随机 action 动画（外部控制器用；GL 线程执行） */
+    fun triggerRandomAction() {
+        queueEvent { spineRenderer.triggerRandomAction() }
     }
 
     init {
@@ -428,7 +481,9 @@ private class SpineRenderer(
      * 绕过 onSurfaceChanged 的异步延迟，确保骨骼始终居中渲染。
      * 返回 (0, 0) 时回退到 onSurfaceChanged 的缓存值（首次渲染前 layout 未完成）。
      */
-    private val viewSizeProvider: () -> Pair<Int, Int>
+    private val viewSizeProvider: () -> Pair<Int, Int>,
+    /** 资源加载完成后回调动画名（GL 线程；调用方负责切主线程） */
+    private val onLoaded: ((List<String>) -> Unit)? = null
 ) : GLSurfaceView.Renderer {
 
     /** 当前 Spine 资源目录路径（@Volatile 支持 GL 线程热重载时读取最新值） */
@@ -651,6 +706,7 @@ private class SpineRenderer(
             Log.i(TAG, "Loaded Spine asset=$currentAssetName, all=${allAnimationNames.size} " +
                 "animations, idle=$availableIdleNames, drag=$availableDragNames, " +
                 "action=$actionAnimationNames")
+            onLoaded?.invoke(allAnimationNames)
 
             // 创建 AnimationState，设置默认混合过渡（0.2s 平滑切换）
             val stateData = AnimationStateData(skeletonData).apply {
@@ -820,6 +876,24 @@ private class SpineRenderer(
         b.begin()
         rend.draw(b, skel)
         b.end()
+    }
+
+    /**
+     * 播放指定动画（GL 线程调用）。
+     *
+     * idle 类动画循环播放；其余动画播放一次后回到随机 idle，与点击交互语义一致。
+     */
+    fun playAnimation(name: String) {
+        val state = animState ?: return
+        val idle = name in idleAnimationNames
+        val idleName = availableIdleNames.random()
+        state.setAnimation(0, name, idle)
+        if (!idle) {
+            state.addAnimation(0, idleName, true, 0f)
+            isPlayingAction = true
+        } else {
+            isPlayingAction = false
+        }
     }
 
     /**

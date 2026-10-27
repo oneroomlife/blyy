@@ -93,7 +93,8 @@ app/src/main/java/com/azurlane/blyy/
 │   │   ├── AssistantConfigScreen.kt
 │   │   ├── JiuxinChatScreen.kt
 │   │   ├── JiuxinConfigScreen.kt
-│   │   ├── live2d/              # Live2D 皮肤库（模型库 + 查看器）
+│   │   ├── live2d/              # Live2D 皮肤库（本地导入 + 模型库 + 查看器）
+│   │   ├── gameimport/          # 游戏资源导入（Live2D/SD/动态皮肤/立绘，独立功能）
 │   │   │   ├── Live2dLibraryScreen.kt
 │   │   │   └── Live2dViewerScreen.kt
 │   │   ├── GalleryScreen.kt

@@ -17,6 +17,8 @@ work = "2.11.1"
 navigation = "2.9.7"
 kotlinxSerialization = "1.10.0"
 coil = "2.7.0"
+# Shizuku API / provider（ADB 权限访问 Android/data 下的游戏资源）
+shizuku = "13.1.5"
 lifecycle = "2.10.0"
 room = "2.8.4"
 datastore = "1.2.0"
@@ -88,6 +90,10 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camerax" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camerax" }
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
+
+# Shizuku：api 提供 Shizuku.* 静态入口，provider 提供权限授权界面所需的 ContentProvider
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

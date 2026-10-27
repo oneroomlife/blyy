@@ -39,6 +39,8 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // Shizuku UserService 需要 AIDL 生成 IInterface.Stub
+        aidl = true
     }
 
     lint {
@@ -192,6 +194,14 @@ dependencies {
      *  pinyin4j 用于将舰娘中文名（如"博格"）转换为无声调拼音（如"boge"），
      *  与用户导入的 SD 资源目录名匹配。轻量纯 Java 实现，无 native 依赖。 */
     implementation("com.belerweb:pinyin4j:2.5.1")
+
+    /** ---------------- Shizuku（读取游戏私有目录） ----------------
+     *  碧蓝航线把 Live2D 资源包放在 Android/data/com.bilibili.azurlane/files/AssetBundles 下，
+     *  普通应用无权限读取；通过 Shizuku（ADB 身份）绑定 UserService 后即可列出目录、
+     *  并以 shell 身份把资源包写入本应用目录。
+     *  api：Shizuku 静态入口；provider：权限授权所需的 ContentProvider（Manifest 注册）。 */
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
 
     /** ---------------- 测试 ---------------- */
     testImplementation(libs.junit)

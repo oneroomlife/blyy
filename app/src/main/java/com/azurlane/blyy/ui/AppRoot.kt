@@ -93,6 +93,8 @@ import com.azurlane.blyy.ui.screens.StudentGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
 import com.azurlane.blyy.ui.screens.WatermarkCameraScreen
 import com.azurlane.blyy.ui.screens.WatermarkEditorScreen
+import com.azurlane.blyy.ui.screens.gameimport.GameAssetViewerScreen
+import com.azurlane.blyy.ui.screens.gameimport.GameImportScreen
 import com.azurlane.blyy.ui.screens.live2d.Live2dLibraryScreen
 import com.azurlane.blyy.ui.screens.live2d.Live2dViewerScreen
 import com.azurlane.blyy.ui.theme.AppAnimation
@@ -160,6 +162,8 @@ fun AppContent() {
             currentDestination?.route?.startsWith("avatar_") != true &&
             currentDestination?.route != "settings" &&
             currentDestination?.route?.startsWith("live2d") != true &&
+            // 游戏资源导入：与 Live2D 皮肤库一致，整段功能页都不显示底部导航
+            currentDestination?.route?.startsWith("gameimport") != true &&
             currentDestination?.route != "assistant" &&
             currentDestination?.route != "assistant_config" &&
             currentDestination?.route != "jiuxin_config" &&
@@ -286,7 +290,8 @@ fun AppContent() {
             drawerState = drawerState,
             // Live2D 查看器内横向拖动用于平移模型：关闭抽屉边缘手势，
             // 否则从左边缘起手的拖动会被抽屉抢走并弹出菜单栏
-            gesturesEnabled = currentDestination?.route?.startsWith("live2d/view") != true,
+            gesturesEnabled = currentDestination?.route?.startsWith("live2d/view") != true &&
+                currentDestination?.route?.startsWith("gameimport/view") != true,
             drawerContent = {
                 ModernDrawerSheet(
                     currentRoute = currentDestination?.route,
@@ -841,8 +846,51 @@ fun AppContent() {
                                 navController.navigate(
                                     "live2d/view/${Uri.encode(modelId)}?name=${Uri.encode(displayName)}"
                                 )
+                            },
+                            // 游戏资源包导入已独立成单独功能，这里只做入口跳转
+                            onOpenGameBundles = {
+                                navController.navigate("gameimport?kind=live2d")
                             }
                         )
+                    }
+                    // ---- 游戏资源导入（独立功能：Live2D / SD 小人 / 动态皮肤 / 静态立绘）----
+                    composable(
+                        route = "gameimport?kind={kind}",
+                        arguments = listOf(
+                            navArgument("kind") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            }
+                        )
+                    ) { backStackEntry ->
+                        val kindKey = backStackEntry.arguments?.getString("kind")
+                        GameImportScreen(
+                            onBack = { navController.popBackStack() },
+                            onOpenLive2d = { assetId, name ->
+                                navController.navigate(
+                                    "live2d/view/${Uri.encode(assetId)}?name=${Uri.encode(name)}"
+                                )
+                            },
+                            onOpenAsset = { kind, assetId, name ->
+                                navController.navigate(
+                                    "gameimport/view/${kind.key}/${Uri.encode(assetId)}?name=${Uri.encode(name)}"
+                                )
+                            },
+                            initialKind = com.azurlane.blyy.util.gameimport.GameAssetKind.fromKey(kindKey)
+                        )
+                    }
+                    composable(
+                        route = "gameimport/view/{kind}/{assetId}?name={name}",
+                        arguments = listOf(
+                            navArgument("kind") { type = NavType.StringType },
+                            navArgument("assetId") { type = NavType.StringType },
+                            navArgument("name") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            }
+                        )
+                    ) {
+                        GameAssetViewerScreen(onBack = { navController.popBackStack() })
                     }
                     composable(
                         route = "live2d/view/{modelId}?name={name}",
@@ -903,7 +951,8 @@ fun AppContent() {
                     secretaryState.webChibiUrl.isNotEmpty() ||
                     secretaryState.sdResourceId.isNotEmpty()
                 val currentRoute = currentDestination?.route
-                val routeAllowsChibi = currentRoute?.startsWith("live2d") != true
+                val routeAllowsChibi = currentRoute?.startsWith("live2d") != true &&
+                    currentRoute?.startsWith("gameimport/view") != true
                 if (hasChibiContent && !overlayEnabledForChibi && routeAllowsChibi) {
                     SecretaryChibiOverlay(
                         figureUrl = secretaryState.figureUrl,

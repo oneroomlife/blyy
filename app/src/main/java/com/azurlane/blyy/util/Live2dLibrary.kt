@@ -25,7 +25,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class Live2dLibrary @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val avatarAssets: AvatarAssetIndex
 ) {
     companion object {
         private const val TAG = "Live2dLibrary"
@@ -34,20 +35,24 @@ class Live2dLibrary @Inject constructor(
         private const val MODEL3_EXT = ".model3.json"
         private const val MAX_SCAN_DEPTH = 4
 
-    /** id 尾部皮肤序号后缀（如 "2" / "12"，输入为 substringAfterLast('_') 的结果） */
-    private val BARE_SKIN_INDEX_REGEX = Regex("""^[0-9]{1,2}$""")
     }
 
     private val json = Json { ignoreUnknownKeys = true }
-
-    /** assets/blhx_avatar 文件名缓存（懒加载，999 个条目，仅字符串名） */
-    @Volatile
-    private var avatarNames: Set<String>? = null
 
     fun rootDir(): File {
         val external = context.getExternalFilesDir(null)
         val base = external ?: context.filesDir
         return File(base, ROOT_DIR_NAME).apply { if (!exists()) mkdirs() }
+    }
+
+    /**
+     * 提取暂存目录：与 rootDir 同分区（保证 rename 原子移动），且位于 live2d 根之外，
+     * 这样解包过程中的半成品不会被 [scan] 当成坏模型目录。
+     */
+    fun stagingDir(): File {
+        val external = context.getExternalFilesDir(null)
+        val base = external ?: context.filesDir
+        return File(base, ".live2d_staging").apply { if (!exists()) mkdirs() }
     }
 
     fun thumbsDir(): File = File(rootDir(), THUMBS_DIR_NAME).apply { if (!exists()) mkdirs() }
@@ -115,6 +120,38 @@ class Live2dLibrary @Inject constructor(
         val ok = dir.deleteRecursively()
         thumbFileFor(id).delete()
         ok
+    }
+
+    /**
+     * 批量删除。
+     *
+     * 逐个删除并统计：单个目录删失败（文件被占用 / 权限）不中断整批，
+     * 返回 [BatchDeleteResult] 供界面如实汇报「成功 N 个、失败 M 个」，
+     * 避免"点了删除但部分还在"的静默不一致。
+     *
+     * @param ids 模型 id 集合（会自动去重、剔除非法 id）
+     */
+    suspend fun deleteAll(ids: Collection<String>): BatchDeleteResult = withContext(Dispatchers.IO) {
+        val targets = ids.asSequence().distinct().filter { isValidId(it) }.toList()
+        var deleted = 0
+        var freedBytes = 0L
+        val failed = mutableListOf<Pair<String, String>>()
+        for (id in targets) {
+            val dir = File(rootDir(), id)
+            val size = runCatching {
+                dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            }.getOrDefault(0L)
+            val ok = runCatching { dir.deleteRecursively() }.getOrDefault(false)
+            if (ok || !dir.exists()) {
+                thumbFileFor(id).delete()
+                deleted++
+                freedBytes += size
+            } else {
+                failed += id to "删除失败（文件可能被占用）"
+            }
+        }
+        Log.i(TAG, "批量删除：成功 $deleted，失败 ${failed.size}，释放 $freedBytes 字节")
+        BatchDeleteResult(deleted, freedBytes, failed)
     }
 
     /**
@@ -269,28 +306,24 @@ class Live2dLibrary @Inject constructor(
 
     /**
      * 模型 id → 内置舰娘头像资产兜底。
-     * 模型目录普遍沿用拼音命名（如 aierdeliqi_4），去掉 `_N` 皮肤序号后缀，
-     * 与 assets/blhx_avatar 的无声调全拼文件名匹配（aierdeliqi.webp）。
+     * 目录普遍沿用拼音命名（如 aierdeliqi_4），去掉 `_N` 皮肤序号 / 形态后缀后
+     * 与 assets/blhx_avatar 的无声调全拼文件名匹配（规则见 [AvatarAssetIndex]）。
      */
-    private fun resolveAvatarAsset(id: String): String? {
-        val lastIndex = id.lastIndexOf('_')
-        val possibleIndex = if (lastIndex >= 0) id.substring(lastIndex + 1) else ""
-        val base = if (BARE_SKIN_INDEX_REGEX.matches(possibleIndex)) {
-            id.substring(0, lastIndex)
-        } else {
-            id
-        }.lowercase()
-        if (base.isEmpty()) return null
-        val names = avatarNames ?: synchronized(this) {
-            avatarNames ?: run {
-                val set = runCatching {
-                    context.assets.list("blhx_avatar")?.toSet() ?: emptySet()
-                }.getOrDefault(emptySet())
-                avatarNames = set
-                set
-            }
-        }
-        val hit = setOfNotNull("$base.webp", "$base.png", "$base.jpg").firstOrNull { it in names }
-        return hit
-    }
+    private fun resolveAvatarAsset(id: String): String? = avatarAssets.resolve(id)
 }
+
+/**
+ * 批量删除结果。
+ *
+ * @param deleted 成功删除的模型数量
+ * @param freedBytes 释放的磁盘字节数（删除前统计，仅用于界面汇报）
+ * @param failed 失败明细：模型 id → 原因
+ */
+data class BatchDeleteResult(
+    val deleted: Int,
+    val freedBytes: Long,
+    val failed: List<Pair<String, String>>
+) {
+    val hasFailure: Boolean get() = failed.isNotEmpty()
+}
+

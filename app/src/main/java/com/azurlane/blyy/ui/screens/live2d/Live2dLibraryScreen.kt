@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
@@ -27,13 +28,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Animation
 import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Deselect
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -85,6 +91,7 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dModelInfo
+import com.azurlane.blyy.util.Live2dSelection
 import com.azurlane.blyy.viewmodel.Live2dIntent
 import com.azurlane.blyy.viewmodel.Live2dViewModel
 import java.util.Locale
@@ -105,7 +112,8 @@ import java.util.Locale
 @Composable
 fun Live2dLibraryScreen(
     onBack: () -> Unit,
-    onOpenViewer: (modelId: String, displayName: String) -> Unit
+    onOpenViewer: (modelId: String, displayName: String) -> Unit,
+    onOpenGameBundles: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val viewModel: Live2dViewModel = hiltViewModel()
@@ -121,6 +129,9 @@ fun Live2dLibraryScreen(
     var deleteTarget by remember { mutableStateOf<Live2dModelInfo?>(null) }
     var renameTarget by remember { mutableStateOf<Live2dModelInfo?>(null) }
     var renameText by remember { mutableStateOf("") }
+    // 批量删除二次确认（展示数量 + 占用空间，避免误触大规模删库）
+    var confirmBatchDelete by remember { mutableStateOf(false) }
+    val selectionMode = state.selecting
 
     // ── SAF 启动器：文件夹导入 ──
     val folderLauncher = rememberLauncherForActivityResult(
@@ -145,12 +156,32 @@ fun Live2dLibraryScreen(
         }
     }
 
+    // 批量删除结果横幅 8 秒后自动消失
+    LaunchedEffect(state.deleteResultText) {
+        if (state.deleteResultText != null) {
+            kotlinx.coroutines.delay(8000)
+            viewModel.onIntent(Live2dIntent.ConsumeDeleteResult)
+        }
+    }
+
     // 结果横幅 8 秒后自动消失
     LaunchedEffect(state.importResult) {
         if (state.importResult != null) {
             kotlinx.coroutines.delay(8000)
             viewModel.onIntent(Live2dIntent.ConsumeImportResult)
         }
+    }
+
+    // 从资源包页/查看器返回时刷新模型库（导入完成后列表立即可见，无需手动点刷新）
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.onIntent(Live2dIntent.Refresh)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val filteredModels = remember(state.models, searchQuery) {
@@ -163,35 +194,118 @@ fun Live2dLibraryScreen(
 
     AdaptiveScreenBackground {
         Column(Modifier.fillMaxSize()) {
-            BlyyTopBar(
-                title = "Live2D 皮肤",
-                subtitle = if (state.models.isEmpty()) "支持 Cubism 3/4 模型" else "已导入 ${state.models.size} 个模型",
-                onBackClick = onBack,
-                actions = {
-                    IconButton(onClick = {
+            if (selectionMode) {
+                // 多选模式顶栏：退出 / 已选统计 / 全选 / 删除
+                BlyyTopBar(
+                    title = if (state.selectedIds.isEmpty()) "选择模型" else "已选 ${state.selectedIds.size} 个",
+                    subtitle = if (state.selectedIds.isEmpty()) {
+                        "点按卡片选择要删除的模型"
+                    } else {
+                        "共 ${formatSize(state.selectedBytes)}"
+                    },
+                    onBackClick = {
                         haptic(BlyyHaptic.Tick)
-                        viewModel.onIntent(Live2dIntent.Refresh)
-                    }) {
-                        Icon(
-                            Icons.Rounded.Refresh,
-                            contentDescription = "刷新",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
+                        viewModel.onIntent(Live2dIntent.StopSelecting)
+                    },
+                    actions = {
+                        val allSelected = Live2dSelection.isAllSelected(
+                            state.selectedIds, filteredModels.map { it.id }
                         )
+                        IconButton(
+                            onClick = {
+                                haptic(BlyyHaptic.Tick)
+                                viewModel.onIntent(
+                                    Live2dIntent.SelectAll(
+                                        filteredModels.map { it.id }.toSet(),
+                                        !allSelected
+                                    )
+                                )
+                            },
+                            enabled = filteredModels.isNotEmpty()
+                        ) {
+                            Icon(
+                                if (allSelected) Icons.Rounded.Deselect else Icons.Rounded.SelectAll,
+                                contentDescription = if (allSelected) "取消全选" else "全选",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                haptic(BlyyHaptic.LongPress)
+                                confirmBatchDelete = true
+                            },
+                            enabled = state.selectedIds.isNotEmpty()
+                        ) {
+                            Icon(
+                                Icons.Rounded.DeleteOutline,
+                                contentDescription = "删除所选",
+                                tint = if (state.selectedIds.isEmpty()) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
                     }
-                    IconButton(onClick = {
-                        haptic(BlyyHaptic.Tick)
-                        showImportSheet = true
-                    }) {
-                        Icon(
-                            Icons.Rounded.Add,
-                            contentDescription = "导入模型",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
+                )
+            } else {
+                BlyyTopBar(
+                    title = "Live2D 皮肤",
+                    subtitle = if (state.models.isEmpty()) "支持 Cubism 3/4 模型" else "已导入 ${state.models.size} 个模型",
+                    onBackClick = onBack,
+                    actions = {
+                        // 模型数 ≥2 才提供多选（单个模型没必要进入多选模式）
+                        if (state.models.size >= 2) {
+                            IconButton(onClick = {
+                                haptic(BlyyHaptic.Tick)
+                                viewModel.onIntent(Live2dIntent.StartSelecting())
+                            }) {
+                                Icon(
+                                    Icons.Rounded.Checklist,
+                                    contentDescription = "多选管理",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(21.dp)
+                                )
+                            }
+                        }
+                        IconButton(onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            viewModel.onIntent(Live2dIntent.Refresh)
+                        }) {
+                            Icon(
+                                Icons.Rounded.Refresh,
+                                contentDescription = "刷新",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        IconButton(onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            showImportSheet = true
+                        }) {
+                            Icon(
+                                Icons.Rounded.Add,
+                                contentDescription = "导入模型",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        IconButton(onClick = {
+                            haptic(BlyyHaptic.Tick)
+                            onOpenGameBundles()
+                        }) {
+                            Icon(
+                                Icons.Rounded.CloudDownload,
+                                contentDescription = "从游戏资源包导入",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
-                }
-            )
+                )
+            }
 
             // 搜索（模型较多时才有意义）
             if (state.models.size >= 6) {
@@ -220,6 +334,15 @@ fun Live2dLibraryScreen(
                 ImportResultBanner(
                     result = result,
                     onDismiss = { viewModel.onIntent(Live2dIntent.ConsumeImportResult) }
+                )
+            }
+
+            // 批量删除结果横幅（成功/部分失败；独立于导入结果，语义更准确）
+            state.deleteResultText?.let { text ->
+                DeleteResultBanner(
+                    text = text,
+                    hasProblem = text.contains("删除失败"),
+                    onDismiss = { viewModel.onIntent(Live2dIntent.ConsumeDeleteResult) }
                 )
             }
 
@@ -299,16 +422,31 @@ fun Live2dLibraryScreen(
                         verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
                     ) {
                         items(filteredModels, key = { it.id }) { model ->
+                            val selected = model.id in state.selectedIds
                             Live2dModelCard(
                                 model = model,
                                 displayName = displayNameOf(model.id),
+                                selecting = selectionMode,
+                                selected = selected,
                                 onClick = {
-                                    haptic(BlyyHaptic.Tick)
-                                    onOpenViewer(model.id, displayNameOf(model.id))
+                                    if (selectionMode) {
+                                        // 多选模式：点按 = 勾选/取消，不进入查看器（避免误开模型）
+                                        haptic(BlyyHaptic.Tick)
+                                        viewModel.onIntent(Live2dIntent.ToggleSelected(model.id))
+                                    } else {
+                                        haptic(BlyyHaptic.Tick)
+                                        onOpenViewer(model.id, displayNameOf(model.id))
+                                    }
                                 },
                                 onLongClick = {
-                                    haptic(BlyyHaptic.LongPress)
-                                    detailModel = model
+                                    if (selectionMode) {
+                                        // 多选模式下长按 = 快捷单选/取消（长按进入批量对单个模型也顺手）
+                                        haptic(BlyyHaptic.Tick)
+                                        viewModel.onIntent(Live2dIntent.ToggleSelected(model.id))
+                                    } else {
+                                        haptic(BlyyHaptic.LongPress)
+                                        detailModel = model
+                                    }
                                 }
                             )
                         }
@@ -342,7 +480,7 @@ fun Live2dLibraryScreen(
                 ImportOptionCard(
                     icon = Icons.Rounded.FolderOpen,
                     title = "从文件夹导入",
-                    description = "选择包含一个或多个模型的文件夹（可直接选中整个 live2d 根目录）",
+                    description = "选择包含 Cubism 模型的文件夹（*.model3.json；游戏资源包请走「从游戏资源包导入」）",
                     enabled = state.importProgress == null,
                     onClick = {
                         showImportSheet = false
@@ -353,11 +491,22 @@ fun Live2dLibraryScreen(
                 ImportOptionCard(
                     icon = Icons.Rounded.Archive,
                     title = "从压缩包导入",
-                    description = "支持 .zip 压缩包，自动解包并识别其中的全部模型",
+                    description = "支持 .zip 压缩包，自动解包并识别其中的全部 Cubism 模型",
                     enabled = state.importProgress == null,
                     onClick = {
                         showImportSheet = false
                         zipLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                    }
+                )
+                Spacer(Modifier.height(AppSpacing.Md))
+                ImportOptionCard(
+                    icon = Icons.Rounded.CloudDownload,
+                    title = "从游戏资源包导入",
+                    description = "打开「游戏资源导入」：Shizuku 扫描 / 本地文件导入，自动识别 Live2D、SD 小人、动态皮肤与立绘",
+                    enabled = state.importProgress == null,
+                    onClick = {
+                        showImportSheet = false
+                        onOpenGameBundles()
                     }
                 )
             }
@@ -409,6 +558,42 @@ fun Live2dLibraryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+            }
+        )
+    }
+
+    // ── 批量删除确认 ──
+    if (confirmBatchDelete) {
+        val count = state.selectedIds.size
+        AlertDialog(
+            onDismissRequest = { confirmBatchDelete = false },
+            icon = {
+                Icon(
+                    Icons.Rounded.DeleteOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            title = { Text("删除所选的 $count 个模型？") },
+            text = {
+                Text(
+                    "共 ${formatSize(state.selectedBytes)} 将被永久删除，此操作不可恢复。",
+                    style = AppTypography.BodyMedium
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        haptic(BlyyHaptic.LongPress)
+                        viewModel.onIntent(Live2dIntent.DeleteSelected(state.selectedIds.toSet()))
+                        confirmBatchDelete = false
+                    }
+                ) {
+                    Text("删除 $count 个", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") }
             }
         )
     }
@@ -474,24 +659,37 @@ private fun secondaryTextColor(): Color = if (LocalIsDark.current) {
 private fun Live2dModelCard(
     model: Live2dModelInfo,
     displayName: String,
+    selecting: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
     val isDark = LocalIsDark.current
+    val accent = MaterialTheme.colorScheme.primary
+    // 选中态用主色描边加粗 + 轻微色染，未选中保持原设计语言
+    val borderColor = when {
+        selected -> accent
+        isDark -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+        else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+        color = if (selected) {
+            accent.copy(alpha = if (isDark) 0.16f else 0.10f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f)
+        },
         // color 加了 alpha 后 contentColorFor 无法按值匹配，必须显式指定内容色，
         // 否则标题回落到外层继承的暗灰内容色（暗色下可读性差）
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = AppElevation.Level2,
         // 暗色下深灰卡片与近黑背景对比低，亮描边勾出轮廓（浅色淡描边统一设计语言）
         border = BorderStroke(
-            width = AppSpacing.Border.Thin,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.4f)
+            width = if (selected) AppSpacing.Border.Thick else AppSpacing.Border.Thin,
+            color = borderColor
         )
     ) {
         Column {
@@ -530,6 +728,34 @@ private fun Live2dModelCard(
                             .size(52.dp)
                             .align(Alignment.Center)
                     )
+                }
+
+                // 多选勾选圈（固定在封面左上，与右上动作角标不冲突）
+                if (selecting) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(AppSpacing.Sm)
+                            .size(24.dp)
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Full))
+                            // 已选：主色实心 + 白勾；未选：半透明底 + 白描边空圈
+                            .background(if (selected) accent else Color(0x660F1826))
+                            .border(
+                                width = AppSpacing.Border.Thick,
+                                color = if (selected) accent else Color.White.copy(alpha = 0.7f),
+                                shape = RoundedCornerShape(AppSpacing.Corner.Full)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = "已选中",
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                 }
 
                 // 动作数量角标
@@ -706,6 +932,61 @@ private fun Live2dImporter.ImportResult.summaryText(): String {
 // ---------- 导入面板组件 ----------
 
 @OptIn(ExperimentalFoundationApi::class)
+/**
+ * 批量删除结果横幅。
+ *
+ * 与导入结果横幅分开：删除是"用户主动破坏性操作"，成功时应给中性/成功观感，
+ * 仅在存在失败明细时才用警告容器，避免把"已删除 15 个"渲染成报错。
+ */
+@Composable
+private fun DeleteResultBanner(
+    text: String,
+    hasProblem: Boolean,
+    onDismiss: () -> Unit
+) {
+    val semantics = LocalSemanticColors.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Sm),
+        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+        color = if (hasProblem) semantics.warningContainer else semantics.successContainer,
+        tonalElevation = AppElevation.Level1
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                start = AppSpacing.Md,
+                top = AppSpacing.Sm,
+                bottom = AppSpacing.Sm,
+                end = AppSpacing.Xs
+            ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                if (hasProblem) Icons.Rounded.WarningAmber else Icons.Rounded.Check,
+                contentDescription = null,
+                tint = if (hasProblem) semantics.onWarningContainer else semantics.onSuccessContainer,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.size(AppSpacing.Sm))
+            Text(
+                text = text,
+                style = AppTypography.CaptionMedium,
+                color = if (hasProblem) semantics.onWarningContainer else semantics.onSuccessContainer,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "关闭",
+                    tint = if (hasProblem) semantics.onWarningContainer else semantics.onSuccessContainer,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun ImportOptionCard(
     icon: ImageVector,

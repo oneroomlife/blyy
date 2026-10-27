@@ -1,0 +1,33 @@
+
+zhezhi_2.png
+size: 4096,4096
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+pma: true
+BG3
+  rotate: false
+  xy: 2, 484
+  size: 2868, 1401
+  orig: 2868, 1401
+  offset: 0, 0
+  index: -1
+beachchair 1
+  rotate: true
+  xy: 2, 1887
+  size: 2871, 2198
+  orig: 2871, 2199
+  offset: -4, 6
+  index: -1
+zhezhi_22.png
+size: 4096,4096
+format: RGBA8888
+filter: Linear,Linear
+repeat: none
+head
+  rotate: false
+  xy: 0, 0
+  size: 1024, 512
+  orig: 1024, 512
+  offset: 0, 0
+  index: -1

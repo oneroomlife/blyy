@@ -71,6 +71,9 @@
     var appliedW = 0, appliedH = 0; // 已应用的画布尺寸（修正旋转竞态用）
     var thumbSent = false;
 
+    /** 非待机组首帧预载条数（资源包直读模型单组可能上百条，全量解析会卡首帧） */
+    var PRELOAD_PER_GROUP = 6;
+
     /** 点击模型时的候选动作组（碧蓝航线触摸系动作） */
     var TOUCH_GROUPS = ['touch_body', 'touch_head', 'touch_special', 'main_1', 'main_2', 'main_3'];
 
@@ -100,11 +103,33 @@
         } catch (e) { return null; }
     }
 
+    /**
+     * 待机组名解析。
+     *
+     * pixi-live2d-display 的 Cubism4MotionManager 把待机组名**硬编码**为 `groups = {idle: 'Idle'}`，
+     * 而模型 model3.json 里的组名通常是 `idle`（碧蓝的资源包直读产物也是小写）。
+     * 运行时在动作队列清空后会用 `startRandomMotion('Idle', IDLE)` 自动接待机 —— 名字对不上
+     * 时是静默 no-op，待机就此定格。这里按「运行时声明名 → 定义表里大小写不敏感匹配」解析，
+     * 返回实际存在的组名列表（首个优先）。
+     */
     function idleGroupNames() {
+        var out = [];
         try {
-            var g = model.internalModel.motionManager.groups;
-            return (g && g.idle && g.idle.length) ? g.idle : ['idle'];
-        } catch (e) { return ['idle']; }
+            var mg = model.internalModel.motionManager;
+            if (mg.groups && mg.groups.idle) out.push(mg.groups.idle);
+            var defs = mg.definitions || {};
+            Object.keys(defs).forEach(function (g) {
+                if (g !== out[0] && g.toLowerCase() === 'idle' && out.indexOf(g) < 0) out.push(g);
+            });
+        } catch (e) { /* 忽略，退回默认名 */ }
+        if (!out.length) out.push('idle');
+        return out;
+    }
+
+    /** 判定某个动作组是否属于待机组（大小写不敏感） */
+    function isIdleGroup(group) {
+        if (!group) return false;
+        return String(group).toLowerCase() === 'idle';
     }
 
     function applyFpsGovernor() {
@@ -114,7 +139,7 @@
         // 覆盖无 idle 组的模型：播完一个动作后不应永远保持满帧渲染
         var running = lastMotionStartAt > lastMotionFinishAt;
         var active = (performance.now() < boostUntil) ||
-            (running && g && idleGroupNames().indexOf(g) < 0);
+            (running && g && !isIdleGroup(g));
         renderEvery2Frames = !active;
     }
 
@@ -244,14 +269,12 @@
         if (!model) return false;
         try {
             var mg = model.internalModel.motionManager;
-            var candidates = [];
-            try { if (mg.groups && mg.groups.idle) candidates.push(mg.groups.idle); } catch (e) { /* groups 不可读则跳过 */ }
-            candidates.push('idle');
-            availableGroups().forEach(function (g) { candidates.push(g); });
+            var candidates = idleGroupNames().concat(availableGroups());
             for (var i = 0; i < candidates.length; i++) {
                 if (groupMotionCount(candidates[i]) > 0) {
                     // priority 1 = IDLE：不抢占更高优先级动作，仅填充空闲
-                    mg.startRandomMotion(candidates[i], 1).catch(function () { /* 待机失败静默 */ });
+                    Promise.resolve(mg.startRandomMotion(candidates[i], 1))
+                        .catch(function () { /* 待机失败静默 */ });
                     return true;
                 }
             }
@@ -736,6 +759,37 @@
                 computeFit();
                 applyTransform();
 
+                // ---------- 待机循环接线（关键） ----------
+                // 运行时（pixi-live2d-display 0.4.0）把待机组名**硬编码**为 `{idle:'Idle'}`：
+                // 动作队列清空后会 `startRandomMotion('Idle', IDLE)` 自动接待机，名字对不上
+                // 就是静默 no-op → 待机播完永久定格。这里把运行时的待机组名接到模型实际
+                // 拥有的待机组（通常是 `idle`），自动重启才真正生效。
+                var idleNames = idleGroupNames();
+                try {
+                    var mgInit = m.internalModel.motionManager;
+                    if (mgInit.groups && idleNames.length) mgInit.groups.idle = idleNames[0];
+                } catch (err) { /* 接线失败退回兜底逻辑 */ }
+                // 待机动作原地循环：运行时 `CubismMotion.parse` 只把 JSON 的 Loop 写进
+                // `_motionData.loop`，而 doUpdateParameters 判断的是 `_isLoop` 成员
+                //（setIsLoop 从未被调用）→ 所有动作都被当成一次性播完。待机组必须显式
+                // setIsLoop(true)：时间到 duration 时运行时会把 startTime 重置为当前时刻，
+                // 动作原地续播，队列永不清空 → 没有"播完→空档→重新淡入"的卡顿。
+                var applyIdleLoop = function (group, index) {
+                    if (!isIdleGroup(group)) return;
+                    try {
+                        var arr = mgInit.motionGroups[group];
+                        var motion = arr && arr[index];
+                        if (motion && motion.setIsLoop && !motion.isLoop()) motion.setIsLoop(true);
+                    } catch (err) { /* 单条失败不影响渲染 */ }
+                };
+                // motionLoaded 事件在 loadMotion 完成时触发 → 待机组每条加载完立刻标记循环
+                try {
+                    mgInit.on('motionLoaded', function (g, i, motion) {
+                        if (!isIdleGroup(g) || !motion || !motion.setIsLoop) return;
+                        try { if (!motion.isLoop()) motion.setIsLoop(true); } catch (err) { /* 忽略 */ }
+                    });
+                } catch (err) { /* 事件不可用则靠预载阶段补标 */ }
+
                 // 动作结束通知宿主（非待机动作播完 → 宿主复位控制条选中态）；
                 // start/finish 时间戳同时供帧率治理判断"非待机动作是否在播"
                 try {
@@ -770,17 +824,50 @@
                 })();
 
                 post({ t: 'loaded' });
-                // 预载全部动作文件（本地虚拟域、几 KB 级）：运行时默认只预载待机组，
-                // 陪伴兜底选中的其他组首播会有一帧加载间隙——预载后全程无缝
+                // 预载动作（本地虚拟域、几 KB~几十 KB 级）：运行时默认只预载待机组，
+                // 陪伴兜底选中的其他组首播会有一帧加载间隙——预载后全程无缝。
+                // 资源包直读产物一个模型可能有 100+ 条动作（chaijun_6 = 113 条），
+                // 一次性全解析会占几十 MB 并把首帧卡住，因此分两档：
+                //  1) 待机组全量 + 其余组前 6 条 —— 点击互动与待机衔接立刻可用；
+                //  2) 入场动画结束后分批（每批 8 条）后台补齐，用户无感。
                 try {
-                    var defs = m.internalModel.motionManager.definitions;
+                    var mgPreload = m.internalModel.motionManager;
+                    var defs = mgPreload.definitions;
+                    var pendingPreload = [];
                     Object.keys(defs).forEach(function (g) {
-                        if (defs[g] && defs[g].length) {
-                            for (var i = 0; i < defs[g].length; i++) {
-                                try { mg.loadMotion(g, i); } catch (err) { /* 单个预载失败不影响 */ }
+                        if (!defs[g] || !defs[g].length) return;
+                        for (var i = 0; i < defs[g].length; i++) {
+                            if (isIdleGroup(g) || i < PRELOAD_PER_GROUP) {
+                                try {
+                                    // 待机组：加载完成后立刻标记为循环，避免首轮播完定格
+                                    Promise.resolve(mgPreload.loadMotion(g, i)).then(function () {
+                                        applyIdleLoop(g, i);
+                                    }).catch(function () { /* 忽略 */ });
+                                } catch (err) { /* 单条失败不影响 */ }
+                            } else {
+                                pendingPreload.push([g, i]);
                             }
                         }
                     });
+                    if (pendingPreload.length) {
+                        var cursor = 0;
+                        var step = function () {
+                            if (!model || cursor >= pendingPreload.length) return;
+                            var slice = pendingPreload.slice(cursor, cursor + 8);
+                            cursor += 8;
+                            for (var k = 0; k < slice.length; k++) {
+                                (function (g, i) {
+                                    try {
+                                        Promise.resolve(mgPreload.loadMotion(g, i)).then(function () {
+                                            applyIdleLoop(g, i);
+                                        }).catch(function () { /* 忽略 */ });
+                                    } catch (err) { /* 忽略 */ }
+                                })(slice[k][0], slice[k][1]);
+                            }
+                            setTimeout(step, 120);
+                        };
+                        setTimeout(step, 2500);
+                    }
                 } catch (err) { /* 预载不可用不影响渲染 */ }
                 // 等待待机动作把模型摆出姿势后再截缩略图
                 setTimeout(captureThumb, 1400);

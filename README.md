@@ -94,7 +94,13 @@
 
 ### 🎨 更多功能
 - **SD 资源图鉴**：浏览 Spine 骨骼动画 SD 小人资源，支持本地导入整理（zstd 压缩解析）
-- **Live2D 皮肤库**：导入本地 Cubism 3/4 模型（文件夹/zip 免权限导入），内置 pixi-live2d-display 渲染，支持动作/表情/手势交互与真实缩略图
+- **游戏资源导入（独立功能）**：接入 **Shizuku** 后直接扫描碧蓝航线 `AssetBundles/`，或从本地文件夹/文件导入；**自动识别四类资源包**并分别转换为可渲染产物：
+  - `live2d` → Cubism 模型（moc3/贴图/物理，Mecanim 动作转 `motion3.json`，待机/触摸/登录/誓约等 15 组上百条动作）
+  - `char` → Spine **SD 小人**（`.skel` + `.atlas` + 图集页，libgdx Spine 3.8 实时渲染）
+  - `spinepainting` → Spine **动态皮肤**（多骨骼/多页图集，支持换装变体切换）
+  - `painting` → **静态立绘**（高清贴图，双指缩放浏览）
+  - 统一持久化索引（管線版本/大小/修改时间），免重复解包；导入失败直接在卡片上给出原因；旧 Live2D 索引自动迁移
+- **Live2D 皮肤库**：管理已导入的 Cubism 模型（本地文件夹/zip 免权限导入），支持**多选批量删除**（顶栏「多选管理」→ 点按勾选 / 全选 → 一键删除，实时显示已选数量与占用空间），内置 pixi-live2d-display 渲染，支持动作/表情/手势交互与真实缩略图
   - **陪伴模式**：循环待机无缝衔接，每到设定间隔随机播放动作并配语音；锁屏风时钟/电量角标；沉浸模式自动收齐全部界面，触摸画布唤出
 - **水印相机**：CameraX 拍照 + 可定制水印排版（相框/标题/署名），支持截图编辑
 - **应用图标设置**：多种启动器图标风格任选
@@ -171,7 +177,7 @@
 ### 导航结构
 
 - **底部三个主页面**：后宅 / 船坞（舰船⇆成员档案切换）/ 关于
-- **侧拉菜单**：语音播放、秘书舰、啾信、碧蓝航线助手、看图/听音识舰娘、SD 资源图鉴、Live2D 皮肤、水印相机、设置
+- **侧拉菜单**：语音播放、秘书舰、啾信、碧蓝航线助手、看图/听音识舰娘、SD 资源图鉴、Live2D 皮肤、游戏资源导入、水印相机、设置
 - **桌面小组件**：在启动器小组件列表添加「今日推荐舰娘」「秘书舰问候」
 
 ### 桌面小组件
@@ -191,6 +197,23 @@
 1. 侧拉菜单进入 **Live2D 皮肤**，导入模型（文件夹或 zip）后进入播放页
 2. 点 **陪伴** 开启：舰娘循环待机并无缝衔接，每到设定间隔随机播放动作与语音
 3. 在陪伴设置层调整间隔、开关 **时钟/电量角标**；开启后界面自动收齐，触摸画布即可唤出
+
+### 游戏资源包直读（Shizuku）
+
+碧蓝航线的立绘 / SD 小人 / 动态皮肤 / Live2D 都以 UnityFS 资源包（`.ys` / `.unity3d`）存放在游戏私有目录，本应用可直接读取并转成可渲染资源：
+
+1. 安装并启动 [Shizuku](https://shizuku.rikka.app/)，从侧栏进入 **游戏资源导入** 并授权
+2. 点 **刷新** 自动探测 `Android/data/com.bilibili.azurlane/files/AssetBundles/` 下的
+   `live2d` / `char` / `painting` / `spinepainting` 四类目录（存在哪个列哪个）
+3. 点 **导入**（或 **全部导入 N**）完成「复制 → 解包 → 提取 → 落库」；导入完成后
+   在 **已导入** 分区点卡片即可查看（Spine 实时渲染 / 立绘可缩放）
+4. 没有 Shizuku 也可以：顶栏 **选文件** 选择 `.ys` / `.unity3d`，或 **文件夹** 选择一个
+   已解包/已提取的资源目录（`resource/test` 这类本地资源可直接导入）
+
+产物会按类型落到 `Android/data/<应用包名>/files/` 下：Live2D 进 `live2d/`（皮肤库共用），
+其余进 `game_assets/{char,spinepainting,painting}/`。扫描结果与导入状态持久化在索引里，
+**下次启动不会重复解包**；同类型提取管线升级时，旧产物会被标记为「有更新」。
+实现细节见 [docs/GAME_ASSET_IMPORT.md](docs/GAME_ASSET_IMPORT.md)。
 
 ### 碧蓝航线助手
 
@@ -278,13 +301,15 @@ blyy/
 │       │   │   ├── ui/
 │       │   │   │   ├── components/     # 公共 UI 组件（ShipCard 等）
 │       │   │   │   ├── icons/          # 自定义图标
-│       │   │   │   ├── screens/        # 27 个界面屏幕（guess/live2d/chat 等共享子包）
+│       │   │   │   ├── screens/        # 界面屏幕（guess/live2d/gameimport/chat 等共享子包）
 │       │   │   │   └── theme/          # 主题与设计系统（Token/Depth 阴影）
 │       │   │   ├── util/               # 工具层
 │       │   │   │   ├── AvatarMatcher.kt        # 头像匹配核心（纯 Kotlin）
 │       │   │   │   ├── LocalAvatarResolver.kt  # assets 头像解析壳
 │       │   │   │   ├── CustomAvatarManager.kt  # 自定义头像存储与解析（第一优先级）
 │       │   │   │   ├── SDResourceManager.kt    # SD 资源管理
+│       │   │   │   ├── gameimport/             # 游戏资源导入（Live2D/char/painting/spinepainting）
+│       │   │   │   ├── unity/                  # UnityFS/SerializedFile/TypeTree/Spine 提取
 │       │   │   │   ├── WebViewHtmlFetcher.kt   # wiki 抓取器
 │       │   │   │   └── ...             # 更新检查/缓存/权限/水印合成等
 │       │   │   └── viewmodel/          # ViewModel 层（22）
@@ -297,6 +322,7 @@ blyy/
 │           └── resources/                      # wiki 全量舰名 + 资产快照
 ├── docs/                               # 项目文档
 │   ├── ARCHITECTURE.md                 # 架构与 API 文档
+│   ├── GAME_ASSET_IMPORT.md            # 游戏资源导入（四类资源）技术说明
 │   ├── UI_TOKEN_GUIDE.md               # 设计 Token 速查表
 │   ├── USAGE.md                        # 使用说明
 │   └── screenshots/                    # 截图

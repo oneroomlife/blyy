@@ -430,6 +430,14 @@ internal fun ModernDrawerSheet(
             group = "娱乐"
         ),
         DrawerMenuItem(
+            route = "gameimport",
+            label = "游戏资源导入",
+            icon = Icons.Rounded.CloudDownload,
+            description = "导入 SD 小人 / 动态皮肤 / 立绘 / Live2D 资源包",
+            color = MaterialTheme.colorScheme.secondary,
+            group = "娱乐"
+        ),
+        DrawerMenuItem(
             route = "birthday_calendar",
             label = "生日日历",
             icon = Icons.Rounded.Cake,

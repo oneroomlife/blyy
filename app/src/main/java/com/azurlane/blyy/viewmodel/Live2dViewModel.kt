@@ -7,6 +7,7 @@ import com.azurlane.blyy.util.Live2dImporter
 import com.azurlane.blyy.util.Live2dLibrary
 import com.azurlane.blyy.util.Live2dModelInfo
 import com.azurlane.blyy.util.Live2dNameResolver
+import com.azurlane.blyy.util.Live2dSelection
 import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -37,11 +38,29 @@ sealed class Live2dIntent {
     /** 删除模型 */
     data class Delete(val id: String) : Live2dIntent()
 
+    /** 批量删除（多选模式下确认执行） */
+    data class DeleteSelected(val ids: Set<String>) : Live2dIntent()
+
+    /** 进入多选模式（可预置选中项） */
+    data class StartSelecting(val initial: Set<String> = emptySet()) : Live2dIntent()
+
+    /** 退出多选模式并清空选中 */
+    object StopSelecting : Live2dIntent()
+
+    /** 切换单个模型的选中态 */
+    data class ToggleSelected(val id: String) : Live2dIntent()
+
+    /** 全选/全不选当前列表 */
+    data class SelectAll(val ids: Set<String>, val selected: Boolean) : Live2dIntent()
+
     /** 重命名模型（改名目录） */
     data class Rename(val id: String, val newName: String) : Live2dIntent()
 
     /** 消费导入结果横幅（关闭提示） */
     object ConsumeImportResult : Live2dIntent()
+
+    /** 消费批量删除结果横幅（关闭提示） */
+    object ConsumeDeleteResult : Live2dIntent()
 }
 
 /**
@@ -65,8 +84,18 @@ class Live2dViewModel @Inject constructor(
         /** 扫描失败（IO 错误等），非空且模型为空时展示错误态 */
         val scanError: String? = null,
         val importProgress: Live2dImporter.ImportProgress? = null,
-        val importResult: Live2dImporter.ImportResult? = null
-    )
+        val importResult: Live2dImporter.ImportResult? = null,
+        /** 批量删除结果横幅文案（成功/部分失败），null = 不展示 */
+        val deleteResultText: String? = null,
+        /** 是否处于多选模式（工具栏切换、卡片显示勾选圈） */
+        val selecting: Boolean = false,
+        /** 多选模式下已选中的模型 id */
+        val selectedIds: Set<String> = emptySet()
+    ) {
+        /** 选中项的磁盘占用合计（多选工具条展示） */
+        val selectedBytes: Long
+            get() = models.filter { it.id in selectedIds }.sumOf { it.sizeBytes }
+    }
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
@@ -100,6 +129,23 @@ class Live2dViewModel @Inject constructor(
                 library.delete(intent.id)
                 refresh()
             }
+            is Live2dIntent.StartSelecting -> _state.update {
+                it.copy(selecting = true, selectedIds = intent.initial)
+            }
+            is Live2dIntent.StopSelecting -> _state.update {
+                it.copy(selecting = false, selectedIds = emptySet())
+            }
+            is Live2dIntent.ToggleSelected -> _state.update { current ->
+                current.copy(selectedIds = Live2dSelection.toggle(current.selectedIds, intent.id))
+            }
+            is Live2dIntent.SelectAll -> _state.update { current ->
+                current.copy(
+                    selectedIds = Live2dSelection.selectAll(
+                        current.selectedIds, intent.ids, intent.selected
+                    )
+                )
+            }
+            is Live2dIntent.DeleteSelected -> deleteSelected(intent.ids)
             is Live2dIntent.Rename -> viewModelScope.launch {
                 val error = library.rename(intent.id, intent.newName)
                 if (error != null) {
@@ -115,6 +161,7 @@ class Live2dViewModel @Inject constructor(
                 refresh()
             }
             is Live2dIntent.ConsumeImportResult -> _state.update { it.copy(importResult = null) }
+            is Live2dIntent.ConsumeDeleteResult -> _state.update { it.copy(deleteResultText = null) }
         }
     }
 
@@ -145,17 +192,59 @@ class Live2dViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 批量删除：一次 IO 完成，结果复用 [State.importResult] 横幅通道汇报
+     * （成功数量 / 释放空间 / 失败明细），随后重扫并退出多选模式。
+     */
+    private fun deleteSelected(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val result = library.deleteAll(ids)
+            _state.update { current ->
+                // 成功信息走独立文案（neutral/成功样式），失败明细追加在后面；
+                // 不再借用 ImportResult.failed 通道——那会被渲染成"警告/失败"语义
+                val text = buildString {
+                    if (result.deleted > 0) {
+                        append("已删除 ${result.deleted} 个模型，释放 ${formatBytes(result.freedBytes)}")
+                    }
+                    if (result.failed.isNotEmpty()) {
+                        if (isNotEmpty()) append("；")
+                        append("${result.failed.size} 个删除失败：")
+                        append(result.failed.joinToString("、") { (id, reason) -> "$id（$reason）" })
+                    }
+                }.ifBlank { null }
+                current.copy(
+                    selecting = false,
+                    selectedIds = emptySet(),
+                    deleteResultText = text
+                )
+            }
+            refresh()
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1L shl 30 -> String.format(java.util.Locale.US, "%.1f GB", bytes / (1L shl 30).toDouble())
+        bytes >= 1L shl 20 -> String.format(java.util.Locale.US, "%.1f MB", bytes / (1L shl 20).toDouble())
+        bytes >= 1L shl 10 -> String.format(java.util.Locale.US, "%.0f KB", bytes / (1L shl 10).toDouble())
+        else -> "$bytes B"
+    }
+
     private fun refresh() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true, scanError = null) }
             try {
                 val (models, invalid) = library.scan()
-                _state.update {
-                    it.copy(
+                _state.update { current ->
+                    val alive = models.mapTo(HashSet()) { it.id }
+                    current.copy(
                         loading = false,
                         models = models,
                         invalidDirs = invalid.map { d -> "${d.id}（${d.reason}）" },
-                        scanError = null
+                        scanError = null,
+                        // 模型被删掉后把失效的选中项一并清掉，避免工具条显示虚高数量
+                        selectedIds = Live2dSelection.retainExisting(current.selectedIds, alive),
+                        selecting = current.selecting && models.isNotEmpty()
                     )
                 }
             } catch (e: Exception) {

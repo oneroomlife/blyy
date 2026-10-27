@@ -364,6 +364,9 @@ class Live2dViewerViewModel @Inject constructor(
      */
     private val GROUP_SCENE_KEYWORDS = mapOf(
         "touch_head" to listOf("摸头"),
+        // 资源包直读产物里的拖拽反应（touch_dragN）与触摸待机（touch_idleN）
+        "touch_drag" to listOf("普通触摸", "触摸"),
+        "touch_idle" to listOf("普通触摸", "触摸"),
         "touch_special" to listOf("特殊触摸"),
         "touch_body" to listOf("普通触摸", "触摸"),
         "main_1" to listOf("普通触摸", "触摸"),
