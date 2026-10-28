@@ -72,6 +72,17 @@ internal class SerializedFile private constructor(
         const val CLASS_ANIMATION_CLIP = 74
         const val CLASS_ASSET_BUNDLE = 142
 
+        /** Mesh：立绘包里出现即代表「运行时按网格拼装的分层素材」 */
+        const val CLASS_MESH = 43
+
+        /** 立绘 prefab 的布局树（GameObject / Transform / RectTransform） */
+        const val CLASS_GAME_OBJECT = 1
+        const val CLASS_TRANSFORM = 4
+        const val CLASS_RECT_TRANSFORM = 224
+
+        /** Sprite：`m_RD.texture` 指向真正的 Texture2D */
+        const val CLASS_SPRITE = 213
+
         fun open(image: BundleImage, node: UnityFsBundle.Node): SerializedFile {
             val header = image.read(node, 0, 48)
             if (header.size < 48) throw IOException("序列化文件头不完整")

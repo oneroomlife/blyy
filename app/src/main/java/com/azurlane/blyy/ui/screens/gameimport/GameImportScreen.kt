@@ -1,7 +1,5 @@
 package com.azurlane.blyy.ui.screens.gameimport
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -26,18 +24,16 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
-import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
-import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
@@ -58,6 +54,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -132,20 +129,6 @@ fun GameImportScreen(
     var renameTarget by remember { mutableStateOf<GameAssetInfo?>(null) }
     var renameText by remember { mutableStateOf("") }
 
-    // SAF：多选资源包文件
-    val fileLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isNotEmpty()) viewModel.onIntent(GameImportIntent.ImportUris(uris))
-    }
-
-    // SAF：整个资源目录（已解包的游戏资源树 / 本地测试目录）
-    val folderLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri != null) viewModel.onIntent(GameImportIntent.ImportTree(uri))
-    }
-
     LaunchedEffect(initialKind) {
         if (initialKind != null) viewModel.onIntent(GameImportIntent.SelectKind(initialKind))
     }
@@ -190,36 +173,6 @@ fun GameImportScreen(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    IconButton(
-                        onClick = {
-                            fileLauncher.launch(
-                                arrayOf(
-                                    "application/octet-stream",
-                                    "application/zip",
-                                    "*/*"
-                                )
-                            )
-                        },
-                        enabled = !state.busy
-                    ) {
-                        Icon(
-                            Icons.Rounded.CloudDownload,
-                            contentDescription = "选择资源包文件",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = { folderLauncher.launch(null) },
-                        enabled = !state.busy
-                    ) {
-                        Icon(
-                            Icons.Rounded.FolderOpen,
-                            contentDescription = "从文件夹导入",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(21.dp)
-                        )
-                    }
                 }
             )
 
@@ -240,12 +193,6 @@ fun GameImportScreen(
                     onSearchChange = { searchQuery = it },
                     onImport = { entry -> viewModel.onIntent(GameImportIntent.ImportEntry(entry)) },
                     onImportAll = { viewModel.onIntent(GameImportIntent.ImportPending) },
-                    onPickFile = {
-                        fileLauncher.launch(
-                            arrayOf("application/octet-stream", "application/zip", "*/*")
-                        )
-                    },
-                    onPickFolder = { folderLauncher.launch(null) },
                     onOpen = { entry ->
                         val name = viewModel.displayNameOfEntry(entry)
                         if (entry.kind == GameAssetKind.LIVE2D) onOpenLive2d(entry.assetId, name)
@@ -262,7 +209,10 @@ fun GameImportScreen(
                         else onOpenAsset(asset.kind, asset.id, name)
                     },
                     onDetail = { detailAsset = it },
-                    onPickFolder = { folderLauncher.launch(null) },
+                    onRequestRename = { asset ->
+                        renameTarget = asset
+                        renameText = asset.id
+                    },
                     onGoBundles = { viewModel.onIntent(GameImportIntent.SelectTab(GameImportTab.BUNDLES)) }
                 )
             }
@@ -382,13 +332,19 @@ private fun BundlesTab(
     onSearchChange: (String) -> Unit,
     onImport: (GameBundleEntry) -> Unit,
     onImportAll: () -> Unit,
-    onPickFile: () -> Unit,
-    onPickFolder: () -> Unit,
     onOpen: (GameBundleEntry) -> Unit
 ) {
     val progress = state.progress
-    // 与「全部导入」实际作用范围保持一致（只受类型筛选影响）
-    val pendingInScope = state.filteredEntries.count { it.state != GameBundleEntry.State.IMPORTED }
+    // 「需要导入」= 从未导入过（NEW）或上次失败（FAILED）。
+    // CHANGED 表示「已导入但源包/管线更新过」，属于可选更新，
+    // 不能算进待导入数量——否则用户已经导入过的资源会一直显示导入按钮。
+    val pendingInScope = state.filteredEntries.count {
+        it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
+    }
+    // 可更新数量（单独提示，不占「导入」按钮名额）
+    val updatableInScope = state.filteredEntries.count {
+        it.state == GameBundleEntry.State.CHANGED
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -400,6 +356,9 @@ private fun BundlesTab(
         verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
     ) {
         item(key = "shell") { ShellStateCard(state, viewModel) }
+        state.deviceWarning?.let { warning ->
+            item(key = "device-warning") { DeviceWarningCard(warning) }
+        }
 
         if (progress != null) {
             item(key = "progress") {
@@ -433,32 +392,20 @@ private fun BundlesTab(
         item(key = "filters") { KindFilterRow(state = state, viewModel = viewModel) }
 
         item(key = "actions") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
-            ) {
+            Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
                 BlyyButton(
                     text = if (pendingInScope > 0) "全部导入 $pendingInScope" else "全部已导入",
                     onClick = onImportAll,
                     enabled = !state.busy && pendingInScope > 0,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.fillMaxWidth()
                 )
-                BlyyButton(
-                    text = "文件夹",
-                    onClick = onPickFolder,
-                    enabled = !state.busy,
-                    variant = BlyyButtonVariant.Secondary,
-                    icon = Icons.Rounded.Folder,
-                    modifier = Modifier.weight(1f)
-                )
-                BlyyButton(
-                    text = "选文件",
-                    onClick = onPickFile,
-                    enabled = !state.busy,
-                    variant = BlyyButtonVariant.Secondary,
-                    icon = Icons.Rounded.Archive,
-                    modifier = Modifier.weight(1f)
-                )
+                if (updatableInScope > 0) {
+                    Text(
+                        "另有 $updatableInScope 个已导入资源可更新（提取管线升级）",
+                        style = AppTypography.CaptionSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
@@ -509,9 +456,7 @@ private fun BundlesTab(
                         visible = true,
                         icon = Icons.Rounded.CloudDownload,
                         title = "没有待导入的资源包",
-                        description = "接通 Shizuku 可直接扫描游戏目录；\n也可以选择本地 .ys / .unity3d 文件或整个资源文件夹",
-                        actionLabel = "选择文件",
-                        onAction = onPickFile
+                        description = "接通 Shizuku 后点右上角刷新，自动扫描游戏资源目录\n（支持官服 / 渠道服 / 外服包名）"
                     )
                 }
             }
@@ -600,6 +545,40 @@ private fun ShellStateCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+    }
+}
+
+/**
+ * 设备能力提示（GPU 不支持 ASTC 6x6 时）。
+ *
+ * 不阻断操作：用户仍可导入，只是这类资源会在解码阶段失败——先把原因摆在明面上。
+ */
+@Composable
+private fun DeviceWarningCard(text: String) {
+    val accent = MaterialTheme.colorScheme.tertiary
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(AppSpacing.Corner.Md),
+        color = accent.copy(alpha = 0.12f),
+        border = androidx.compose.foundation.BorderStroke(AppSpacing.Border.Thin, accent.copy(alpha = 0.35f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+        ) {
+            Icon(
+                Icons.Rounded.WarningAmber,
+                contentDescription = null,
+                tint = accent,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text,
+                style = AppTypography.LabelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -786,12 +765,103 @@ private fun LibraryTab(
     viewModel: GameImportViewModel,
     onOpen: (GameAssetInfo) -> Unit,
     onDetail: (GameAssetInfo) -> Unit,
-    onPickFolder: () -> Unit,
+    onRequestRename: (GameAssetInfo) -> Unit,
     onGoBundles: () -> Unit
 ) {
     val assets = state.filteredAssets
+
+    // ---- 多选（编辑/删除）----
+    // 长按任意卡片进入多选；多选下单击切换选中，顶部工具条支持全选/重命名/删除。
+    // 键用 "kind/id" 保证跨类型不撞车（同一 id 可能在立绘与动态皮肤里都存在）。
+    var selectionMode by remember { mutableStateOf(false) }
+    val selected = remember { mutableStateMapOf<String, GameAssetInfo>() }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
+
+    fun keyOf(asset: GameAssetInfo) = "${asset.kind.key}/${asset.id}"
+
+    fun exitSelection() {
+        selectionMode = false
+        selected.clear()
+    }
+
+    fun toggle(asset: GameAssetInfo) {
+        val key = keyOf(asset)
+        if (selected.remove(key) == null) selected[key] = asset
+    }
+
+    // 资源被外部删除（导入/重命名/单删）后，选中表里可能残留已失效的键
+    LaunchedEffect(assets) {
+        if (selected.isEmpty()) return@LaunchedEffect
+        val alive = assets.map(::keyOf).toSet()
+        selected.keys.retainAll(alive)
+        if (selectionMode && selected.isEmpty()) selectionMode = false
+    }
+
     Column(Modifier.fillMaxSize()) {
         KindFilterRow(state = state, viewModel = viewModel)
+
+        if (selectionMode) {
+            LibrarySelectionBar(
+                selectedCount = selected.size,
+                allSelected = assets.isNotEmpty() && selected.size == assets.size,
+                singleSelected = selected.size == 1,
+                onToggleAll = {
+                    if (selected.size == assets.size) {
+                        selected.clear()
+                    } else {
+                        assets.forEach { selected[keyOf(it)] = it }
+                    }
+                },
+                onRename = {
+                    selected.values.singleOrNull()?.let { asset ->
+                        exitSelection()
+                        onRequestRename(asset)
+                    }
+                },
+                onDetail = {
+                    selected.values.singleOrNull()?.let(onDetail)
+                },
+                onDelete = { confirmBatchDelete = true },
+                onExit = { exitSelection() }
+            )
+        }
+
+        // 批量删除确认：一次说清数量与总体积，避免误删
+        if (confirmBatchDelete && selected.isNotEmpty()) {
+            val targets = selected.values.toList()
+            AlertDialog(
+                onDismissRequest = { confirmBatchDelete = false },
+                icon = {
+                    Icon(
+                        Icons.Rounded.DeleteOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                },
+                title = { Text("删除 ${targets.size} 个资源？") },
+                text = {
+                    Text(
+                        "将永久删除已选资源（共 ${viewModel.formatSize(targets.sumOf { it.sizeBytes })}），" +
+                            "游戏资源包本身不受影响，可随时重新导入。",
+                        style = AppTypography.BodyMedium
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmBatchDelete = false
+                        val keys = targets.map { it.kind to it.id }
+                        exitSelection()
+                        viewModel.onIntent(GameImportIntent.DeleteAssets(keys))
+                    }) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") }
+                }
+            )
+        }
+
         if (assets.isEmpty()) {
             Box(
                 Modifier
@@ -803,14 +873,15 @@ private fun LibraryTab(
                     visible = true,
                     icon = Icons.Rounded.ViewInAr,
                     title = "资源库还是空的",
-                    description = "导入游戏资源包后，模型与立绘会出现在这里；\n支持本地文件夹导入，无需游戏环境",
-                    actionLabel = if (state.entries.isNotEmpty()) "去导入" else "选择文件夹",
-                    onAction = if (state.entries.isNotEmpty()) onGoBundles else onPickFolder
+                    description = "在「资源包」里导入后，模型与立绘会出现在这里",
+                    actionLabel = if (state.entries.isNotEmpty()) "去导入" else null,
+                    onAction = if (state.entries.isNotEmpty()) onGoBundles else null
                 )
             }
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
+                // 自适应列数：横屏/平板上固定 2 列会把卡片拉得过大
+                columns = GridCells.Adaptive(minSize = 168.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = AppSpacing.Screen.Horizontal,
@@ -835,10 +906,92 @@ private fun LibraryTab(
                         asset = asset,
                         displayName = viewModel.displayNameFor(asset),
                         sizeText = viewModel.formatSize(asset.sizeBytes),
-                        onClick = { onOpen(asset) },
-                        onLongClick = { onDetail(asset) }
+                        isSelected = selectionMode && selected.containsKey(keyOf(asset)),
+                        selectionMode = selectionMode,
+                        onClick = {
+                            if (selectionMode) toggle(asset) else onOpen(asset)
+                        },
+                        onLongClick = {
+                            if (selectionMode) {
+                                toggle(asset)
+                            } else {
+                                selectionMode = true
+                                selected[keyOf(asset)] = asset
+                            }
+                        }
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 资源库多选工具条。
+ *
+ * 只在多选态出现：已选数量 + 全选/取消全选 + 详情（单选）+ 重命名（单选）+ 删除 + 退出。
+ * 重命名与详情对多选无意义，因此仅在恰好选中 1 个时可用（置灰而非隐藏，避免控件跳动）。
+ */
+@Composable
+private fun LibrarySelectionBar(
+    selectedCount: Int,
+    allSelected: Boolean,
+    singleSelected: Boolean,
+    onToggleAll: () -> Unit,
+    onRename: () -> Unit,
+    onDetail: () -> Unit,
+    onDelete: () -> Unit,
+    onExit: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Xs),
+        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        border = BorderStroke(
+            AppSpacing.Border.Thin,
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(start = AppSpacing.Md, end = AppSpacing.Xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+        ) {
+            Text(
+                "已选 $selectedCount",
+                style = AppTypography.LabelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onToggleAll) {
+                Text(
+                    if (allSelected) "取消全选" else "全选",
+                    style = AppTypography.LabelMedium
+                )
+            }
+            TextButton(onClick = onDetail, enabled = singleSelected) {
+                Text("详情", style = AppTypography.LabelMedium)
+            }
+            TextButton(onClick = onRename, enabled = singleSelected) {
+                Text("重命名", style = AppTypography.LabelMedium)
+            }
+            TextButton(onClick = onDelete) {
+                Text(
+                    "删除",
+                    style = AppTypography.LabelMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            IconButton(onClick = onExit) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "退出多选",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
             }
         }
     }
@@ -851,7 +1004,9 @@ private fun AssetCard(
     displayName: String,
     sizeText: String,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    isSelected: Boolean = false,
+    selectionMode: Boolean = false
 ) {
     val isDark = LocalIsDark.current
     Surface(
@@ -859,12 +1014,20 @@ private fun AssetCard(
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f)
+        },
         contentColor = MaterialTheme.colorScheme.onSurface,
         tonalElevation = AppElevation.Level2,
         border = BorderStroke(
-            AppSpacing.Border.Thin,
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.4f)
+            if (isSelected) AppSpacing.Border.Thick else AppSpacing.Border.Thin,
+            if (isSelected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = if (isDark) 0.55f else 0.4f)
+            }
         )
     ) {
         Column {
@@ -883,7 +1046,7 @@ private fun AssetCard(
                     preview != null -> AsyncImage(
                         model = preview,
                         contentDescription = displayName,
-                        contentScale = if (asset.isPainting) ContentScale.Fit else ContentScale.Crop,
+                        contentScale = if (asset.isImage) ContentScale.Fit else ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
 
@@ -936,6 +1099,39 @@ private fun AssetCard(
                         )
                     }
                 }
+
+                // 多选态：右下角勾选指示（选中=主色实心勾，未选=半透明空圈）
+                if (selectionMode) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(AppSpacing.Sm)
+                            .size(24.dp)
+                            .background(
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color(0x66000000)
+                                },
+                                CircleShape
+                            )
+                            .border(
+                                AppSpacing.Border.Thin,
+                                Color.White.copy(alpha = 0.7f),
+                                CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isSelected) {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             Column(Modifier.padding(AppSpacing.Md)) {
@@ -951,6 +1147,13 @@ private fun AssetCard(
                     buildString {
                         append(sizeText)
                         asset.versionLabel?.let { append(" · ").append(it) }
+                        // 分层素材：图集是碎片，静态预览看起来「拼不起来」
+                        when (asset.paintingMode) {
+                            "layout" -> if (asset.paintingLayers > 0) {
+                                append(" · ").append(asset.paintingLayers).append(" 层合成")
+                            }
+                            "mesh" -> append(" · 网格还原")
+                        }
                     },
                     style = AppTypography.CaptionSmall,
                     color = secondaryTextColor(),
@@ -1071,6 +1274,7 @@ private fun KindBadge(kind: GameAssetKind) {
         GameAssetKind.SD_CHAR -> MaterialTheme.colorScheme.secondary
         GameAssetKind.DYNAMIC_SKIN -> MaterialTheme.colorScheme.tertiary
         GameAssetKind.PAINTING -> MaterialTheme.colorScheme.primary
+        GameAssetKind.LOADING_BG -> MaterialTheme.colorScheme.secondary
     }
     Surface(
         shape = RoundedCornerShape(AppSpacing.Corner.Sm),
@@ -1115,9 +1319,15 @@ private fun AssetDetailSheet(
                 DetailRow("图集页", "${asset.pageCount} 页")
                 asset.spineVersion?.let { DetailRow("Spine 版本", it) }
             }
-            asset.isPainting -> {
+            asset.isImage -> {
                 if (asset.imageWidth > 0) {
                     DetailRow("分辨率", "${asset.imageWidth}×${asset.imageHeight}")
+                }
+                // 立绘才有「几层合成」的概念；过场图是整张图
+                when (asset.paintingMode) {
+                    "layout" -> DetailRow("合成", "${asset.paintingLayers} 层（背景/人物/舰装）")
+                    "mesh" -> DetailRow("合成", "网格还原（碎片图集）")
+                    "raw" -> DetailRow("合成", "原始贴图")
                 }
             }
             else -> {

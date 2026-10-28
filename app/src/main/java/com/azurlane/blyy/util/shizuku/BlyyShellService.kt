@@ -26,13 +26,24 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
 
         /** 单份快照最多条目数（防止异常目录把服务端内存打爆） */
         private const val MAX_SNAPSHOT_ENTRIES = 200_000
+
+        /** 同时缓存几份目录快照（四类资源 + 余量） */
+        private const val MAX_SNAPSHOTS = 8
     }
 
-    /** 目录列表快照：超大目录分页读时只走一次文件系统 */
-    private data class ListingSnapshot(val root: String, val depth: Int, val lines: List<String>)
+    /**
+     * 目录列表快照：超大目录分页读时只走一次文件系统。
+     *
+     * 按 `root+depth` 缓存**多份**：客户端的四类目录（live2d / char / spinepainting /
+     * painting）是并发列举的，单槽缓存会被互相顶掉，每次都重建整棵目录
+     * （painting 有 1 万+ 文件，实测单次 0.5s）。
+     */
+    private val snapshots = object : LinkedHashMap<String, List<String>>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<String>>?): Boolean =
+            size > MAX_SNAPSHOTS
+    }
 
-    @Volatile
-    private var snapshot: ListingSnapshot? = null
+    private fun snapshotKey(root: String, depth: Int) = "$depth|$root"
 
     override fun ping(): String {
         val uid = android.os.Process.myUid()
@@ -64,13 +75,12 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
         val page = pageSize.coerceIn(1, 4_000)
         val budget = maxBytes.coerceIn(8_000, 256_000)
 
-        val current = snapshot
-        val lines = if (refresh || current == null || current.root != root || current.depth != depth) {
-            buildListing(root, depth, MAX_SNAPSHOT_ENTRIES).also {
-                snapshot = ListingSnapshot(root, depth, it)
-            }
-        } else {
-            current.lines
+        val key = snapshotKey(root, depth)
+        // 只在取/存快照时加锁：构建过程（可能几百毫秒）不占锁，
+        // 否则四类目录的并发列举会被这把锁重新串起来
+        val cached = synchronized(snapshots) { if (refresh) null else snapshots[key] }
+        val lines = cached ?: buildListing(root, depth, MAX_SNAPSHOT_ENTRIES).also { built ->
+            synchronized(snapshots) { snapshots[key] = built }
         }
 
         val total = lines.size
@@ -92,6 +102,7 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
 
     /** 递归列举，返回 `类型\t路径\t大小\t修改时间` 行列表（广度优先） */
     private fun buildListing(root: String, maxDepth: Int, maxEntries: Int): List<String> {
+        val started = android.os.SystemClock.elapsedRealtime()
         val dir = File(root)
         if (!dir.exists()) return emptyList()
         val depthLimit = maxDepth.coerceIn(1, 12)
@@ -127,6 +138,7 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
                 if (isDir && depth + 1 < depthLimit) queue.addLast(child to depth + 1)
             }
         }
+        Log.d(TAG, "buildListing ${File(root).name} ${out.size} 项 ${android.os.SystemClock.elapsedRealtime() - started}ms")
         return out
     }
 

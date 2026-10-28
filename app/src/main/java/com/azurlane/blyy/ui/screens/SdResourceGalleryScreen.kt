@@ -376,9 +376,11 @@ private fun SdResourceCard(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    val accentColor = if (resource.source == SDResourceSource.CUSTOM)
-        MaterialTheme.colorScheme.tertiary
-    else MaterialTheme.colorScheme.primary
+    val accentColor = when (resource.source) {
+        SDResourceSource.CUSTOM -> MaterialTheme.colorScheme.tertiary
+        SDResourceSource.GAME_IMPORT -> MaterialTheme.colorScheme.secondary
+        SDResourceSource.SHIP -> MaterialTheme.colorScheme.primary
+    }
 
     BlyyPanel(
         modifier = Modifier
@@ -487,17 +489,17 @@ private fun SdResourceCard(
                     }
                 }
 
-                // 来源徽章（左下角，仅自定义资源显示）
-                if (resource.source == SDResourceSource.CUSTOM) {
+                // 来源徽章（左下角：自定义 / 游戏导入）
+                if (resource.source != SDResourceSource.SHIP) {
                     Surface(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(AppSpacing.Xs),
                         shape = RoundedCornerShape(AppSpacing.Corner.Full),
-                        color = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.85f)
+                        color = accentColor.copy(alpha = 0.85f)
                     ) {
                         Text(
-                            text = "自定义",
+                            text = if (resource.source == SDResourceSource.GAME_IMPORT) "游戏导入" else "自定义",
                             style = AppTypography.CardLabel,
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold,
@@ -601,7 +603,14 @@ private fun SdResourcePreviewDialog(
                 // 资源信息
                 SdInfoRow(label = "ID", value = resource.id)
                 SdInfoRow(label = "类型", value = if (resource.isSpine) "Spine 动画" else "静态图片")
-                SdInfoRow(label = "来源", value = if (resource.source == SDResourceSource.SHIP) "舰娘" else "自定义")
+                SdInfoRow(
+                    label = "来源",
+                    value = when (resource.source) {
+                        SDResourceSource.SHIP -> "舰娘"
+                        SDResourceSource.CUSTOM -> "自定义"
+                        SDResourceSource.GAME_IMPORT -> "游戏导入（只读）"
+                    }
+                )
                 SdInfoRow(label = "皮肤数", value = "${resource.skinCount}")
 
                 if (resource.skinCount > 1) {

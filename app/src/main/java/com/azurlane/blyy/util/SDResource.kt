@@ -85,7 +85,14 @@ enum class SDResourceSource {
     /** 舰娘资源（从舰名拼音匹配而来，向后兼容） */
     SHIP,
     /** 用户自定义导入的资源 */
-    CUSTOM
+    CUSTOM,
+    /**
+     * 通过「游戏资源导入」从游戏包里解出来的 SD 小人（`game_assets/char/<id>`）。
+     *
+     * 只读：重命名/删除由游戏资源导入模块负责，SD 资源库里不提供这两个操作。
+     * 资源 id 带 `game/` 前缀，避免与 `blhx_sd/` 下的同名目录冲突。
+     */
+    GAME_IMPORT
 }
 
 /**

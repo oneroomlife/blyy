@@ -14,6 +14,7 @@ import androidx.compose.runtime.Immutable
  * | [SD_CHAR] | `char/` | `.skel` + `.atlas` TextAsset + 贴图 | libgdx Spine 3.8 |
  * | [DYNAMIC_SKIN] | `spinepainting/` | 同上（骨骼包在 `*_res` 内） | libgdx Spine 3.8 |
  * | [PAINTING] | `painting/` | 单张超大贴图（`*_tex`） | 静态图浏览 |
+ * | [LOADING_BG] | `loadingbg/`（+ `loadingbg_hx/`） | 1~2 张 1920×1080 贴图 | 静态图浏览 + 导出 |
  *
  * [key] 同时用作路由参数、索引字段与库内子目录名，**不可随意改动**。
  */
@@ -25,7 +26,12 @@ enum class GameAssetKind(
     val label: String,
     val shortLabel: String,
     val description: String,
-    val isSpine: Boolean = false
+    val isSpine: Boolean = false,
+    /**
+     * 同类资源在游戏里可能拆成多个目录（目前只有过场图的 `loadingbg_hx`）。
+     * 扫描时这些目录与主目录一起列举，资源 id 会带上目录后缀以免冲突。
+     */
+    val siblingDirs: List<String> = emptyList()
 ) {
     LIVE2D(
         key = "live2d",
@@ -55,7 +61,16 @@ enum class GameAssetKind(
         bundleDir = "painting",
         label = "静态立绘",
         shortLabel = "立绘",
-        description = "高清静态立绘贴图（取同名 _tex 包内的贴图）"
+        description = "静态立绘（按 _tex 包内网格与 prefab 图层布局还原成整图）"
+    ),
+    LOADING_BG(
+        key = "loadingbg",
+        bundleDir = "loadingbg",
+        label = "过场图",
+        shortLabel = "过场",
+        description = "加载 / 过场插画（1920×1080 大图，支持导出）",
+        // 和谐版本单独一个目录，结构与主目录完全一致
+        siblingDirs = listOf("loadingbg_hx")
     );
 
     /** 该类型是否从 `*.skel` + `*.atlas` 三件套渲染 */
@@ -74,7 +89,10 @@ enum class GameAssetKind(
             "sd" to SD_CHAR,
             "spine" to SD_CHAR,
             "spinepainting" to DYNAMIC_SKIN,
-            "painting" to PAINTING
+            "painting" to PAINTING,
+            "loadingbg" to LOADING_BG,
+            "loadingbg_hx" to LOADING_BG,
+            "loadbg" to LOADING_BG
         )
 
         /** 路由 / 索引里的类型字段（大小写不敏感；未知返回 null） */
@@ -106,6 +124,7 @@ enum class GameAssetKind(
         }
 
         /** 列表展示顺序：与游戏资源目录一致 */
-        val ordered: List<GameAssetKind> = listOf(LIVE2D, SD_CHAR, DYNAMIC_SKIN, PAINTING)
+        val ordered: List<GameAssetKind> =
+            listOf(LIVE2D, SD_CHAR, DYNAMIC_SKIN, PAINTING, LOADING_BG)
     }
 }

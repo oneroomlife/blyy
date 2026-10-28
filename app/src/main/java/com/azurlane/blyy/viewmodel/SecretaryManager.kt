@@ -611,8 +611,9 @@ class SecretaryManager @Inject constructor(
             // 资源自带 shipName 字段（resolveByShipName 构建的资源）
             !resource?.shipName.isNullOrBlank() -> resource!!.shipName
             // 资源来源是舰娘但没有 shipName，遍历数据库拼音匹配
-            resource?.source == com.azurlane.blyy.util.SDResourceSource.SHIP ->
-                resolveShipNameByPinyin(resourceId)
+            resource?.source == com.azurlane.blyy.util.SDResourceSource.SHIP ||
+                resource?.source == com.azurlane.blyy.util.SDResourceSource.GAME_IMPORT ->
+                resolveShipNameByPinyin(resourceId.removePrefix("game/"))
             // 自定义资源，无对应舰娘
             else -> null
         }

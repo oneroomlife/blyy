@@ -496,6 +496,15 @@ fun SecretaryShipSettingsScreen(
                             sdResourceId = secretaryState.sdResourceId
                         )
                     }
+                    // SD 资源库入口：此前设置页只留了 onOpenSdGallery 回调却没有入口，
+                    // 用户导入的 SD（含「游戏资源导入」解出的小人）在设置里根本选不到。
+                    BlyyPanel {
+                        SdResourceGalleryEntry(
+                            sdResourceId = secretaryState.sdResourceId,
+                            onOpenGallery = onOpenSdGallery,
+                            onClearResource = onClearSdResource
+                        )
+                    }
                 }
 
                 // 2. 显示设置（悬浮窗 + 触摸穿透 + 台词弹窗）

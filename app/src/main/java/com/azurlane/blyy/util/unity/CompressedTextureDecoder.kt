@@ -74,6 +74,10 @@ object CompressedTextureDecoder {
     @Volatile
     private var astcSupported: Boolean? = null
 
+    /** 已探测到的 ASTC 块尺寸（4/5/6/8/10/12）；null = 还没探测 */
+    @Volatile
+    private var astcBlockSizes: Set<Int>? = null
+
     /**
      * Unity `TextureFormat` → GL 内部格式。
      *
@@ -143,6 +147,109 @@ object CompressedTextureDecoder {
         return supported
     }
 
+    /**
+     * 探测设备**实际接受**的 ASTC 块尺寸。
+     *
+     * 为什么不能只看 `GL_EXTENSIONS`：部分驱动（模拟器 / 低端 GPU）字符串里有
+     * `texture_compression_astc_ldr`，却只接受 4x4（实测某模拟器对 6x6 的
+     * `glCompressedTexImage2D` 直接返回 `GL_INVALID_VALUE`）。过场图与 SD 小人
+     * 的贴图都是 **ASTC 6x6**，不探测就会「导入成功但解码失败」，用户只看到黑屏。
+     *
+     * 做法：建一个 1x1 的离屏上下文，对每种块尺寸上传**一个块**（16 字节），
+     * 看 GL 是否报错。结果缓存，代价只有几毫秒。
+     */
+    fun supportedAstcBlockSizes(): Set<Int> {
+        astcBlockSizes?.let { return it }
+        val probed = runCatching { probeAstcBlocks() }.getOrDefault(emptySet())
+        astcBlockSizes = probed
+        return probed
+    }
+
+    /** 该 Unity 贴图格式在当前设备上能否解码（非压缩格式一律 true，交给 Bitmap 路径） */
+    fun canDecode(unityFormat: Int): Boolean {
+        val gl = glFormatOf(unityFormat) ?: return unityFormat == 4
+        if (unityFormat == 4) return true
+        val block = when (gl) {
+            GL_ASTC_4X4 -> 4
+            GL_ASTC_5X5 -> 5
+            GL_ASTC_6X6 -> 6
+            GL_ASTC_8X8 -> 8
+            GL_ASTC_10X10 -> 10
+            GL_ASTC_12X12 -> 12
+            else -> return true // ETC2 / ETC1：GLES3 核心格式，按支持处理
+        }
+        return block in supportedAstcBlockSizes()
+    }
+
+    private fun probeAstcBlocks(): Set<Int> {
+        val formats = linkedMapOf(
+            4 to GL_ASTC_4X4,
+            5 to GL_ASTC_5X5,
+            6 to GL_ASTC_6X6,
+            8 to GL_ASTC_8X8,
+            10 to GL_ASTC_10X10,
+            12 to GL_ASTC_12X12
+        )
+        var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
+        var context: EGLContext = EGL14.EGL_NO_CONTEXT
+        var surface: EGLSurface = EGL14.EGL_NO_SURFACE
+        val accepted = LinkedHashSet<Int>()
+        try {
+            display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+            if (display == EGL14.EGL_NO_DISPLAY) return emptySet()
+            val ver = IntArray(2)
+            if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) return emptySet()
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val num = IntArray(1)
+            val attribs = intArrayOf(
+                EGL14.EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,
+                EGL14.EGL_NONE
+            )
+            if (!EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, num, 0) || num[0] == 0) {
+                return emptySet()
+            }
+            context = EGL14.eglCreateContext(
+                display, configs[0], EGL14.EGL_NO_CONTEXT,
+                intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE), 0
+            )
+            if (context == EGL14.EGL_NO_CONTEXT) return emptySet()
+            surface = EGL14.eglCreatePbufferSurface(
+                display, configs[0],
+                intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0
+            )
+            if (surface == EGL14.EGL_NO_SURFACE) return emptySet()
+            if (!EGL14.eglMakeCurrent(display, surface, surface, context)) return emptySet()
+
+            val ids = IntArray(1)
+            formats.forEach { (block, gl) ->
+                GLES20.glGenTextures(1, ids, 0)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+                val oneBlock = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
+                while (GLES20.glGetError() != GLES20.GL_NO_ERROR) {
+                    // 清历史错误码
+                }
+                GLES30.glCompressedTexImage2D(
+                    GLES20.GL_TEXTURE_2D, 0, gl, block, block, 0, 16, oneBlock
+                )
+                if (GLES20.glGetError() == GLES20.GL_NO_ERROR) accepted += block
+                GLES20.glDeleteTextures(1, ids, 0)
+            }
+            Log.i(TAG, "ASTC 支持的块尺寸：${if (accepted.isEmpty()) "无" else accepted.joinToString()}")
+            return accepted
+        } finally {
+            runCatching {
+                if (display != EGL14.EGL_NO_DISPLAY) {
+                    EGL14.eglMakeCurrent(
+                        display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT
+                    )
+                    if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface)
+                    if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context)
+                    EGL14.eglTerminate(display)
+                }
+            }
+        }
+    }
+
     /** 用最小 EGL 上下文读取 `GL_EXTENSIONS` */
     private fun probeExtensions(): String {
         var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
@@ -203,8 +310,7 @@ object CompressedTextureDecoder {
         width: Int,
         height: Int,
         internalFormat: Int,
-        maxSize: Int = 2048,
-        flipRects: List<PixelRect> = emptyList()
+        maxSize: Int = 2048
     ): Bitmap {
         require(width > 0 && height > 0) { "贴图尺寸非法：${width}x$height" }
         val dataSize = data.remaining()
@@ -222,8 +328,10 @@ object CompressedTextureDecoder {
         var outH = height
         if (maxSize in 1 until maxOf(width, height)) {
             val scale = maxSize.toFloat() / maxOf(width, height)
-            outW = (width * scale).toInt().coerceAtLeast(1)
-            outH = (height * scale).toInt().coerceAtLeast(1)
+            // 与 SpineAtlasParser.scale 使用同一套四舍五入：否则图集坐标与贴图尺寸
+            // 会差 1px，图集分区在边界上出现裂缝/错位
+            outW = kotlin.math.round(width * scale).toInt().coerceAtLeast(1)
+            outH = kotlin.math.round(height * scale).toInt().coerceAtLeast(1)
         }
 
         var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
@@ -342,10 +450,11 @@ object CompressedTextureDecoder {
                 )
             }
             if (!uploaded) {
+                // 报错里给出人话格式名（ASTC 6x6 这类），而不是 GL 枚举值
+                val label = formatLabelOf(internalFormat)
                 throw IOException(
-                    "当前设备 GPU 不支持该压缩纹理格式（Format=$internalFormat，${width}x$height，" +
-                        "${uploadSize}B，GL 错误 0x${lastError.toString(16)}）；" +
-                        "模拟器通常只实现了 ASTC 4x4，真机（Adreno/Mali）可正常解码"
+                    "当前设备 GPU 不支持 $label（${width}x$height，GL 错误 0x${lastError.toString(16)}）；" +
+                        "模拟器通常只实现 ASTC 4x4，真机（Adreno / Mali）可正常解码"
                 )
             }
 
@@ -410,17 +519,9 @@ object CompressedTextureDecoder {
                     idx++
                 }
             }
-            // 图集 rotate:180/270 的像素补偿（在数组阶段做，避免不可变 Bitmap 无法 setPixels）
-            if (flipRects.isNotEmpty()) {
-                BitmapPixelOps.rotate180(
-                    pixels = argb,
-                    canvasWidth = outW,
-                    canvasHeight = outH,
-                    rects = flipRects,
-                    scaleX = outW.toFloat() / width,
-                    scaleY = outH.toFloat() / height
-                )
-            }
+            // 图集 rotate 的像素补偿**不在这里做**：Spine 的旋转语义由 atlas 的
+            // `rotate` + 运行时 `updateUVs` / `updateOffset` 决定，在像素上再翻
+            // 一次会双倍旋转并串到相邻区域（历史 bug，见 SpineAtlasParser 文档）。
             return Bitmap.createBitmap(argb, outW, outH, Bitmap.Config.ARGB_8888)
         } finally {
             runCatching {
@@ -438,6 +539,20 @@ object CompressedTextureDecoder {
                 }
             }
         }
+    }
+
+    /** GL 内部格式 → 人话名（错误提示用） */
+    private fun formatLabelOf(internalFormat: Int): String = when (internalFormat) {
+        GL_ASTC_4X4 -> "ASTC 4x4"
+        GL_ASTC_5X5 -> "ASTC 5x5"
+        GL_ASTC_6X6 -> "ASTC 6x6"
+        GL_ASTC_8X8 -> "ASTC 8x8"
+        GL_ASTC_10X10 -> "ASTC 10x10"
+        GL_ASTC_12X12 -> "ASTC 12x12"
+        GL_ETC2_RGBA8 -> "ETC2 RGBA8"
+        GL_ETC2_RGB8 -> "ETC2 RGB8"
+        GL_ETC1_RGB8 -> "ETC1"
+        else -> "压缩格式 0x${internalFormat.toString(16)}"
     }
 
     private fun buildProgram(): Int {

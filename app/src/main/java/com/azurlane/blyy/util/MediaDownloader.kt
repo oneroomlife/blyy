@@ -54,6 +54,43 @@ object MediaDownloader {
         }
     }
 
+    /**
+     * 保存**本地已有字节**（游戏资源导出、截图等）到 Downloads/[subPath]。
+     *
+     * 与 [download] 共用同一套落盘策略：API 29+ 走 MediaStore（无需存储权限），
+     * 旧版本回退 File API。同名文件由 MediaStore 自动追加 " (1)"。
+     */
+    suspend fun saveBytes(
+        context: Context,
+        bytes: ByteArray,
+        fileName: String,
+        subPath: String = ROOT_DIR
+    ): Result = withContext(Dispatchers.IO) {
+        try {
+            if (bytes.isEmpty()) return@withContext Result.Failure("要保存的内容为空")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                saveViaMediaStore(context, bytes, fileName, subPath)
+            } else {
+                saveViaFileApi(bytes, fileName, subPath)
+            }
+        } catch (e: Exception) {
+            Result.Failure(e.message ?: "保存失败")
+        }
+    }
+
+    /** 文件名净化：去掉路径分隔符与非法字符，避免落盘失败或命名歧义 */
+    fun sanitizeFileName(raw: String, fallback: String = "image"): String {
+        val cleaned = raw.trim().map { ch ->
+            when {
+                ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?' ||
+                    ch == '"' || ch == '<' || ch == '>' || ch == '|' -> '_'
+                ch.code < 0x20 -> '_'
+                else -> ch
+            }
+        }.joinToString("").trim().trim('.').take(80)
+        return cleaned.ifBlank { fallback }
+    }
+
     /** 按主机推断 Referer，与语音/图片源站的防盗链要求保持一致 */
     fun refererForHost(host: String): String? = when {
         host.contains("gamekee") -> "https://www.gamekee.com/"

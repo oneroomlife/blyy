@@ -3,7 +3,6 @@ package com.azurlane.blyy.util.gameimport
 import android.content.Context
 import android.util.Log
 import com.azurlane.blyy.util.unity.SerializedFile
-import com.azurlane.blyy.util.unity.PixelRect
 import com.azurlane.blyy.util.unity.TextureStream
 import com.azurlane.blyy.util.unity.UnityBundleSession
 import com.azurlane.blyy.util.unity.UnityTextAssetReader
@@ -54,15 +53,16 @@ class SpineBundleExtractor @Inject constructor(
         /**
          * 按 Java 堆大小挑选图集页上限。
          *
-         * 4096² 的 ARGB 位图是 64MB，叠加 16MB 压缩数据与 PNG 编码缓冲，
-         * 在 `memoryClass=192MB` 的设备上极易 OOM。因此：
-         * - ≥512MB → 保持 4096（动态皮肤原分辨率）
-         * - ≥256MB → 3072
-         * - 其余 → 2048（图集坐标同比缩放，UV 仍然正确）
+         * 缩放图集会同时改写页尺寸与每个区域坐标，而图集区域之间只有很窄的
+         * padding：降采样后线性过滤会把相邻区域的像素带进来，表现为「部件边缘
+         * 发白、出现重影/撕裂」。因此**默认绝不缩放**，只在极端小堆设备上兜底：
+         * - ≥128MB → 4096（原分辨率，与游戏内一致）
+         * - 其余 → 2048
+         * 4096² 的 ARGB 位图约 64MB，配合 manifest 的 `largeHeap` 在 192MB 堆设备上
+         * 也能安全解码。
          */
         fun recommendedMaxPageSide(memoryClassMb: Int): Int = when {
-            memoryClassMb >= 512 -> 4096
-            memoryClassMb >= 256 -> 3072
+            memoryClassMb >= 128 -> 4096
             else -> 2048
         }
     }
@@ -119,6 +119,8 @@ class SpineBundleExtractor @Inject constructor(
 
             val skeletonMetas = mutableListOf<SpineSkeletonMeta>()
             val allPages = mutableListOf<String>()
+            /** 已写出页的骨骼主名；非空时后续骨骼的页名要加前缀，避免覆盖 */
+            val writtenSkeletons = mutableListOf<String>()
             var maxW = 0
             var maxH = 0
             var primaryVersion: String? = null
@@ -132,18 +134,28 @@ class SpineBundleExtractor @Inject constructor(
                 onProgress(fractionBase, "导出骨骼 $base")
 
                 val originalAtlas = String(atlasAsset.bytes, Charsets.UTF_8)
-                // 先把 Spine4 风格的 rotate:90/180/270 归一化成 3.8 兼容写法，
-                // 同时拿到需要做 180° 像素补偿的区域（坐标仍是原始贴图坐标）
-                val rotation = SpineAtlasParser.normalizeRotations(originalAtlas)
+                // 【重要】图集原样保留 `rotate` / `size` / `orig` / `offset` 的原始语义：
+                // libgdx 1.13.5 的 TextureAtlasData 会把 true/90/180/270 全部解析成
+                // 正确的 degrees，spine 3.8 的 MeshAttachment.updateUVs() 对
+                // 0/90/180/270 都有完整分支（碧蓝的 180/270 区域全是 mesh）。
+                // 早期版本把 270→true、180→false 并翻转页像素，会让 updateUVs 走 90°
+                // 分支、采样矩形整体错位（实测偏移达 434/613 px），
+                // 表现为「部件乱飞 / 拼接错位 / 同色块贴错位置」。
+                val rotation = SpineRotationAudit.inspect(originalAtlas)
                 if (rotation.changedRegions > 0) {
-                    Log.i(TAG, "图集 ${atlasAsset.name} 有 ${rotation.changedRegions} 个旋转区域需要归一化")
+                    Log.i(
+                        TAG,
+                        "图集 ${atlasAsset.name} 含 ${rotation.changedRegions} 个非 0° 旋转区域" +
+                            "（90=${rotation.counts[90] ?: 0} 180=${rotation.counts[180] ?: 0} " +
+                            "270=${rotation.counts[270] ?: 0}），保持原样交由 Spine 运行时处理"
+                    )
                 }
-                var pages = SpineAtlasParser.pages(rotation.text)
+                var pages = SpineAtlasParser.pages(originalAtlas)
                 if (pages.isEmpty()) throw IOException("图集 ${atlasAsset.name} 中没有页定义")
 
                 // 页过大时按同一比例缩图 + 改写图集坐标
                 val widest = pages.maxOf { max(it.width, it.height) }
-                var atlasText = rotation.text
+                var atlasText = originalAtlas
                 if (pageSideLimit > 0 && widest > pageSideLimit) {
                     val factor = pageSideLimit.toFloat() / widest
                     atlasText = SpineAtlasParser.scale(atlasText, factor)
@@ -166,10 +178,19 @@ class SpineBundleExtractor @Inject constructor(
                 File(outputDir, "$base.skel").writeBytes(skelAsset.bytes)
                 File(outputDir, "$base.atlas").writeText(atlasText, Charsets.UTF_8)
 
+                // 图集页在 libgdx 里按「atlas 文件同级目录 + 页名」解析，而查看器 /
+                // 资源库只扫描扁平目录（`dir.listFiles { .skel }` / `.png`），
+                // 因此这里**不能**把多骨骼的页放进子目录。
+                //
+                // 多骨骼包（如 zhaohe_4 + zhaohe_4_hx 共用 zhaohe_4_res）里两套图集
+                // 常声明同名页。若都写同名文件，后一套会覆盖前一套 → 前一套骨骼采到
+                // 别人的像素（整块部件串味）。解决办法：第二个及以后骨骼的页名
+                // 加骨骼前缀改写，同时改写它的 atlas 里的页名，保证自洽且扁平。
+                val pagePrefix = if (writtenSkeletons.isEmpty()) "" else "$base-"
                 val pageNames = mutableListOf<String>()
-                val flipsByPage = rotation.flips.groupBy { it.page }
                 pages.forEach { page ->
-                    val pageFile = resolvePageFile(outputDir, page.name)
+                    val outName = pagePrefix + page.name
+                    val pageFile = resolvePageFile(outputDir, outName)
                     val texture = matchTexture(textures, page.name)
                         ?: throw IOException(
                             "图集页 ${page.name} 找不到对应贴图（包内贴图：${
@@ -182,15 +203,14 @@ class SpineBundleExtractor @Inject constructor(
                     } else {
                         0
                     }
-                    val pageFlips = flipsByPage[page.name].orEmpty().map {
-                        PixelRect(it.x, it.y, it.width, it.height)
-                    }
+                    // 贴图逐像素原样落盘：不做任何区域旋转补偿。
+                    // 旋转语义由 atlas 的 rotate + 运行时 updateUVs/updateOffset 负责，
+                    // 在像素上再翻一次必然导致双倍旋转与相邻区域串味。
                     val (w, h) = UnityTextureExtractor.extract(
                         stream = TextureStream { offset, size -> session.readResource(offset, size) },
                         texture = texture,
                         outFile = pageFile,
-                        maxSide = targetSide,
-                        flips = pageFlips
+                        maxSide = targetSide
                     )
                     maxW = maxOf(maxW, w)
                     maxH = maxOf(maxH, h)
@@ -198,6 +218,15 @@ class SpineBundleExtractor @Inject constructor(
                     allPages += pageFile.name
                 }
                 if (pageNames.isEmpty()) throw IOException("骨骼 $base 没有可导出的图集页")
+                // 页名被加前缀时，图集里的页声明必须同步改写，否则 TextureAtlas 找不到图
+                if (pagePrefix.isNotEmpty()) {
+                    atlasText = SpineAtlasParser.rewritePageNames(
+                        atlasText,
+                        pages.mapIndexed { i, page -> page.name to pageNames[i] }
+                    )
+                    File(outputDir, "$base.atlas").writeText(atlasText, Charsets.UTF_8)
+                }
+                writtenSkeletons += base
                 skeletonMetas += SpineSkeletonMeta(name = base, version = version, pages = pageNames)
             }
 
@@ -230,15 +259,18 @@ class SpineBundleExtractor @Inject constructor(
 
     // ------------------------------------------------------------------ 内部
 
-    /** 设备可用堆（MB）→ 图集页上限 */
+    /** 设备可用堆（MB）→ 图集页上限（带日志，便于排查缩放相关画质问题） */
     private fun memoryAwarePageSide(): Int {
         val manager = context.getSystemService(android.content.Context.ACTIVITY_SERVICE)
             as? android.app.ActivityManager
         val memoryClass = manager?.memoryClass ?: 192
-        return recommendedMaxPageSide(memoryClass)
+        val limit = recommendedMaxPageSide(memoryClass)
+        Log.i(TAG, "图集页上限=$limit（memoryClass=${memoryClass}MB）")
+        return limit
     }
 
     private data class TextAsset(val name: String, val bytes: ByteArray)
+
 
     private fun readTextAssets(sf: SerializedFile): List<TextAsset> =
         sf.objectsOfClass(SerializedFile.CLASS_TEXT_ASSET).mapNotNull { def ->
@@ -281,3 +313,35 @@ class SpineBundleExtractor @Inject constructor(
         return names.minByOrNull { it.length } ?: names.first()
     }
 }
+
+/**
+ * 图集旋转区域审计（只统计，**不改写**）。
+ *
+ * 存在的意义是日志与自检：一旦某个包出现大量非 0° 区域，
+ * 排查渲染问题时能直接从日志确认「旋转区域数量」，
+ * 避免再把「部件错位」误判成贴图或骨骼问题。
+ */
+internal object SpineRotationAudit {
+
+    data class Report(
+        /** 非 0° 区域总数 */
+        val changedRegions: Int,
+        /** 每个角度 → 区域数（键为 90/180/270） */
+        val counts: Map<Int, Int>
+    )
+
+    fun inspect(atlasText: String): Report {
+        val counts = mutableMapOf<Int, Int>()
+        var total = 0
+        atlasText.lineSequence().forEach { raw ->
+            val line = raw.trim()
+            if (!line.startsWith("rotate:", ignoreCase = true)) return@forEach
+            val degrees = RotationMode.degreesOf(line.substringAfter(':'))
+            if (degrees == 0) return@forEach
+            counts[degrees] = (counts[degrees] ?: 0) + 1
+            total++
+        }
+        return Report(total, counts.toSortedMap())
+    }
+}
+

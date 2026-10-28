@@ -82,6 +82,7 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.chamferedShape
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.isWatchScreen
+import com.azurlane.blyy.ui.theme.withCjkLinePadding
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Surface
@@ -227,7 +228,7 @@ fun BlyyTopBar(
             Column(modifier = Modifier.weight(1f).padding(horizontal = AppSpacing.Sm)) {
                 Text(
                     text = title,
-                    style = AppTypography.TitleLarge,
+                    style = AppTypography.TitleLarge.withCjkLinePadding(),
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -235,7 +236,7 @@ fun BlyyTopBar(
                 subtitle?.let {
                     Text(
                         text = it,
-                        style = AppTypography.LabelSmall,
+                        style = AppTypography.LabelSmall.withCjkLinePadding(),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -307,7 +308,7 @@ fun ClassicTopBar(
             Column(modifier = Modifier.weight(1f).padding(horizontal = AppSpacing.Sm)) {
                 Text(
                     text = title,
-                    style = AppTypography.TitleLarge,
+                    style = AppTypography.TitleLarge.withCjkLinePadding(),
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -315,7 +316,7 @@ fun ClassicTopBar(
                 subtitle?.let {
                     Text(
                         text = it,
-                        style = AppTypography.LabelSmall,
+                        style = AppTypography.LabelSmall.withCjkLinePadding(),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis

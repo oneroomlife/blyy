@@ -45,6 +45,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Blyy"
         android:hardwareAccelerated="true"
+        android:largeHeap="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:requestLegacyExternalStorage="true"
         android:enableOnBackInvokedCallback="true"

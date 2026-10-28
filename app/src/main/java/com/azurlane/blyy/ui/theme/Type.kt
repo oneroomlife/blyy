@@ -1,10 +1,22 @@
 package com.azurlane.blyy.ui.theme
 
 import androidx.compose.material3.Typography
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+
+/**
+ * 汉字上下留白（CJK 安全行盒）。
+ *
+ * Compose Material3 默认 `includeFontPadding = false`，行盒严格等于 `lineHeight`；
+ * 汉字字形（尤其「游戏资源导入」这种上下都有伸出笔画的名字）会顶到行盒边缘，
+ * 在部分机型 / 系统字体缩放比例下被裁掉字头字尾。显式打开字体留白，
+ * 把 ascent/descent 的余量还给字形，从根上消除「字体上下裁切」。
+ */
+fun TextStyle.withCjkLinePadding(): TextStyle =
+    copy(platformStyle = PlatformTextStyle(includeFontPadding = true))
 
 private fun baseStyle(
     size: androidx.compose.ui.unit.TextUnit,

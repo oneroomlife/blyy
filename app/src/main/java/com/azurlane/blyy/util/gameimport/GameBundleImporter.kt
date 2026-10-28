@@ -1,8 +1,6 @@
 package com.azurlane.blyy.util.gameimport
 
 import android.content.Context
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.util.Log
 import com.azurlane.blyy.util.unity.AlLive2dExtractor
 import com.azurlane.blyy.util.unity.UnityBundleSession
@@ -10,7 +8,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileNotFoundException
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -53,6 +50,8 @@ class GameBundleImporter @Inject constructor(
      * @param sourcePath 索引里的来源标识（游戏目录绝对路径 / SAF uri）；用于「同源更新」与 id 去重
      * @param fileNameHint 原始文件名（SAF 来源用），缺省取 [bundleFile] 名
      * @param kindHint 扫描目录推断的类型（仅作兜底，包内 `AssetBundle` 名优先）
+     * @param paintingCompanions 静态立绘的附属包（`painting/<名字>` prefab、`_rw` / `_front` 图层）：
+     *   有 prefab 才能按游戏内的图层布局合成完整立绘，缺失时退化为单层网格还原
      */
     suspend fun importLocal(
         bundleFile: File,
@@ -61,6 +60,7 @@ class GameBundleImporter @Inject constructor(
         kindHint: GameAssetKind? = null,
         sizeHint: Long = 0L,
         modifiedHint: Long = 0L,
+        paintingCompanions: List<File> = emptyList(),
         onProgress: (Float, String) -> Unit = { _, _ -> }
     ): Result = withContext(Dispatchers.IO) {
         val started = System.currentTimeMillis()
@@ -132,11 +132,14 @@ class GameBundleImporter @Inject constructor(
                     )
                 }
 
-                GameAssetKind.PAINTING -> {
+                // 立绘与过场图都是「图片型」资源：同一个提取器，
+                // 过场图包里没有网格/prefab，会自动落到 RAW 模式（取最大贴图）
+                GameAssetKind.PAINTING, GameAssetKind.LOADING_BG -> {
                     val paintingReport = paintingExtractor.extract(
                         bundleFile = bundleFile,
                         outputDir = staging,
                         id = assetId,
+                        companions = if (kind == GameAssetKind.PAINTING) paintingCompanions else emptyList(),
                         onProgress = { fraction, message -> onProgress(0.34f + fraction * 0.6f, message) }
                     )
                     StageReport(
@@ -188,6 +191,10 @@ class GameBundleImporter @Inject constructor(
                     textureSize = report.textureSize
                 )
             )
+            // 秘书舰的 SD 资源库直接读这个目录：导入成功后立刻让它看到新小人
+            if (kind == GameAssetKind.SD_CHAR) {
+                runCatching { com.azurlane.blyy.util.SDResourceManager.onGameImportChanged() }
+            }
             Log.i(TAG, "导入完成：${kind.key}/$assetId（${System.currentTimeMillis() - started}ms）")
             onProgress(1f, "完成")
             Result(kind = kind, assetId = assetId, probe = probe, elapsedMs = System.currentTimeMillis() - started)
@@ -207,43 +214,6 @@ class GameBundleImporter @Inject constructor(
                 )
             )
             throw if (t is IOException) t else IOException(reason, t)
-        }
-    }
-
-    /**
-     * SAF 单文件导入：先落地缓存（SAF 输入流只可顺序读一次），再走 [importLocal]。
-     */
-    suspend fun importUri(
-        uri: Uri,
-        kindHint: GameAssetKind? = null,
-        onProgress: (Float, String) -> Unit = { _, _ -> }
-    ): Result = withContext(Dispatchers.IO) {
-        val resolver = context.contentResolver
-        val displayName = runCatching {
-            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getString(0) else null
-            }
-        }.getOrNull()
-            ?: uri.lastPathSegment?.substringAfterLast('/')
-            ?: "game_bundle"
-
-        val cacheDir = File(context.cacheDir, "game_import").apply { mkdirs() }
-        val local = File(cacheDir, "upload_${System.currentTimeMillis()}_${GameAssetNaming.sanitizeId(displayName)}")
-        try {
-            onProgress(0.02f, "读取所选文件")
-            resolver.openInputStream(uri)?.use { input ->
-                local.outputStream().buffered().use { output -> input.copyTo(output, 1 shl 20) }
-            } ?: throw FileNotFoundException("无法打开所选文件：$displayName")
-
-            importLocal(
-                bundleFile = local,
-                sourcePath = uri.toString(),
-                fileNameHint = displayName,
-                kindHint = kindHint,
-                onProgress = { fraction, message -> onProgress(0.05f + fraction * 0.95f, message) }
-            )
-        } finally {
-            runCatching { local.delete() }
         }
     }
 
@@ -279,7 +249,6 @@ class GameBundleImporter @Inject constructor(
     }
 
     private fun describe(t: Throwable): String = when (t) {
-        is FileNotFoundException -> "文件无法读取（可能已被移动或删除）"
         is java.util.zip.ZipException -> "压缩格式异常"
         else -> t.message?.substringAfterLast('/')?.take(180)?.takeIf { it.isNotBlank() }
             ?: t.javaClass.simpleName

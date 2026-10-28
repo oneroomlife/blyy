@@ -50,9 +50,25 @@ data class PaintingAssetMeta(
     val height: Int = 0,
     /** Unity TextureFormat（排查解码问题用） */
     val unityFormat: Int = 0,
+    /**
+     * 还原方式（[PaintingComposer.Mode.key]）：
+     * - `layout`：按 prefab 的 MeshImage 图层布局多层合成（与游戏内一致）
+     * - `mesh`：按 `_tex` 包内的 Mesh 单层还原（经典立绘）
+     * - `raw`：贴图本身就是成品，原样导出
+     */
+    val mode: String = "raw",
+    /** 实际参与合成的图层数（layout 模式多为 2~4，mesh/raw 恒为 1） */
+    val layers: Int = 1,
+    /** prefab 里声明了、但因缺包/缺图而跳过的图层数 */
+    val skippedLayers: Int = 0,
+    /** 主图集尺寸，如 `2048x1132`；null = 未记录（历史产物） */
+    val atlas: String? = null,
     val source: String? = null,
     val createdAt: Long = 0L
-)
+) {
+    /** 是否经过网格/布局还原（false = 贴图本身就是成品） */
+    val composed: Boolean get() = mode != "raw"
+}
 
 /** 侧车元信息读写（容错优先：读失败当作「无侧车」，由调用方按目录内容推断） */
 object AssetMetaStore {

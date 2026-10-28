@@ -18,7 +18,9 @@ internal data class UnityTexture(
     /** Unity `TextureFormat`，见 [CompressedTextureDecoder.glFormatOf] */
     val format: Int,
     val streamOffset: Long,
-    val streamSize: Long
+    val streamSize: Long,
+    /** 对象 pathID：立绘合成时用 `Sprite.m_RD.texture` 的指针反查贴图 */
+    val pathId: Long = 0L
 ) {
     val pixels: Long get() = width.toLong() * height
     val sizeLabel: String get() = "${width}x$height"
@@ -33,11 +35,12 @@ internal data class UnityTexture(
  * 1. `TextureFormat=50`（ASTC 6x6，`char` SD 包在用）此前没有映射 → 解码必然失败；
  * 2. RGBA32 路径直接 `copyPixelsFromBuffer` 少了一次上下翻转 → 贴图镜像；
  * 3. 解码出的 Bitmap 未及时 recycle（大图连续解码时峰值内存翻倍）。
+ *
+ * 【行序约定】Unity 的贴图数据是自下而上（OpenGL 约定）存放，本模块输出的 PNG
+ * 一律**自上而下**（图片标准方向），与 `.atlas` 的 `xy`（距页面顶部）直接对齐。
+ * 逐区域旋转补偿**不在这里做**：Spine 的 `rotate` 语义由 atlas + 运行时
+ * `updateUVs` / `updateOffset` 负责，在像素上再翻一次会双倍旋转并串味相邻区域。
  */
-/** 页图片上需要旋转 180° 的矩形（像素坐标，原点左上；用于图集旋转语义归一化） */
-data class PixelRect(val x: Int, val y: Int, val width: Int, val height: Int)
-
-/** 贴图压缩数据读取器：把 `.resS` 里的一段读成 direct buffer */
 internal fun interface TextureStream {
     fun read(offset: Long, size: Long): java.nio.ByteBuffer
 }
@@ -63,7 +66,7 @@ internal object UnityTextureExtractor {
         val offset = (stream?.get("offset") as? Number)?.toLong() ?: 0L
         val size = (stream?.get("size") as? Number)?.toLong() ?: 0L
         if (width <= 0 || height <= 0) return null
-        return UnityTexture(name, width, height, format, offset, size)
+        return UnityTexture(name, width, height, format, offset, size, def.pathID)
     }
 
     /**
@@ -78,14 +81,13 @@ internal object UnityTextureExtractor {
         stream: TextureStream,
         texture: UnityTexture,
         outFile: File,
-        maxSide: Int,
-        flips: List<PixelRect> = emptyList()
+        maxSide: Int
     ): Pair<Int, Int> {
         if (!texture.isStreamed) {
             throw IOException("贴图 ${texture.name} 未流式存放（内联像素），暂不支持")
         }
         val limit = if (maxSide <= 0) 0 else maxSide
-        val bitmap = decode(stream, texture, limit, flips)
+        val bitmap = decode(stream, texture, limit)
         try {
             outFile.parentFile?.mkdirs()
             outFile.outputStream().buffered().use { stream ->
@@ -102,12 +104,11 @@ internal object UnityTextureExtractor {
     fun decode(
         stream: TextureStream,
         texture: UnityTexture,
-        maxSide: Int,
-        flips: List<PixelRect> = emptyList()
+        maxSide: Int
     ): Bitmap {
         val buffer = stream.read(texture.streamOffset, texture.streamSize)
         if (texture.format == 4) {
-            return decodeRgba32(buffer, texture, maxSide, flips)
+            return decodeRgba32(buffer, texture, maxSide)
         }
         val glFormat = CompressedTextureDecoder.glFormatOf(texture.format)
             ?: throw IOException(
@@ -118,8 +119,7 @@ internal object UnityTextureExtractor {
             width = texture.width,
             height = texture.height,
             internalFormat = glFormat,
-            maxSize = maxSide,
-            flipRects = flips
+            maxSize = maxSide
         )
     }
 
@@ -130,8 +130,7 @@ internal object UnityTextureExtractor {
     private fun decodeRgba32(
         buffer: java.nio.ByteBuffer,
         texture: UnityTexture,
-        maxSide: Int,
-        flips: List<PixelRect>
+        maxSide: Int
     ): Bitmap {
         val expected = texture.width * texture.height * 4
         if (buffer.remaining() < expected) {
@@ -151,9 +150,6 @@ internal object UnityTextureExtractor {
                 val a = raw[p + 3].toInt() and 0xFF
                 argb[dst + col] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
-        }
-        if (flips.isNotEmpty()) {
-            BitmapPixelOps.rotate180(argb, texture.width, texture.height, flips, 1f, 1f)
         }
         // 超过上限时按比例降采样（RGBA32 多为老资源，保持与压缩路径一致的语义）
         val limit = if (maxSide <= 0) 0 else maxSide

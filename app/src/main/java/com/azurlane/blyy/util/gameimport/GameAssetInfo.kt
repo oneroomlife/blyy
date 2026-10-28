@@ -26,6 +26,15 @@ data class GameAssetInfo(
     /** 静态立绘像素尺寸 */
     val imageWidth: Int = 0,
     val imageHeight: Int = 0,
+    /**
+     * 静态立绘的还原方式：`layout`（按 prefab 多层合成）/ `mesh`（单层网格还原）/
+     * `raw`（贴图本身就是成品）。null = 历史产物未记录，按原始贴图看待。
+     */
+    val paintingMode: String? = null,
+    /** 合成使用的图层数（layout 模式多为 2~4） */
+    val paintingLayers: Int = 0,
+    /** 主图集尺寸（如 `2048x1132`），用于界面说明「由图集还原」 */
+    val paintingAtlas: String? = null,
     /** 卡片预览图（立绘本身 / Live2D 截图） */
     val previewFile: File? = null,
     /** 内置舰娘头像兜底资产名 */
@@ -39,6 +48,10 @@ data class GameAssetInfo(
 ) {
     val isSpine: Boolean get() = kind.isSpine
     val isPainting: Boolean get() = kind == GameAssetKind.PAINTING
+    val isLoadingBg: Boolean get() = kind == GameAssetKind.LOADING_BG
+
+    /** 单张图片型资源（静态立绘 / 过场图）：查看器用可缩放图片、支持导出 */
+    val isImage: Boolean get() = isPainting || isLoadingBg
     val isLive2d: Boolean get() = kind == GameAssetKind.LIVE2D
 }
 
@@ -122,8 +135,37 @@ object GameAssetNaming {
         return sanitizeId(base)
     }
 
-    /** 变体拆解：`zhaohe_4_hx` → ("zhaohe_4", "HX")；无变体返回 null */
-    fun variantOf(id: String): Pair<String, String>? {
+    /** `..._bj1` / `..._bj2_hx` 这类背景层条带 */
+    private val PAINTING_LAYER_BG = Regex(".*_bj\\d+(?:_hx)?$")
+
+    /**
+     * 是否为立绘**分层包**（人物层 / 前景层 / 背景层条带 / 商店小图）。
+     *
+     * 碧蓝 `painting/` 下一个皮肤往往有多个包：
+     * - `X_tex`      主角立绘（完整图，可以独立展示）
+     * - `X_rw_tex`   人物层：把人物从背景抠出来的**碎片图集**，运行时由 Mesh 摆放
+     * - `X_front_tex` 前景层
+     * - `X_bj1_tex` / `X_bj2_tex` 背景层条带（常见 1024×362 这种窄条）
+     * - `X_shophx_tex` 商店/缩略图
+     *
+     * 这些层单独看都是残图（散落碎片或一条窄带）。早先只按 `_tex` 过滤，
+     * 它们被当成独立立绘进库，用户点开看到的就是「拼接错位 / 部分缺失」。
+     * 现在扫描与资源库扫描共用本判定，只保留主立绘。
+     *
+     * 入参允许带 `_tex` 后缀（传目录名或包名都能用）。
+     */
+    fun isPaintingLayer(id: String): Boolean {
+        val core = if (id.endsWith("_tex", ignoreCase = true) && id.length > 4) {
+            id.dropLast(4)
+        } else {
+            id
+        }
+        val lower = core.lowercase()
+        if (PAINTING_LAYER_BG.matches(lower)) return true
+        return lower.contains("_rw") || lower.contains("_front") || lower.contains("_shophx")
+    }
+
+    /** 变体拆解：`zhaohe_4_hx` → ("zhaohe_4", "HX")；无变体返回 null */    fun variantOf(id: String): Pair<String, String>? {
         for (suffix in VARIANT_SUFFIXES) {
             if (id.endsWith(suffix, ignoreCase = true) && id.length > suffix.length) {
                 return id.dropLast(suffix.length) to suffix.removePrefix("_").uppercase()
@@ -134,6 +176,14 @@ object GameAssetNaming {
 
     /**
      * 目录名归一：仅保留字母/数字/下划线/短横线，压缩到 48 字符。
+     *
+     * **保留原始大小写**：已有资源的目录名是不能随意改写的（改了就等于
+     * 让用户已导入的资产失联），因此这里保持历史行为。
+     * 大小写差异统一在**查找侧**消化：
+     * - 头像匹配走 [com.azurlane.blyy.util.AvatarAssetIndex] 的小写索引；
+     * - 舰名解析走 [com.azurlane.blyy.util.Live2dNameResolver] 的大小写不敏感比对。
+     * 这样 `2B_2` 这类含大写的资源既不会失联，也能正确匹配到 `2B.webp`。
+     *
      * 与 [com.azurlane.blyy.util.Live2dLibrary.isValidId] 的约束保持一致。
      */
     fun sanitizeId(raw: String): String {

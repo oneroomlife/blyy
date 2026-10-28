@@ -127,16 +127,19 @@ class ShizukuBridge @Inject constructor(
         if (!isAvailable()) throw IOException("Shizuku 未运行，请先启动 Shizuku 并授权本应用")
         if (!isPermissionGranted()) throw SecurityException("尚未授予 Shizuku 权限")
 
-        val deferred = CompletableDeferred<IBlyyShellService?>()
-        synchronized(lock) {
-            pending = deferred
-            if (!binding) {
-                binding = true
-                val ok = runCatching { Shizuku.bindUserService(args, connection) }.isSuccess
-                if (!ok) {
-                    binding = false
-                    pending = null
-                    throw IOException("无法绑定 Shizuku 服务")
+        // 并发调用（四类目录同时列举）必须共享同一个等待中的绑定：
+        // 各自 new 一个 deferred 会互相覆盖，先到的那个永远等不到结果，只能超时。
+        val deferred: CompletableDeferred<IBlyyShellService?> = synchronized(lock) {
+            pending ?: CompletableDeferred<IBlyyShellService?>().also { created ->
+                pending = created
+                if (!binding) {
+                    binding = true
+                    val ok = runCatching { Shizuku.bindUserService(args, connection) }.isSuccess
+                    if (!ok) {
+                        binding = false
+                        pending = null
+                        throw IOException("无法绑定 Shizuku 服务")
+                    }
                 }
             }
         }

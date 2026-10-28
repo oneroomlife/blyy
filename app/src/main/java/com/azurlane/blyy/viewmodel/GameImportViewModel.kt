@@ -1,20 +1,20 @@
 package com.azurlane.blyy.viewmodel
 
-import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.util.Live2dNameResolver
+import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.util.gameimport.GameAssetKind
 import com.azurlane.blyy.util.gameimport.GameAssetLibrary
 import com.azurlane.blyy.util.gameimport.GameAssetNaming
 import com.azurlane.blyy.util.gameimport.GameBundleEntry
 import com.azurlane.blyy.util.gameimport.GameBundleScanner
-import com.azurlane.blyy.util.gameimport.GameImportBatchResult
 import com.azurlane.blyy.util.gameimport.GameImportIndex
 import com.azurlane.blyy.util.gameimport.ShellState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,12 +46,6 @@ sealed interface GameImportIntent {
     /** 导入全部未导入/有更新的资源包 */
     data object ImportPending : GameImportIntent
 
-    /** SAF 多选文件导入 */
-    data class ImportUris(val uris: List<Uri>) : GameImportIntent
-
-    /** SAF 目录导入（整棵资源目录树） */
-    data class ImportTree(val treeUri: Uri) : GameImportIntent
-
     /** 取消批量导入（当前文件完成后停止） */
     data object CancelImport : GameImportIntent
 
@@ -63,6 +57,14 @@ sealed interface GameImportIntent {
 
     /** 删除已导入资源 */
     data class DeleteAsset(val kind: GameAssetKind, val id: String) : GameImportIntent
+
+    /**
+     * 批量删除已导入资源（资源库多选删除）。
+     *
+     * [keys] 为 (类型, 资源 id) 列表：一次 IO 批量删除，
+     * 结果用横幅汇总「已删除 N 个 / 失败明细」，不再逐个弹窗。
+     */
+    data class DeleteAssets(val keys: List<Pair<GameAssetKind, String>>) : GameImportIntent
 
     /** 重命名已导入资源 */
     data class RenameAsset(val kind: GameAssetKind, val id: String, val newName: String) : GameImportIntent
@@ -82,7 +84,8 @@ class GameImportViewModel @Inject constructor(
     private val scanner: GameBundleScanner,
     private val library: GameAssetLibrary,
     private val index: GameImportIndex,
-    private val nameResolver: Live2dNameResolver
+    private val nameResolver: Live2dNameResolver,
+    private val skinNameRegistry: Live2dSkinNameRegistry
 ) : ViewModel() {
 
     data class ImportProgress(
@@ -109,7 +112,21 @@ class GameImportViewModel @Inject constructor(
         val error: String? = null,
         val lastScanAt: Long = 0L,
         /** 舰名拼音映射（就绪后显示名自动升级为中文） */
-        val pinyinMap: Map<String, String> = emptyMap()
+        val pinyinMap: Map<String, String> = emptyMap(),
+        /**
+         * wiki 换装名序列快照（舰名 → [换装2、换装3…] 的真实皮肤名）。
+         *
+         * 只用于触发重组：显示名由 [nameResolver] 通过注册表钩子实时组合，
+         * 这里保存快照是为了让「换装N → 真实皮肤名」的升级能刷新列表。
+         */
+        val skinNameSequences: Map<String, List<String>> = emptyMap(),
+        /**
+         * 设备解码能力提示（如「GPU 只支持 ASTC 4x4」）。
+         *
+         * 过场图与 SD 小人的贴图是 ASTC 6x6，设备不支持时导入必然失败，
+         * 提前说明比让用户对着「导入失败」猜要好。
+         */
+        val deviceWarning: String? = null
     ) {
         val busy: Boolean get() = scanning || progress != null
 
@@ -126,8 +143,23 @@ class GameImportViewModel @Inject constructor(
         val filteredAssets: List<GameAssetInfo>
             get() = assetsOf(kindFilter)
 
-        val importedCount: Int get() = entries.count { it.state == GameBundleEntry.State.IMPORTED }
-        val pendingCount: Int get() = entries.count { it.state != GameBundleEntry.State.IMPORTED }
+        /** 已导入（含可更新）的条目数 */
+        val importedCount: Int
+            get() = entries.count {
+                it.state == GameBundleEntry.State.IMPORTED || it.state == GameBundleEntry.State.CHANGED
+            }
+
+        /** 待导入：从未导入过 + 上次失败。CHANGED 不算（已导入，只是可更新） */
+        val pendingCount: Int
+            get() = entries.count {
+                it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
+            }
+
+
+        /** 可更新（已导入但源包/管线变化） */
+        val updatableCount: Int
+            get() = entries.count { it.state == GameBundleEntry.State.CHANGED }
+
         val failedCount: Int get() = entries.count { it.state == GameBundleEntry.State.FAILED }
         val totalAssets: Int get() = assets.values.sumOf { it.size }
 
@@ -159,11 +191,19 @@ class GameImportViewModel @Inject constructor(
             // 舰名反查（拼音 → 中文）就绪后刷新显示名
             nameResolver.pinyinMap.collect { map ->
                 _state.update { it.copy(pinyinMap = map) }
+                requestSkinNames()
+            }
+        }
+        viewModelScope.launch {
+            // 真实换装名就绪后刷新显示名：把「换装N」升级为 wiki 皮肤名
+            skinNameRegistry.skinSequences.collect { sequences ->
+                _state.update { it.copy(skinNameSequences = sequences) }
             }
         }
         viewModelScope.launch {
             refreshShellState()
             refreshLibrary()
+            refreshDeviceCapability()
             if (_state.value.shellState == ShellState.READY) scan()
         }
     }
@@ -181,10 +221,13 @@ class GameImportViewModel @Inject constructor(
             GameImportIntent.RequestPermission -> requestPermission()
             is GameImportIntent.ImportEntry -> importEntries(listOf(intent.entry))
             GameImportIntent.ImportPending -> importEntries(
-                _state.value.filteredEntries.filter { it.state != GameBundleEntry.State.IMPORTED }
+                // 只处理「从未导入」和「上次失败」的条目；
+                // CHANGED（已导入但源包/管线更新过）是可选更新，
+                // 不纳入「全部导入」，避免重复搬运几十 GB 数据。
+                _state.value.filteredEntries.filter {
+                    it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
+                }
             )
-            is GameImportIntent.ImportUris -> importUris(intent.uris)
-            is GameImportIntent.ImportTree -> importTree(intent.treeUri)
             GameImportIntent.CancelImport -> {
                 cancelRequested = true
                 _state.update { it.copy(progress = it.progress?.copy(message = "正在停止…")) }
@@ -192,6 +235,7 @@ class GameImportViewModel @Inject constructor(
             is GameImportIntent.SelectKind -> _state.update { it.copy(kindFilter = intent.kind) }
             is GameImportIntent.SelectTab -> _state.update { it.copy(tab = intent.tab) }
             is GameImportIntent.DeleteAsset -> deleteAsset(intent.kind, intent.id)
+            is GameImportIntent.DeleteAssets -> deleteAssets(intent.keys)
             is GameImportIntent.RenameAsset -> renameAsset(intent.kind, intent.id, intent.newName)
             GameImportIntent.ConsumeMessage -> _state.update {
                 it.copy(batchMessage = null, error = null)
@@ -199,22 +243,28 @@ class GameImportViewModel @Inject constructor(
         }
     }
 
-    /** 显示名：拼音 id → 中文舰名 + 变体说明（换装特效 / 改造 …） */
+    /** 显示名：拼音 id → 中文舰名 + 换装/变体说明（与查看器共用同一套解析） */
     fun displayNameFor(asset: GameAssetInfo): String = displayNameFor(asset.kind, asset.id)
 
-    fun displayNameFor(kind: GameAssetKind, id: String): String {
-        val variant = GameAssetNaming.variantOf(id)
-        val baseId = variant?.first ?: id
-        val base = nameResolver.displayNameFor(baseId)
-        if (variant == null) return base
-        // 已含「· 换装N」时追加变体说明；完全没解析出来时退回 id
-        return if (base == baseId) "$baseId · ${variant.second}" else "$base · ${variant.second}"
-    }
+    fun displayNameFor(kind: GameAssetKind, id: String): String = nameResolver.displayNameFor(id)
 
-    fun displayNameOfEntry(entry: GameBundleEntry): String {
-        val variant = GameAssetNaming.variantOf(entry.assetId)
-        val base = nameResolver.displayNameFor(variant?.first ?: entry.assetId)
-        return variant?.let { "$base · ${it.second}" } ?: base
+    fun displayNameOfEntry(entry: GameBundleEntry): String = nameResolver.displayNameFor(entry.assetId)
+
+    /**
+     * 为当前列表里出现的舰名拉取真实换装名（wiki 台词表）。
+     *
+     * 注册表内部按舰名去重、失败允许重试，重复调用零网络成本；
+     * 就绪后经 [Live2dNameResolver.skinNameProvider] 自动把「换装N」升级为真实皮肤名。
+     */
+    private fun requestSkinNames() {
+        val current = _state.value
+        val ids = buildSet {
+            current.entries.forEach { add(it.assetId) }
+            current.assets.values.forEach { list -> list.forEach { add(it.id) } }
+        }
+        ids.forEach { id ->
+            nameResolver.baseShipName(id)?.let(skinNameRegistry::request)
+        }
     }
 
     fun formatSize(bytes: Long): String = when {
@@ -224,6 +274,27 @@ class GameImportViewModel @Inject constructor(
     }
 
     // ------------------------------------------------------------------ 扫描
+
+    /**
+     * 探测 GPU 实际支持的 ASTC 块尺寸并生成提示。
+     *
+     * 屏幕上的「过场图 / SD 小人」都用 ASTC 6x6；模拟器与部分低端 GPU 只实现 4x4，
+     * 此时导入会在解码阶段失败。
+     */
+    private fun refreshDeviceCapability() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val blocks = runCatching {
+                com.azurlane.blyy.util.unity.CompressedTextureDecoder.supportedAstcBlockSizes()
+            }.getOrDefault(emptySet())
+            val warning = when {
+                blocks.isEmpty() -> null
+                6 in blocks -> null
+                else -> "当前设备 GPU 只支持 ASTC 4x4：过场图与 SD 小人（ASTC 6x6）" +
+                    "会在解码阶段失败，请换用支持 ASTC 6x6 的真机（Adreno / Mali 均可）"
+            }
+            _state.update { it.copy(deviceWarning = warning) }
+        }
+    }
 
     fun refreshShellState() {
         val shell = scanner.shellState()
@@ -294,6 +365,7 @@ class GameImportViewModel @Inject constructor(
         viewModelScope.launch {
             val assets = library.scanAll()
             _state.update { it.copy(assets = assets) }
+            requestSkinNames()
         }
     }
 
@@ -370,78 +442,13 @@ class GameImportViewModel @Inject constructor(
     private suspend fun libraryAssetOrNull(kind: GameAssetKind, id: String): GameAssetInfo? =
         runCatching { library.find(kind, id) }.getOrNull()
 
-    private fun importUris(uris: List<Uri>) {
-        if (uris.isEmpty() || _state.value.progress != null) return
-        cancelRequested = false
-        importJob = viewModelScope.launch {
-            val result = scanner.importUris(
-                uris = uris,
-                kindHint = _state.value.kindFilter,
-                isCancelled = { cancelRequested },
-                onProgress = { position, total, fileName, fraction, message ->
-                    _state.update {
-                        it.copy(
-                            progress = ImportProgress(
-                                fileName = fileName,
-                                index = position,
-                                total = total,
-                                fraction = ((position - 1 + fraction) / total).coerceIn(0f, 1f),
-                                message = message
-                            )
-                        )
-                    }
-                }
-            )
-            finishBatch(result)
-        }
-    }
-
-    private fun importTree(treeUri: Uri) {
-        if (_state.value.progress != null) return
-        cancelRequested = false
-        importJob = viewModelScope.launch {
-            val result = scanner.importTree(
-                treeUri = treeUri,
-                isCancelled = { cancelRequested },
-                onProgress = { position, total, fileName, fraction, message ->
-                    _state.update {
-                        it.copy(
-                            progress = ImportProgress(
-                                fileName = fileName,
-                                index = position,
-                                total = total,
-                                fraction = ((position - 1 + fraction) / total).coerceIn(0f, 1f),
-                                message = message
-                            )
-                        )
-                    }
-                }
-            )
-            finishBatch(result)
-        }
-    }
-
-    private fun finishBatch(result: GameImportBatchResult) {
-        _state.update { current ->
-            current.copy(
-                progress = null,
-                batchMessage = buildBatchMessage(result.successCount, result.failed, result.cancelled),
-                error = result.failed.firstOrNull()?.let { (name, reason) -> "$name：$reason" } ?: current.error,
-                // 本地文件/文件夹导入没有「资源包列表」可看，成功后直接切到已导入，避免以为没生效
-                tab = if (result.successCount > 0 && current.tab == GameImportTab.BUNDLES &&
-                    current.entries.isEmpty()
-                ) {
-                    GameImportTab.LIBRARY
-                } else {
-                    current.tab
-                }
-            )
-        }
-        refreshLibrary()
-        // 导入完成后刷新一次条目状态，避免列表仍显示「待导入」
-        if (result.successCount > 0) scan()
-    }
-
+    /**
+     * 批量导入结果文案。
+     *
+     * @param success 成功数量
+     * @param failed 失败明细（文件名 → 原因）
+     * @param cancelled 是否被用户中途停止
+     */
     private fun buildBatchMessage(
         success: Int,
         failed: List<Pair<String, String>>,
@@ -496,8 +503,41 @@ class GameImportViewModel @Inject constructor(
         }
     }
 
-    private fun renameAsset(kind: GameAssetKind, id: String, newName: String) {
+    /**
+     * 批量删除（资源库多选）。
+     *
+     * 逐个删除并汇总结果：成功数量 + 失败明细首项，最后统一刷新资源库与索引，
+     * 避免多选删除时弹出 N 个对话框、也避免列表出现「删了一半」的中间态。
+     */
+    private fun deleteAssets(keys: List<Pair<GameAssetKind, String>>) {
+        if (keys.isEmpty()) return
         viewModelScope.launch {
+            var deleted = 0
+            val failed = ArrayList<String>()
+            keys.forEach { (kind, id) ->
+                val label = displayNameFor(kind, id)
+                if (runCatching { library.delete(kind, id) }.getOrDefault(false)) {
+                    deleted++
+                    index.removeByAsset(kind, id)
+                } else {
+                    failed += label
+                }
+            }
+            _state.update {
+                it.copy(
+                    batchMessage = buildString {
+                        append("已删除 $deleted 个资源")
+                        if (failed.isNotEmpty()) {
+                            append("，${failed.size} 个失败（${failed.first()}）")
+                        }
+                    }
+                )
+            }
+            refreshLibrary()
+        }
+    }
+
+    private fun renameAsset(kind: GameAssetKind, id: String, newName: String) {        viewModelScope.launch {
             val target = GameAssetNaming.sanitizeId(newName)
             val error = library.rename(kind, id, target)
             if (error == null && target != id) {

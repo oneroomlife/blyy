@@ -38,8 +38,16 @@ import javax.inject.Singleton
 @Singleton
 class Live2dSkinNameRegistry @Inject constructor(
     private val getVoicesUseCase: GetVoicesUseCase,
-    private val settings: PlayerSettingsDataStore
+    private val settings: PlayerSettingsDataStore,
+    nameResolver: Live2dNameResolver
 ) {
+    init {
+        // 把「换装N → 真实皮肤名」的查询能力挂到反查器上：
+        // Live2D 库 / 查看器 / 游戏资源导入 / 立绘查看共用同一份显示名逻辑
+        nameResolver.skinNameProvider = { baseName, skinIndex ->
+            skinNameFor(baseName, skinIndex)
+        }
+    }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** 已发起请求的舰名（pending 或 done；失败时移除以允许重试） */

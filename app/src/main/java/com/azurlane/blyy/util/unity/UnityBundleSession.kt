@@ -30,6 +30,14 @@ internal object UnityValues {
     fun number(raw: Any?): Long? = (raw as? Number)?.toLong()
 
     fun int(raw: Any?): Int? = (raw as? Number)?.toInt()
+
+    /**
+     * 浮点字段（`Vector2/3` 的分量、`mRawSpriteSize` 等）。
+     *
+     * 不能用 [number]：它走 `toLong()`，会把 `0.5` 读成 `0`、`43.3` 读成 `43`——
+     * 立绘布局的锚点/轴心全是 0..1 之间的小数，被截断后整张图会错位。
+     */
+    fun float(raw: Any?): Float? = (raw as? Number)?.toFloat()
 }
 
 /**

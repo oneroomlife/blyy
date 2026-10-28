@@ -65,7 +65,8 @@ class GameAssetLibrary @Inject constructor(
     suspend fun scan(kind: GameAssetKind): List<GameAssetInfo> = withContext(Dispatchers.IO) {
         when (kind) {
             GameAssetKind.LIVE2D -> scanLive2d()
-            GameAssetKind.PAINTING -> scanPaintings()
+            // 立绘与过场图都是「一张 PNG + 侧车」的图片型资源
+            GameAssetKind.PAINTING, GameAssetKind.LOADING_BG -> scanImageAssets(kind)
             else -> scanSpineAssets(kind)
         }
     }
@@ -87,6 +88,10 @@ class GameAssetLibrary @Inject constructor(
         val dir = dirOf(kind, id)
         val ok = runCatching { dir.deleteRecursively() }.getOrDefault(false)
         if (!ok) Log.w(TAG, "删除失败：${kind.key}/$id")
+        // SD 资源库与秘书舰共用同一份目录索引：删除后要让它重新扫
+        if (ok && kind == GameAssetKind.SD_CHAR) {
+            runCatching { com.azurlane.blyy.util.SDResourceManager.onGameImportChanged() }
+        }
         ok || !dir.exists()
     }
 
@@ -102,7 +107,13 @@ class GameAssetLibrary @Inject constructor(
                 dirOf(kind, sanitized).exists() -> "已存在同名资源"
                 !dirOf(kind, id).isDirectory -> "资源不存在"
                 !dirOf(kind, id).renameTo(dirOf(kind, sanitized)) -> "重命名失败（文件可能被占用）"
-                else -> null
+                else -> {
+                    // 秘书舰的 SD 资源库按目录名建索引，改名后要重建
+                    if (kind == GameAssetKind.SD_CHAR) {
+                        runCatching { com.azurlane.blyy.util.SDResourceManager.onGameImportChanged() }
+                    }
+                    null
+                }
             }
         }
 
@@ -139,19 +150,24 @@ class GameAssetLibrary @Inject constructor(
         }
     }
 
-    private fun scanPaintings(): List<GameAssetInfo> {
-        val root = rootDir(GameAssetKind.PAINTING)
+    private fun scanImageAssets(kind: GameAssetKind): List<GameAssetInfo> {
+        val root = rootDir(kind)
         val dirs = root.listFiles { f -> f.isDirectory }?.sortedBy { it.name }.orEmpty()
-        return dirs.mapNotNull { dir ->
-            runCatching { toPaintingInfo(dir) }
-                .onFailure { Log.w(TAG, "解析立绘资源失败：${dir.name}", it) }
-                .getOrNull()
-        }
+        return dirs
+            // 立绘的分层包（`_rw` 人物层 / `_bjN` 背景条 / `_front` 前景层 / `_shophx` 缩略图）
+            // 单独展示都是残图：历史导入遗留的这类目录也不再列进资源库，
+            // 免得用户点开看到「拼接错位 / 部分缺失」的立绘。
+            .filterNot { kind == GameAssetKind.PAINTING && GameAssetNaming.isPaintingLayer(it.name) }
+            .mapNotNull { dir ->
+                runCatching { toImageInfo(kind, dir) }
+                    .onFailure { Log.w(TAG, "解析图片资源失败：${kind.key}/${dir.name}", it) }
+                    .getOrNull()
+            }
     }
 
     private suspend fun toInfo(kind: GameAssetKind, dir: File): GameAssetInfo? = when (kind) {
         GameAssetKind.LIVE2D -> scanLive2d().firstOrNull { it.id == dir.name }
-        GameAssetKind.PAINTING -> toPaintingInfo(dir)
+        GameAssetKind.PAINTING, GameAssetKind.LOADING_BG -> toImageInfo(kind, dir)
         else -> toSpineInfo(kind, dir)
     }
 
@@ -188,14 +204,14 @@ class GameAssetLibrary @Inject constructor(
         )
     }
 
-    private fun toPaintingInfo(dir: File): GameAssetInfo? {
+    private fun toImageInfo(kind: GameAssetKind, dir: File): GameAssetInfo? {
         val meta = AssetMetaStore.readPainting(dir)
         val image = File(dir, meta?.file ?: AssetFiles.PAINTING_IMAGE)
         if (!image.isFile) return null
         val (size, count) = measure(dir)
         val dims = meta?.takeIf { it.width > 0 && it.height > 0 }
         return GameAssetInfo(
-            kind = GameAssetKind.PAINTING,
+            kind = kind,
             id = dir.name,
             dir = dir,
             sizeBytes = size,
@@ -203,6 +219,9 @@ class GameAssetLibrary @Inject constructor(
             pageCount = 1,
             imageWidth = dims?.width ?: 0,
             imageHeight = dims?.height ?: 0,
+            paintingMode = meta?.mode,
+            paintingLayers = meta?.layers ?: 0,
+            paintingAtlas = meta?.atlas,
             previewFile = image,
             avatarAsset = avatarAssets.resolve(dir.name),
             variantLabel = GameAssetNaming.variantOf(dir.name)?.second,

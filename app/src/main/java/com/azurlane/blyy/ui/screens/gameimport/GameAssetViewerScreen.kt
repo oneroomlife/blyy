@@ -1,52 +1,40 @@
 package com.azurlane.blyy.ui.screens.gameimport
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Animation
-import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.FitScreen
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.azurlane.blyy.ui.components.BlyyButton
-import com.azurlane.blyy.ui.components.BlyyButtonVariant
 import com.azurlane.blyy.ui.components.BlyyTopBar
-import com.azurlane.blyy.ui.components.SpineSdController
 import com.azurlane.blyy.ui.components.SpineSdView
 import com.azurlane.blyy.ui.components.ZoomableImage
 import com.azurlane.blyy.ui.theme.AppColors
@@ -54,25 +42,34 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.viewmodel.GameAssetViewerViewModel
-import java.util.Locale
+import android.widget.Toast
 
 /**
  * 游戏资源查看器：Spine 小人 / 动态皮肤（GL 实时渲染）与静态立绘（可缩放图片）。
  *
- * 布局刻意**不做悬浮覆盖**：`SpineSdView` 内部是 `setZOrderOnTop(true)` 的
- * GLSurfaceView，会把同窗口的 Compose 内容压在下面。因此顶栏与操作面板都放在
- * GL 视图之外的 Column 里，避免「按钮被小人挡住 / 点不到」。
- *
- * 交互：
- * - Spine：点击模型播放随机动作；底部可切换骨骼、拖动缩放、点动作名直接播放
- * - 立绘：双指缩放 / 双击还原
+ * 设计取舍：
+ * - **不再有悬浮控制面板**：`SpineSdView` 内部是 `setZOrderOnTop(true)` 的
+ *   GLSurfaceView，会盖住同窗口的 Compose 内容，悬浮按钮既难点也容易遮挡模型。
+ * - **手势即控制**：单指拖动平移、双指缩放、双击复位；顶栏另有「适应屏幕」。
+ * - 顶栏在 GL 视图之外（Column 布局），避免被 Surface 压住。
  */
 @Composable
 fun GameAssetViewerScreen(onBack: () -> Unit) {
     val viewModel: GameAssetViewerViewModel = hiltViewModel()
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val controller = remember { SpineSdController() }
     val asset = state.asset
+
+    // 复位信号：递增即让渲染视图把平移/缩放归零（不持有 View 引用）
+    var resetSignal by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+
+    // 导出结果用 Toast 反馈（不打断全屏看图）
+    LaunchedEffect(state.toast) {
+        state.toast?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            viewModel.consumeToast()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -84,11 +81,33 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
             subtitle = asset?.let { subtitleOf(it) } ?: state.error,
             onBackClick = onBack,
             actions = {
+                // 图片型资源（静态立绘 / 过场图）：导出到 Downloads/BLYY
+                if (asset?.isImage == true) {
+                    IconButton(
+                        onClick = { viewModel.export(asset) },
+                        enabled = !state.exporting
+                    ) {
+                        if (state.exporting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            Icon(
+                                Icons.Rounded.SaveAlt,
+                                contentDescription = "导出到相册下载目录",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(21.dp)
+                            )
+                        }
+                    }
+                }
                 if (asset?.isSpine == true) {
-                    IconButton(onClick = { controller.random() }) {
+                    IconButton(onClick = { resetSignal++ }) {
                         Icon(
-                            Icons.Rounded.Animation,
-                            contentDescription = "随机动作",
+                            Icons.Rounded.FitScreen,
+                            contentDescription = "适应屏幕",
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(21.dp)
                         )
@@ -125,7 +144,7 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
                     )
                 }
 
-                asset.isPainting -> {
+                asset.isImage -> {
                     val preview = asset.previewFile
                     if (preview != null) {
                         ZoomableImage(
@@ -144,15 +163,14 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
                 }
 
                 asset.isSpine -> {
-                    val skeleton = state.skeleton ?: asset.primarySkeleton
+                    val skeleton = state.skeleton
                     if (skeleton != null) {
                         SpineSdView(
                             dirPath = asset.dir.absolutePath,
                             assetName = skeleton,
                             modifier = Modifier.fillMaxSize(),
-                            scaleMultiplier = state.scale,
-                            onLoaded = viewModel::onAnimationsLoaded,
-                            controller = controller
+                            panZoomEnabled = true,
+                            resetSignal = resetSignal
                         )
                     } else {
                         Text(
@@ -170,128 +188,35 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
                 )
             }
         }
-
-        if (asset?.isSpine == true && state.skeleton != null) {
-            SpineControls(
-                state = state,
-                onScaleChange = viewModel::setScale,
-                onSkeletonSelected = viewModel::selectSkeleton,
-                onAnimationSelected = { controller.play(it) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm)
-            )
-        }
     }
 }
 
+/** 顶栏副标题：类型 + 版本 + 手势提示（替代原来的底部控制面板） */
 private fun subtitleOf(asset: GameAssetInfo): String = buildString {
     append(asset.kind.label)
     asset.versionLabel?.let { append(" · ").append(it) }
     when {
         asset.isSpine -> {
-            append(" · ").append(asset.skeletons.size).append(" 套骨骼")
-            if (asset.pageCount > 0) append(" · ").append(asset.pageCount).append(" 页图集")
+            append(" · ").append(asset.pageCount).append(" 页图集 · 拖动/双指缩放/双击复位")
+        }
+        asset.isLoadingBg -> {
+            if (asset.imageWidth > 0) {
+                append(" · ").append(asset.imageWidth).append("×").append(asset.imageHeight)
+            }
+            append(" · 可导出到下载目录")
         }
         asset.isPainting -> {
             if (asset.imageWidth > 0) {
                 append(" · ").append(asset.imageWidth).append("×").append(asset.imageHeight)
             }
-        }
-    }
-}
-
-@Composable
-private fun SpineControls(
-    state: GameAssetViewerViewModel.State,
-    onScaleChange: (Float) -> Unit,
-    onSkeletonSelected: (String) -> Unit,
-    onAnimationSelected: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-        color = Color(0xCC0F1826),
-        border = BorderStroke(AppSpacing.Border.Thin, Color.White.copy(alpha = 0.16f))
-    ) {
-        Column(
-            Modifier.padding(AppSpacing.Md),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
-        ) {
-            val asset = state.asset
-            if (asset != null && asset.skeletons.size > 1) {
-                Text(
-                    "骨骼",
-                    style = AppTypography.LabelSmall,
-                    color = Color.White.copy(alpha = 0.6f)
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-                    items(asset.skeletons) { name ->
-                        FilterChip(
-                            selected = name == state.skeleton,
-                            onClick = { onSkeletonSelected(name) },
-                            label = { Text(name, style = AppTypography.LabelSmall) }
-                        )
-                    }
+            // 立绘不是「一张图」：游戏里是碎片图集 + 网格 + 图层布局拼出来的。
+            // 导入时已按同样方式还原，这里把还原方式如实写在副标题里。
+            when (asset.paintingMode) {
+                "layout" -> {
+                    val layers = asset.paintingLayers
+                    if (layers > 0) append(" · ").append(layers).append(" 层合成")
                 }
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Rounded.Refresh,
-                    contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.size(AppSpacing.Sm))
-                // 缩放条独占剩余宽度：右侧再塞按钮会把「随机动作」挤出屏幕
-                Slider(
-                    value = state.scale,
-                    onValueChange = onScaleChange,
-                    valueRange = 0.4f..2f,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = AppSpacing.Sm)
-                )
-                Text(
-                    "${String.format(Locale.US, "%.2f", state.scale)}×",
-                    style = AppTypography.CaptionSmall,
-                    color = Color.White.copy(alpha = 0.75f)
-                )
-            }
-
-            if (state.animations.isNotEmpty()) {
-                Text(
-                    "动作 ${state.animations.size} 个（点击播放，点模型也可随机播放）",
-                    style = AppTypography.LabelSmall,
-                    color = Color.White.copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-                    items(state.animations) { name ->
-                        Surface(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(AppSpacing.Corner.Full))
-                                .clickable { onAnimationSelected(name) },
-                            shape = RoundedCornerShape(AppSpacing.Corner.Full),
-                            color = Color.White.copy(alpha = 0.08f),
-                            border = BorderStroke(
-                                AppSpacing.Border.Thin,
-                                Color.White.copy(alpha = 0.14f)
-                            )
-                        ) {
-                            Text(
-                                name,
-                                style = AppTypography.LabelSmall,
-                                color = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
+                "mesh" -> append(" · 网格还原")
             }
         }
     }

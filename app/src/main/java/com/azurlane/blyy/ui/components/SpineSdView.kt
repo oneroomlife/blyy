@@ -10,6 +10,9 @@ import android.os.Looper
 import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.GestureDetector
+import android.view.ScaleGestureDetector
+import android.view.View
 import android.view.ViewConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -49,26 +52,9 @@ import kotlin.math.min
 
 private const val TAG = "SpineSdView"
 
-/**
- * [SpineSdView] 的外部控制器：查看器用它切换动作，而不必重建渲染视图。
- *
- * 由 Composable 在视图就绪后接线（内部持有 GLSurfaceView 引用），
- * 未接线时调用是空操作，不会崩溃。
- */
-class SpineSdController {
-    internal var playAnimation: ((String) -> Unit)? = null
-    internal var randomAction: (() -> Unit)? = null
-
-    /** 播放指定动画（idle 类循环，其余播放一次后回 idle） */
-    fun play(name: String) {
-        playAnimation?.invoke(name)
-    }
-
-    /** 触发一次随机动作 */
-    fun random() {
-        randomAction?.invoke()
-    }
-}
+/** 查看器缩放范围 */
+private const val MIN_ZOOM = 0.4f
+private const val MAX_ZOOM = 4f
 
 /**
  * Spine SD 小人 Compose 渲染组件。
@@ -92,8 +78,9 @@ class SpineSdController {
  * @param scaleMultiplier 缩放倍率（1.0 = 默认自适应到视口 95%，0.5 = 半尺寸，1.5 = 放大 50%）；
  *   通过 AndroidView update 实时生效，无需重建 GLSurfaceView
  * @param onTap 点击小人回调（在 UI 线程触发，用于播放语音等）
- * @param onLoaded 资源加载完成后回调**全部动画名**（主线程），供查看器列出动作按钮
- * @param controller 外部控制器（可选）：手动播放指定动画 / 触发随机动作
+ * @param panZoomEnabled 查看器模式：单指拖动平移 / 双指缩放 / 双击复位，
+ *   不触发随机动作与拖拽动画（秘书舰悬浮窗保持 false）
+ * @param resetSignal 数值变化即复位平移与缩放（查看器顶栏「适应屏幕」）
  */
 @Composable
 fun SpineSdView(
@@ -107,8 +94,10 @@ fun SpineSdView(
     onDragStart: (() -> Unit)? = null,
     onDrag: ((dx: Float, dy: Float) -> Unit)? = null,
     onDragEnd: (() -> Unit)? = null,
-    onLoaded: ((List<String>) -> Unit)? = null,
-    controller: SpineSdController? = null
+    /** 查看器模式：单指拖动平移、双指缩放、双击复位；不触发随机动作与拖拽动画 */
+    panZoomEnabled: Boolean = false,
+    /** 复位信号：数值变化时把平移/缩放恢复到初始状态（Compose 友好，不持有 View 引用） */
+    resetSignal: Int = 0
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -117,6 +106,7 @@ fun SpineSdView(
     // 新方案：update 中检测变化，调用 reloadAsset 在 GL 线程热重载 Spine 资源（~20ms，无闪烁）
     var lastDirPath by remember { mutableStateOf(dirPath) }
     var lastAssetName by remember { mutableStateOf(assetName) }
+    var lastResetSignal by remember { mutableStateOf(resetSignal) }
 
     val viewRef = remember { mutableStateOf<SpineSdGlSurfaceView?>(null) }
 
@@ -132,7 +122,7 @@ fun SpineSdView(
                 onDragStart = onDragStart,
                 onDrag = onDrag,
                 onDragEnd = onDragEnd,
-                onLoaded = onLoaded
+                panZoomEnabled = panZoomEnabled
             ).also { viewRef.value = it }
         },
         update = { view ->
@@ -146,22 +136,14 @@ fun SpineSdView(
                 lastAssetName = assetName
                 view.reloadAsset(dirPath, assetName)
             }
+            // 复位：切回初始平移/缩放（查看器「适应屏幕」按钮）
+            if (resetSignal != lastResetSignal) {
+                lastResetSignal = resetSignal
+                view.resetTransform()
+            }
         },
         modifier = modifier
     )
-
-    // 控制器接线：把外部调用转发到 GL 线程（切换动画无需重建渲染上下文）
-    DisposableEffect(controller, viewRef.value) {
-        val view = viewRef.value
-        if (controller != null && view != null) {
-            controller.playAnimation = { name -> view.playAnimationNamed(name) }
-            controller.randomAction = { view.triggerRandomAction() }
-        }
-        onDispose {
-            controller?.playAnimation = null
-            controller?.randomAction = null
-        }
-    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = object : DefaultLifecycleObserver {
@@ -171,7 +153,12 @@ fun SpineSdView(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            viewRef.value?.onPause()
+            // ZOrderOnTop 的 SurfaceView 比 Compose 视图晚一步销毁：不主动隐藏的话，
+            // 页面已经切走、模型还留在屏幕上（「退出后残留」）
+            viewRef.value?.let { view ->
+                view.onPause()
+                view.visibility = View.GONE
+            }
         }
     }
 }
@@ -195,7 +182,8 @@ private class SpineSdGlSurfaceView(
     private val onDragStart: (() -> Unit)?,
     private val onDrag: ((Float, Float) -> Unit)?,
     private val onDragEnd: (() -> Unit)?,
-    onLoaded: ((List<String>) -> Unit)? = null
+    /** 查看器模式：拖动平移 + 双指缩放 + 双击复位 */
+    private val panZoomEnabled: Boolean = false
 ) : GLSurfaceView(ctx) {
 
     /** 缩放倍率，可实时更新（由 AndroidView update 回调设置），每帧由 SpineRenderer 读取 */
@@ -226,6 +214,10 @@ private class SpineSdGlSurfaceView(
     private val longPressHandler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
 
+    /** 拖动平移基准点（查看器模式） */
+    private var lastPanX = 0f
+    private var lastPanY = 0f
+
     // SpineRenderer 通过 lambda 每帧读取最新的 scaleMultiplier 和 view 尺寸，
     // 无需重建 GLSurfaceView 即可实时缩放且骨骼始终居中（绕过 onSurfaceChanged 异步延迟）
     private val spineRenderer = SpineRenderer(
@@ -234,10 +226,21 @@ private class SpineSdGlSurfaceView(
         assetName,
         scaleProvider = { scaleMultiplier },
         viewSizeProvider = { liveWidth to liveHeight },
-        onLoaded = onLoaded?.let { callback ->
-            { names -> Handler(Looper.getMainLooper()).post { callback(names) } }
-        }
+        zoomProvider = { zoom },
+        panProvider = { panX to panY }
     )
+
+    /** 查看器交互：平移（GL 坐标系，y 轴向上）与缩放倍率 */
+    @Volatile private var panX = 0f
+    @Volatile private var panY = 0f
+    @Volatile private var zoom = 1f
+
+    /** 复位：平移归零、缩放归 1（双击或顶栏按钮触发） */
+    fun resetTransform() {
+        panX = 0f
+        panY = 0f
+        zoom = 1f
+    }
 
     /**
      * View 尺寸变化时缓存最新尺寸（UI 线程），供 GL 线程 SpineRenderer 实时读取。
@@ -260,16 +263,6 @@ private class SpineSdGlSurfaceView(
      */
     fun reloadAsset(newDirPath: String, newAssetName: String) {
         queueEvent { spineRenderer.reloadAsset(newDirPath, newAssetName) }
-    }
-
-    /** 播放指定动画（外部控制器用；GL 线程执行） */
-    fun playAnimationNamed(name: String) {
-        queueEvent { spineRenderer.playAnimation(name) }
-    }
-
-    /** 触发一次随机 action 动画（外部控制器用；GL 线程执行） */
-    fun triggerRandomAction() {
-        queueEvent { spineRenderer.triggerRandomAction() }
     }
 
     init {
@@ -340,10 +333,76 @@ private class SpineSdGlSurfaceView(
             onDragEnd?.invoke()
         }
 
+        // 查看器交互：缩放（双指）与双击复位
+        val scaleDetector = ScaleGestureDetector(
+            context,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val previous = zoom
+                    zoom = (zoom * detector.scaleFactor).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                    if (width <= 0 || height <= 0) return true
+                    val ratio = zoom / previous
+                    // 以双指中心为锚点缩放：中心点下的内容保持不动
+                    val centerX = width / 2f
+                    val centerY = height / 2f
+                    val focusX = detector.focusX
+                    val focusY = height - detector.focusY // 转成 GL 坐标（y 向上）
+                    panX = panX * ratio + (focusX - centerX) * (1f - ratio)
+                    panY = panY * ratio + (focusY - centerY) * (1f - ratio)
+                    return true
+                }
+            }
+        ).apply { isQuickScaleEnabled = false }
+
+        val doubleTapDetector = GestureDetector(
+            context,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    resetTransform()
+                    return true
+                }
+            }
+        )
+
         setOnTouchListener { v, event ->
             // 触摸穿透模式（应用内场景）：直接返回 false，所有触摸事件穿透到下层 UI
             // 系统悬浮窗场景下 touchEnabled 保持 true，触摸穿透由 FLAG_NOT_TOUCHABLE 控制
             if (!touchEnabled) return@setOnTouchListener false
+
+            if (panZoomEnabled) {
+                scaleDetector.onTouchEvent(event)
+                doubleTapDetector.onTouchEvent(event)
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        lastPanX = event.x
+                        lastPanY = event.y
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        if (event.pointerCount == 1) {
+                            val dx = event.x - lastPanX
+                            val dy = event.y - lastPanY
+                            // 屏幕 y 向下、GL y 向上，平移量取反
+                            panX += dx
+                            panY -= dy
+                        }
+                        lastPanX = event.x
+                        lastPanY = event.y
+                    }
+
+                    MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                        // 指针数量变化时重置基准点，避免缩放瞬间跳一下
+                        lastPanX = event.x
+                        lastPanY = event.y
+                    }
+
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                    }
+                }
+                return@setOnTouchListener true
+            }
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -482,8 +541,10 @@ private class SpineRenderer(
      * 返回 (0, 0) 时回退到 onSurfaceChanged 的缓存值（首次渲染前 layout 未完成）。
      */
     private val viewSizeProvider: () -> Pair<Int, Int>,
-    /** 资源加载完成后回调动画名（GL 线程；调用方负责切主线程） */
-    private val onLoaded: ((List<String>) -> Unit)? = null
+    /** 查看器缩放倍率（叠加在自适应缩放上） */
+    private val zoomProvider: () -> Float = { 1f },
+    /** 查看器平移量（GL 坐标，单位像素） */
+    private val panProvider: () -> Pair<Float, Float> = { 0f to 0f }
 ) : GLSurfaceView.Renderer {
 
     /** 当前 Spine 资源目录路径（@Volatile 支持 GL 线程热重载时读取最新值） */
@@ -520,6 +581,13 @@ private class SpineRenderer(
     private var allAnimationNames: List<String> = emptyList()
     /** action 动画名列表（排除 idle 和 drag） */
     private var actionAnimationNames: List<String> = emptyList()
+    /**
+     * 按「形态完整度」降序排列的待机候选（首选第一个）。
+     *
+     * 见 [pickFullBodyIdle]：部分皮肤的某些动画会关掉大量 slot。
+     */
+    private var idleCoverageOrder: List<String> = emptyList()
+
     /** 可用的 idle 动画名列表（与实际资源交集） */
     private var availableIdleNames: List<String> = emptyList()
     /** 可用的 drag 动画名列表（与实际资源交集） */
@@ -567,6 +635,101 @@ private class SpineRenderer(
     val boundsInViewport: RectF? get() = _boundsInViewport
 
     /**
+     * 判断图集贴图是否为预乘 alpha（pma）。
+     *
+     * 判定顺序：
+     * 1. `.atlas` 里显式 `pma: true` → 预乘（最权威，Spine 导出器写的就是这个）；
+     * 2. 否则抽样同目录 PNG：预乘贴图的**所有**半透明像素都满足 `RGB <= A`
+     *    （因为颜色已被 alpha 乘过，不可能超过它），直通贴图则普遍存在
+     *    `RGB > A` 的像素（亮色半透明边缘）。
+     *
+     * 实测碧蓝的图集**没有** `pma: true` 声明，抽样结果也显示半透明像素里
+     * 只有 15%~78% 满足 `RGB <= A`（各皮肤差异很大），且大量像素 `RGB > A`
+     * ——这说明贴图是**直通（straight）alpha**，不是预乘。
+     *
+     * 因此判定必须严格（`RGB <= A` 的占比接近 1 才算预乘），默认走直通：
+     * 用 `(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)`。误判成预乘会让整张图偏暗、
+     * 高光发灰；误判成直通则半透明边缘出现亮边。宁可保守也不要把所有皮肤
+     * 都推成预乘。
+     */
+    private fun atlasUsesPremultipliedAlpha(atlasFile: FileHandle, atlas: TextureAtlas): Boolean {
+        val lines = runCatching {
+            atlasFile.readString(Charsets.UTF_8.name()).lineSequence()
+                .map { it.trim() }
+                .toList()
+        }.getOrDefault(emptyList())
+        // 1. 显式声明优先（三态：true/false/未声明）
+        lines.firstOrNull { it.startsWith("pma:", ignoreCase = true) }?.let { line ->
+            val value = line.substringAfter(':').trim().lowercase()
+            if (value == "true") return true
+            if (value == "false") return false
+        }
+
+        // 2. 抽样全部页（多页图集逐页累加，避免只抽第一页误判）
+        val pageNames = lines.filter { it.endsWith(".png", ignoreCase = true) && !it.contains(':') }
+        if (pageNames.isEmpty()) return false
+        var semi = 0
+        var premul = 0
+        pageNames.forEach { pageName ->
+            val imageFile = atlasFile.parent().child(pageName)
+            if (!imageFile.exists()) return@forEach
+            val sample = runCatching { samplePremultiplied(imageFile) }.getOrNull() ?: return@forEach
+            semi += sample.first
+            premul += sample.second
+        }
+        if (semi <= 0) return false
+        val ratio = premul.toFloat() / semi
+        val premultiplied = ratio >= 0.98f
+        Log.i(
+            TAG,
+            "预乘判定: 半透明=$semi 满足RGB<=A=$premul 比例=${
+                String.format(java.util.Locale.US, "%.3f", ratio)
+            } → pma=$premultiplied"
+        )
+        return premultiplied
+    }
+
+    /**
+     * 抽样统计「半透明像素数」与其中「满足 RGB <= A 的像素数」。
+     *
+     * 不用 `Texture.textureData`：贴图上传后 data 往往已释放（返回 null），
+     * 判定会静默失败。直接读盘上的 PNG 最可靠，且只在加载时执行一次。
+     */
+    private fun samplePremultiplied(imageFile: FileHandle): Pair<Int, Int> {
+        val pixmap = runCatching { com.badlogic.gdx.graphics.Pixmap(imageFile) }.getOrNull()
+            ?: return 0 to 0
+        return try {
+            val width = pixmap.width
+            val height = pixmap.height
+            if (width <= 0 || height <= 0) return 0 to 0
+            val stepX = maxOf(1, width / 128)
+            val stepY = maxOf(1, height / 128)
+            var semi = 0
+            var premul = 0
+            var y = 0
+            while (y < height) {
+                var x = 0
+                while (x < width) {
+                    val rgba = pixmap.getPixel(x, y)
+                    val a = rgba and 0xFF
+                    if (a in 9..246) {
+                        semi++
+                        val r = (rgba ushr 24) and 0xFF
+                        val g = (rgba ushr 16) and 0xFF
+                        val b = (rgba ushr 8) and 0xFF
+                        if (r <= a && g <= a && b <= a) premul++
+                    }
+                    x += stepX
+                }
+                y += stepY
+            }
+            semi to premul
+        } finally {
+            pixmap.dispose()
+        }
+    }
+
+    /**
      * 加载 Spine 三件套资源（.skel + .atlas + .png）。
      *
      * 从 [onSurfaceCreated] 和 [reloadAsset] 调用，在 GL 线程执行。
@@ -594,12 +757,20 @@ private class SpineRenderer(
 
         try {
             val skelFile: FileHandle = Gdx.files.absolute("$currentDirPath/$currentAssetName.skel")
+            if (!skelFile.exists()) {
+                throw java.io.FileNotFoundException("骨骼文件不存在：$currentDirPath/$currentAssetName.skel")
+            }
             // atlas 优先用 assetName.atlas（如 boge_g.atlas），
             // 不存在则回退到目录名同名 atlas（如 boge.atlas，改造/换皮皮肤复用默认皮肤 atlas）
             val dirName = currentDirPath.substringAfterLast('/')
             val primaryAtlas = Gdx.files.absolute("$currentDirPath/$currentAssetName.atlas")
             val atlasFile: FileHandle = if (primaryAtlas.exists()) primaryAtlas
                 else Gdx.files.absolute("$currentDirPath/$dirName.atlas")
+            if (!atlasFile.exists()) {
+                throw java.io.FileNotFoundException(
+                    "图集文件不存在：尝试 $currentAssetName.atlas 与 $dirName.atlas，目录=$currentDirPath"
+                )
+            }
 
             val newAtlas = TextureAtlas(atlasFile)
             atlas = newAtlas
@@ -607,9 +778,31 @@ private class SpineRenderer(
             val skelReader = SkeletonBinary(loader).apply { scale = 1f }
             val skeletonData = skelReader.readSkeletonData(skelFile)
 
+            // 【完整性自检】AtlasAttachmentLoader 找不到 region 时会抛
+            // RuntimeException（"Region not found in atlas"），但只覆盖被 skin
+            // 实际引用的 attachment。这里额外核一遍「加载后每个 slot 的 attachment
+            // 是否都绑到了真实 region」，因为空 region 会让部件整块消失，
+            // 表现为「部分缺失」而不是报错。
             skeleton = Skeleton(skeletonData).apply {
                 setToSetupPose()
                 updateWorldTransform()
+            }
+            val missingRegions = mutableListOf<String>()
+            skeleton!!.slots.forEach { slot ->
+                val attachment = slot.attachment ?: return@forEach
+                val path = when (attachment) {
+                    is com.esotericsoftware.spine.attachments.RegionAttachment -> attachment.path
+                    is com.esotericsoftware.spine.attachments.MeshAttachment -> attachment.path
+                    else -> null
+                }
+                if (path != null && newAtlas.findRegion(path) == null) missingRegions += path
+            }
+            if (missingRegions.isNotEmpty()) {
+                Log.w(
+                    TAG,
+                    "图集缺 ${missingRegions.size} 个 region（部件会整块缺失）：" +
+                        missingRegions.take(12) + "，atlas=${atlasFile.name()}"
+                )
             }
 
             // 计算 idle 动画边界：采样待机动画的关键帧作为缩放基准。
@@ -626,10 +819,16 @@ private class SpineRenderer(
             val temp = FloatArray()
             val sampler = Skeleton(skeletonData)  // 独立 sampler 实例避免污染主 skeleton
 
-            // 先确定实际可用的 idle 动画名
+            // 先确定实际可用的 idle 动画名。
+            // 动态皮肤的真实待机往往是 `normal`（时长十几秒），占位动画 `1..N` 时长为 0；
+            // 采样边界必须用真实动画，否则 0 秒动画只采到 setup pose 的一帧，
+            // 缩放基准会偏小、模型被放大到出框。
             val idleAnimNames = idleAnimationNames.filter { name ->
                 skeletonData.animations.any { it.name == name }
-            }.ifEmpty { skeletonData.animations.take(1).map { it.name } }
+            }.ifEmpty {
+                skeletonData.animations.maxByOrNull { it.duration }?.let { listOf(it.name) }
+                    ?: skeletonData.animations.take(1).map { it.name }
+            }
 
             // 收集每个 idle 动画的代表性边界（采样关键帧后取中位数）
             data class AnimBounds(val minX: Float, val minY: Float, val maxX: Float, val maxY: Float)
@@ -696,17 +895,67 @@ private class SpineRenderer(
 
             // 分类动画
             allAnimationNames = skeletonData.animations.map { it.name }
-            availableIdleNames = idleAnimationNames.filter { allAnimationNames.contains(it) }
-                .ifEmpty { allAnimationNames.take(1) }
-            availableDragNames = dragAnimationNames.filter { allAnimationNames.contains(it) }
-            // action 动画排除 idle 和 drag，避免点击时误触发拖拽动画
-            actionAnimationNames = allAnimationNames.filter {
-                it !in idleAnimationNames && it !in dragAnimationNames
+
+            // 【关键】待机动画名各皮肤不统一，且有些动画会**关掉大量部位**
+            // （实测 `aersasi` 的 normal 只保留 197/218 个 attachment，动作 1~8 保留 218）。
+            // 【关键】挑一条「真正会动 + 形态完整」的待机动画。
+            //
+            // 碧蓝动态皮肤（spinepainting）的动画名与 SD 小人完全不同：
+            // 实测 zhezhi_2 / zhaohe_4 / zhuzi_2_DOA / aersasi 的动态皮肤都是
+            //   1(0.00) 2(0.00) …… normal(18.67)
+            // 也就是前面若干条**时长为 0 的占位动画**（有些版本还带 drag/ex 等真实动画），
+            // 真正的循环待机只有最后那条长动画。
+            //
+            // 旧逻辑只按「名字命中 idleAnimationNames」+「attachment 覆盖率高」排序，
+            // 两条动画覆盖率打平时 sortedByDescending 稳定排序会保留原始顺序，
+            // 于是可能选到时长 0 的占位动画 → 画面完全静止，
+            // 用户看到的就是「动态立绘没有动态、被当成静态图加载」。
+            //
+            // 新逻辑把「时长为 0」作为硬性降级条件：有真实时长的动画永远优先。
+            val coverage = mutableMapOf<String, Int>()
+            val probe = Skeleton(skeletonData)
+            skeletonData.animations.forEach { anim ->
+                probe.setToSetupPose()
+                anim.apply(
+                    probe, 0f, minOf(0.1f, anim.duration / 2f), false, null, 1f,
+                    Animation.MixBlend.first, Animation.MixDirection.`in`
+                )
+                probe.updateWorldTransform()
+                coverage[anim.name] = probe.slots.count { it.attachment != null }
             }
-            Log.i(TAG, "Loaded Spine asset=$currentAssetName, all=${allAnimationNames.size} " +
-                "animations, idle=$availableIdleNames, drag=$availableDragNames, " +
-                "action=$actionAnimationNames")
-            onLoaded?.invoke(allAnimationNames)
+            val bestCoverage = coverage.values.maxOrNull() ?: 0
+            val fullBodyNames = coverage.filterValues { it >= bestCoverage - 2 }.keys
+
+            /** 有实际时长的动画（>0.1s 才算「会动」） */
+            val animatedNames = skeletonData.animations
+                .filter { it.duration > 0.1f }
+                .map { it.name }
+                .toSet()
+
+            // 待机候选：只从「会动」的动画里挑；若整包全是 0 秒动画才退回全部
+            val idlePool = allAnimationNames.filter { it in animatedNames }
+                .ifEmpty { allAnimationNames.toList() }
+            availableIdleNames = idleAnimationNames.filter { it in idlePool && it in fullBodyNames }
+                .ifEmpty { idlePool.filter { it in fullBodyNames } }
+                .ifEmpty { idlePool }
+                .ifEmpty { allAnimationNames.take(1) }
+            // 排序：形态完整优先，其次时长更长（长动画才是真正的循环待机）
+            val durationOf = skeletonData.animations.associate { it.name to it.duration }
+            idleCoverageOrder = availableIdleNames.sortedWith(
+                compareByDescending<String> { coverage[it] ?: 0 }
+                    .thenByDescending { durationOf[it] ?: 0f }
+            )
+            availableDragNames = dragAnimationNames.filter { it in idlePool }
+            // action 动画排除 idle 和 drag，且排除 0 秒占位（点了也不动）
+            actionAnimationNames = allAnimationNames.filter {
+                it !in idleAnimationNames && it !in dragAnimationNames && it in animatedNames
+            }
+            Log.i(
+                TAG,
+                "Loaded Spine asset=$currentAssetName, all=${allAnimationNames.size} " +
+                    "(animated=${animatedNames.size}), idle=$availableIdleNames, " +
+                    "drag=$availableDragNames, action=$actionAnimationNames"
+            )
 
             // 创建 AnimationState，设置默认混合过渡（0.2s 平滑切换）
             val stateData = AnimationStateData(skeletonData).apply {
@@ -714,13 +963,41 @@ private class SpineRenderer(
             }
             animState = AnimationState(stateData).apply {
                 // 默认播放随机 idle 动画（循环）
-                val initialIdle = availableIdleNames.random()
+                val initialIdle = pickFullBodyIdle()
                 setAnimation(0, initialIdle, true)
                 Log.i(TAG, "Started idle animation: $initialIdle")
             }
 
-            renderer = SkeletonRenderer()
-            batch = PolygonSpriteBatch()
+            // 【混合模式】碧蓝贴图是预乘 alpha（实测 98.8%+ 的半透明像素满足 RGB<=A）。
+            //
+            // 关键：混合模式**只能**通过 SkeletonRenderer.premultipliedAlpha 设置。
+            // SkeletonRenderer.draw() 每帧都会执行
+            //     batch.setBlendFunction(blendMode.getSource(premultipliedAlpha), blendMode.getDest())
+            // 也就是对自己 batch 的混合函数有完全控制权：
+            //   - premultipliedAlpha = false → (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+            //   - premultipliedAlpha = true  → (ONE, ONE_MINUS_SRC_ALPHA)
+            // 此前只在 loadAsset 里对 batch 调用一次 setBlendFunction(ONE, ...)，
+            // 该设置被首帧 draw 立刻覆盖回 (SRC_ALPHA, ...)，预乘贴图被二次乘 alpha，
+            // 半透明部位（云 / 纱 / 翅膀 / 发梢）糊成灰黑硬块，视觉上就是
+            // 「部件缺失 / 拼接错位 / 边缘发白」——本次修复的核心之一。
+            //
+            // 另外 premultipliedAlpha=true 时 SkeletonRenderer 还会把顶点色的 RGB
+            // 预乘 alpha（multiplier = alpha），这正是 pma 图集要求的顶点语义，
+            // 单靠 batch 混合函数无法复现。
+            val premultiplied = atlasUsesPremultipliedAlpha(atlasFile, newAtlas)
+            renderer = SkeletonRenderer().apply {
+                premultipliedAlpha = premultiplied
+            }
+            Log.i(TAG, "SkeletonRenderer.premultipliedAlpha=$premultiplied")
+            batch = PolygonSpriteBatch().apply {
+                if (premultiplied) {
+                    // 初始值（首帧 draw 会再设一次，保持一致避免首帧闪烁）
+                    setBlendFunction(
+                        com.badlogic.gdx.graphics.GL20.GL_ONE,
+                        com.badlogic.gdx.graphics.GL20.GL_ONE_MINUS_SRC_ALPHA
+                    )
+                }
+            }
             lastTimeNs = System.nanoTime()
         } catch (e: Exception) {
             loadFailed = true
@@ -828,9 +1105,11 @@ private class SpineRenderer(
         state.apply(skel)
         skel.updateWorldTransform()
 
-        // 自适应缩放：基于 idle 动画边界缩放到视口 95%，再乘以用户设置的倍率（实时生效）
+        // 自适应缩放：基于 idle 动画边界缩放到视口 95%，再叠加用户倍率与查看器缩放
         val userScale = scaleProvider().coerceIn(0.3f, 2.0f)
-        val scale = (min(vw / baseBoundsW, vh / baseBoundsH) * 0.95f) * userScale
+        val viewerZoom = zoomProvider().coerceIn(MIN_ZOOM, MAX_ZOOM)
+        val (panX, panY) = panProvider()
+        val scale = (min(vw / baseBoundsW, vh / baseBoundsH) * 0.95f) * userScale * viewerZoom
 
         // 投影矩阵：左下(0,0) - 右上，Y 轴朝上
         b.projectionMatrix.setToOrtho2D(0f, 0f, vw.toFloat(), vh.toFloat())
@@ -845,8 +1124,8 @@ private class SpineRenderer(
         // 实时读取 vw/vh 确保缩放瞬间骨骼位置立即正确，不会因 onSurfaceChanged 延迟而偏移。
         skel.scaleX = scale
         skel.scaleY = scale
-        skel.x = vw / 2f - (baseBoundsOffsetX + baseBoundsW / 2f) * scale
-        skel.y = vh / 2f - (baseBoundsOffsetY + baseBoundsH / 2f) * scale
+        skel.x = vw / 2f - (baseBoundsOffsetX + baseBoundsW / 2f) * scale + panX
+        skel.y = vh / 2f - (baseBoundsOffsetY + baseBoundsH / 2f) * scale + panY
 
         // 更新骨骼边界框在 view 坐标系中的位置（Android 坐标系，原点左上、Y 朝下），
         // 供 OnTouchListener 判断触摸点是否落在角色实际范围内（触摸穿透透明区域）。
@@ -860,8 +1139,8 @@ private class SpineRenderer(
         // 但触摸判断只在 ACTION_DOWN（idle 状态）执行，所以用 idle bounds 是精确的。
         val renderedBoundsW = baseBoundsW * scale
         val renderedBoundsH = baseBoundsH * scale
-        val boundsLeft = (vw - renderedBoundsW) / 2f
-        val boundsTop = (vh - renderedBoundsH) / 2f
+        val boundsLeft = (vw - renderedBoundsW) / 2f + panX
+        val boundsTop = (vh - renderedBoundsH) / 2f - panY
         _boundsInViewport = RectF(
             boundsLeft,
             boundsTop,
@@ -879,21 +1158,15 @@ private class SpineRenderer(
     }
 
     /**
-     * 播放指定动画（GL 线程调用）。
+     * 选一条「形态完整」的待机动画。
      *
-     * idle 类动画循环播放；其余动画播放一次后回到随机 idle，与点击交互语义一致。
+     * 碧蓝部分皮肤的某些动画会关闭大量 slot（`aersasi` 的 normal 比动作 1~8 少 21 个
+     * attachment），随机挑到它就会表现为「部位缺失」。这里只在覆盖率最高的那批里取，
+     * 稳定优先，不再随机到缺部位的动画。
      */
-    fun playAnimation(name: String) {
-        val state = animState ?: return
-        val idle = name in idleAnimationNames
-        val idleName = availableIdleNames.random()
-        state.setAnimation(0, name, idle)
-        if (!idle) {
-            state.addAnimation(0, idleName, true, 0f)
-            isPlayingAction = true
-        } else {
-            isPlayingAction = false
-        }
+    private fun pickFullBodyIdle(): String {
+        idleCoverageOrder.firstOrNull()?.let { return it }
+        return availableIdleNames.firstOrNull() ?: allAnimationNames.firstOrNull() ?: ""
     }
 
     /**
@@ -902,25 +1175,46 @@ private class SpineRenderer(
      * 如果当前正在播放 action 或 drag 则忽略（防止重叠）。
      * action 播放完毕后自动回到随机 idle 循环（通过 addAnimation 排队）。
      */
+    /**
+     * 随机触发一个 action 动画（GL 线程调用）。
+     *
+     * 如果当前正在播放 action 或 drag 则忽略（防止重叠）。
+     * action 播放完毕后自动回到 idle 循环（通过 addAnimation 排队）。
+     *
+     * 【健壮性】`complete` 事件依赖动画真的播完才会触发。若某条 action 的轨道被
+     * `interrupt`（例如用户马上又拖拽/切皮肤），`isPlayingAction` 会永久停留在
+     * true，之后点击全部失效——表现为「动态皮肤点不动 / 卡在某个姿势」。
+     * 这里改为：同时监听 `complete` 与 `end`，并且在排下一轮前用
+     * 「当前 track 是否还有 action」做兜底判断，不再单靠一个布尔量。
+     */
     fun triggerRandomAction() {
         if (isPlayingAction || isDragging) return
         val state = animState ?: return
         if (actionAnimationNames.isEmpty()) return
 
         val actionName = actionAnimationNames.random()
-        val idleName = availableIdleNames.random()
+        val idleName = pickFullBodyIdle()
 
         // 播放 action 一次（不循环），完成后自动回到 idle 循环
-        state.setAnimation(0, actionName, false)
+        val entry = state.setAnimation(0, actionName, false)
         state.addAnimation(0, idleName, true, 0f)
         isPlayingAction = true
         Log.i(TAG, "Trigger action: $actionName → return to idle: $idleName")
 
-        // 监听 action 完成，重置标志位
+        // 监听 action 完成，重置标志位（complete 与 end 都要覆盖）
         state.addListener(object : AnimationState.AnimationStateListener {
             override fun start(entry: AnimationState.TrackEntry?) {}
-            override fun interrupt(entry: AnimationState.TrackEntry?) {}
-            override fun end(entry: AnimationState.TrackEntry?) {}
+            override fun interrupt(entry: AnimationState.TrackEntry?) {
+                // 被别的动画抢占：立即解锁，避免永久卡住
+                isPlayingAction = false
+                state.removeListener(this)
+            }
+
+            override fun end(entry: AnimationState.TrackEntry?) {
+                isPlayingAction = false
+                state.removeListener(this)
+            }
+
             override fun dispose(entry: AnimationState.TrackEntry?) {}
             override fun event(entry: AnimationState.TrackEntry?, event: com.esotericsoftware.spine.Event?) {}
 
@@ -930,6 +1224,11 @@ private class SpineRenderer(
                 state.removeListener(this)
             }
         })
+        // 兜底：极短动画（<0.05s）可能在同一帧内就被 complete，
+        // 若事件因实现差异没来，这里保证下一帧不会永久锁定。
+        if (entry != null && entry.animation.duration <= 0.05f) {
+            isPlayingAction = false
+        }
     }
 
     /**
@@ -969,7 +1268,7 @@ private class SpineRenderer(
             return
         }
 
-        val idleName = availableIdleNames.random()
+        val idleName = pickFullBodyIdle()
         state.setAnimation(0, idleName, true)  // 循环播放 idle
         isDragging = false
         isPlayingAction = false

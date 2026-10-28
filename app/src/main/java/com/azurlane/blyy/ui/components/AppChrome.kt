@@ -157,6 +157,7 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.isWatchScreen
+import com.azurlane.blyy.ui.theme.withCjkLinePadding
 import com.azurlane.blyy.util.AppUpdateChecker
 import com.azurlane.blyy.util.UpdateInfo
 import com.azurlane.blyy.viewmodel.ArchiveType
@@ -618,7 +619,8 @@ internal fun ModernDrawerSheet(
                         }
                         Text(
                             text = "玩法菜单",
-                            style = if (isWatch) AppTypography.TitleLarge.copy(fontSize = 18.sp) else AppTypography.TitleLarge,
+                            style = (if (isWatch) AppTypography.TitleLarge.copy(fontSize = 18.sp) else AppTypography.TitleLarge)
+                                .withCjkLinePadding(),
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -819,13 +821,13 @@ private fun ModernDrawerItem(
             ) {
                 Text(
                     text = item.label,
-                    style = AppTypography.TitleMedium,
+                    style = AppTypography.TitleMedium.withCjkLinePadding(),
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                     color = if (isSelected) item.color else MaterialTheme.colorScheme.onSurface
                 )
                 Text(
                     text = item.description,
-                    style = AppTypography.BodySmall,
+                    style = AppTypography.BodySmall.withCjkLinePadding(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
+import com.azurlane.blyy.util.gameimport.AssetMetaStore
 import androidx.compose.runtime.mutableStateOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
@@ -37,6 +38,12 @@ object SDResourceManager {
     /** 自定义资源存放子目录名 */
     private const val CUSTOM_DIR = "custom"
 
+    /** 游戏资源导入的 SD 目录（与 GameAssetKind.SD_CHAR 的库根一致） */
+    private const val IMPORTED_SD_DIR = "game_assets/char"
+
+    /** 游戏导入资源的 id 前缀（避免与 blhx_sd 下的目录重名） */
+    private const val GAME_ID_PREFIX = "game/"
+
     /**
      * 自定义资源导入的最大递归扫描深度。
      *
@@ -58,6 +65,15 @@ object SDResourceManager {
     private var resourceList: List<SDResource>? = null
 
     private val lock = Any()
+
+    /**
+     * 资源 id → 中文舰名（由 [Live2dNameResolver] 在构造时注册）。
+     *
+     * 游戏导入的 SD 目录名是拼音（`boge` / `2b_2`），需要同一套反查表还原成舰名，
+     * 秘书舰才能据此联动语音与立绘。未注册时返回 null（不猜）。
+     */
+    @Volatile
+    var shipNameProvider: ((assetId: String) -> String?)? = null
 
     /**
      * 资源索引修订号（可观察）。
@@ -102,7 +118,9 @@ object SDResourceManager {
      */
     fun resolveByShipName(context: Context, shipName: String, skinName: String? = null): SDResource? {
         if (shipName.isBlank()) return null
-        val assetInfo = LocalSdResolver.resolve(context, shipName, skinName) ?: return null
+        val assetInfo = LocalSdResolver.resolve(context, shipName, skinName)
+            ?: return resolveImportedByShipName(context, shipName)
+        // 注意：assetInfo 非空时继续走下面的本地库转换
         // 从 SdAssetInfo 构建 SDResource（舰名匹配模式）
         val dir = File(assetInfo.dirPath)
         val resourceId = dir.parentFile?.name ?: dir.name
@@ -127,6 +145,28 @@ object SDResourceManager {
             previewPath = previewPath,
             shipName = shipName
         )
+    }
+
+    /**
+     * 舰名 → 游戏导入的 SD（`blhx_sd` 里没有该舰娘时的回退）。
+     *
+     * 匹配顺序：资源自带的中文舰名（[shipNameProvider]）> 拼音与目录名。
+     */
+    private fun resolveImportedByShipName(context: Context, shipName: String): SDResource? {
+        val imported = ensureIndex(context).values.filter { it.source == SDResourceSource.GAME_IMPORT }
+        if (imported.isEmpty()) return null
+
+        imported.firstOrNull { it.shipName == shipName }?.let { return it }
+
+        val pinyin = runCatching { PinyinHelper.toPinyin(shipName) }
+            .getOrDefault("")
+            .lowercase()
+            .filter { it.isLetterOrDigit() }
+        if (pinyin.isEmpty()) return null
+        return imported.firstOrNull { resource ->
+            val id = resource.id.removePrefix(GAME_ID_PREFIX).lowercase()
+            id == pinyin || id.startsWith("${pinyin}_")
+        }
     }
 
     /**
@@ -311,6 +351,15 @@ object SDResourceManager {
         }
     }
 
+    /**
+     * 游戏资源导入完成后调用：让 SD 资源库立刻看到新解出来的小人。
+     *
+     * 只清缓存不写盘，下一次 [listAll]/[resolve] 会重新扫描。
+     */
+    fun onGameImportChanged() {
+        refreshIndex()
+    }
+
     /** 强制重建索引。委托 LocalSdResolver.refreshIndex 同步两者 revision。 */
     fun refreshIndex() {
         synchronized(lock) {
@@ -371,8 +420,79 @@ object SDResourceManager {
             }
         }
 
-        Log.i(TAG, "buildIndex: 发现 ${index.size} 个资源 from $rootDir")
+        // 3. 游戏资源导入解出来的 SD 小人（只读，id 带 game/ 前缀）
+        buildList { addAll(scanImportedResources(context)) }.forEach { resource ->
+            index[resource.id] = resource
+        }
+
+        Log.i(TAG, "buildIndex: 发现 ${index.size} 个资源（含游戏导入 ${index.keys.count { it.startsWith(GAME_ID_PREFIX) }}） from $rootDir")
         return index
+    }
+
+    /**
+     * 扫描 `game_assets/char/` 下由「游戏资源导入」解出的 SD 小人。
+     *
+     * 目录结构（[com.azurlane.blyy.util.gameimport.SpineBundleExtractor] 产物）：
+     * ```
+     * <id>/  <name>.skel  <name>.atlas  <name>_0.png …  spine.json
+     * ```
+     * 多套骨骼（改造 / 换装）在同一目录里，按 `.skel` 名后缀区分皮肤；
+     * 预览图优先用 `spine.json` 里主骨骼的第一页，其次同名 PNG。
+     */
+    private fun scanImportedResources(context: Context): List<SDResource> {
+        val root = File(context.getExternalFilesDir(null), IMPORTED_SD_DIR)
+        if (!root.isDirectory) return emptyList()
+        return root.listFiles()
+            ?.filter { it.isDirectory }
+            ?.mapNotNull { dir ->
+                runCatching { buildImportedResource(dir) }
+                    .onFailure { Log.w(TAG, "解析游戏导入 SD 失败：${dir.name}", it) }
+                    .getOrNull()
+            }
+            .orEmpty()
+    }
+
+    private fun buildImportedResource(dir: File): SDResource? {
+        val files = dir.listFiles().orEmpty()
+        val skelFiles = files.filter { it.isFile && isSkelFile(it.name) }
+        if (skelFiles.isEmpty()) return null
+        val images = files.filter { it.isFile && isImageFile(it.name) }
+
+        val skins = skelFiles.map { skel ->
+            val name = skel.nameWithoutExtension
+            val suffix = if (name.startsWith(dir.name, ignoreCase = true)) {
+                name.substring(dir.name.length).removePrefix("_")
+            } else {
+                ""
+            }
+            val skinName = if (suffix.isEmpty()) "default" else classifySkinSuffix(suffix)
+            SDSkin(
+                name = skinName,
+                displayName = skinDisplayName(skinName),
+                dirPath = dir.absolutePath,
+                assetName = name,
+                type = SDResourceType.SPINE
+            )
+        }.distinctBy { it.name }.sortedBy { it.name }
+        if (skins.isEmpty()) return null
+
+        val meta = runCatching { AssetMetaStore.readSpine(dir) }.getOrNull()
+        val primary = meta?.primary?.takeIf { id -> skins.any { it.assetName == id } }
+            ?: skins.first().assetName
+        val primaryPages = meta?.skeletons?.firstOrNull { it.name == primary }?.pages.orEmpty()
+        val preview = primaryPages.firstOrNull()?.let { File(dir, it) }?.takeIf { it.isFile }?.absolutePath
+            ?: images.firstOrNull { it.nameWithoutExtension == primary }?.absolutePath
+            ?: images.firstOrNull()?.absolutePath
+
+        return SDResource(
+            id = "$GAME_ID_PREFIX${dir.name}",
+            name = dir.name,
+            type = SDResourceType.SPINE,
+            source = SDResourceSource.GAME_IMPORT,
+            skins = skins,
+            previewPath = preview,
+            shipName = shipNameProvider?.invoke(dir.name)
+        )
     }
 
     /**
