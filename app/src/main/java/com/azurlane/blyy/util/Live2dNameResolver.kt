@@ -139,13 +139,8 @@ class Live2dNameResolver @Inject constructor(
         return null
     }
 
-    /** 去掉换装序号与形态/变体后缀，得到基础资源基名 */
-    private fun stripSuffixes(id: String): String {
-        var current = id
-        GameAssetNaming.variantOf(current)?.let { current = it.first }
-        if (skinIndexOf(current) != null) current = current.substringBeforeLast('_')
-        return current
-    }
+    /** 去掉换装序号与形态/变体后缀，得到基础资源基名（统一引擎拆解） */
+    private fun stripSuffixes(id: String): String = ShipNameMatcher.keyParts(id).core
 
     /** `xxx_3` → 3；无序号返回 null */
     private fun skinIndexOf(id: String): Int? {

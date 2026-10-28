@@ -85,28 +85,16 @@ class AvatarAssetIndex @Inject constructor(
         }
     }
 
-    /** 逐级放宽的候选基名（去重、保序） */
+    /** 逐级放宽的候选基名（去重、保序）；变体剥离与匹配引擎共用同一套规则 */
     internal fun candidateBases(assetId: String): List<String> {
         val out = LinkedHashSet<String>()
         var current = assetId.trim().lowercase()
         out += current
-        var changed = true
-        while (changed) {
-            changed = false
-            val variant = VARIANT_SUFFIXES.firstOrNull {
-                current.endsWith(it) && current.length > it.length
-            }
-            if (variant != null) {
-                current = current.dropLast(variant.length)
-                out += current
-                changed = true
-            }
-            val lastUnderscore = current.lastIndexOf('_')
-            if (lastUnderscore > 0 && SKIN_INDEX.matches(current.substring(lastUnderscore + 1))) {
-                current = current.substring(0, lastUnderscore)
-                out += current
-                changed = true
-            }
+        while (true) {
+            val core = ShipNameMatcher.keyParts(current).core
+            if (core == current || core.isBlank()) break
+            out += core
+            current = core
         }
         return out.filter { it.isNotBlank() }
     }

@@ -174,11 +174,14 @@ object ShipNameMatcher {
         var variant = Variant.DEFAULT
 
         val tailMark = extractTailMark(raw)
+        var tailStripped = raw
         if (tailMark != null) {
             variant = Variant.TAIL_MARK
             // 注意：core 仍是原文——"大黄蜂II" 的全拼 dahuangfengii 才能命中
             // dahuangfengII.webp；早期版本把 II 剥掉后就只能撞上"大黄蜂"
             core = raw
+            // 剥掉标记的基名专供「拼音_标记」尝试："霞(DOA)" → xia_doa
+            tailStripped = raw.replaceFirst(Regex("[(（]?${Regex.escape(tailMark)}[)）]?$"), "").trim()
         }
         // 变体基名（去掉标记后的名字），只用于「带后缀」的尝试；
         // 全拼/音节校验始终用原文，否则 "小赤城" 会被算成 chicheng 而丢掉 xiaochicheng
@@ -207,6 +210,7 @@ object ShipNameMatcher {
             }
         }
         if (variantBase.isBlank()) variantBase = raw
+        if (tailMark != null && variantBase == raw) variantBase = tailStripped
 
         return Parsed(
             raw = raw,
@@ -498,7 +502,10 @@ object ShipNameMatcher {
         options: Options
     ): String? {
         val suffix = "_${mark.lowercase()}"
+        // 必须用剥掉标记的基名："霞(DOA)" 的全拼是 xiadoa（括号被丢弃），
+        // 直接拿原文拼 `xiadoa_doa` 永远命中不了 xia_doa
         val bases = LinkedHashSet<String>().apply {
+            add(parsed.variantBase)
             add(parsed.core)
             addAll(parsed.variants)
         }

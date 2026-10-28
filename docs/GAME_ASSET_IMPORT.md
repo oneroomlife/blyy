@@ -252,6 +252,59 @@ Downloads/BLYY/LoadingBg/<显示名>_<资源id>.png    过场图
 但界面上从来没有渲染入口——用户在设置里根本进不去 SD 资源库（导入的小人自然也选不到）。
 现在「SD 小人」分区里补了资源库卡片（管理 / 清除），入口与秘书舰的悬浮小人同屏。
 
+### 5.7 舰娘名匹配统一引擎（ShipNameMatcher）
+
+历史上船坞头像（`AvatarMatcher`）与秘书舰 SD（`LocalSdResolver`）各自实现了一套
+拼音匹配：6 个同义函数两份拷贝、两张**互相冲突**的别名表（「贝露」一边 `HDN401`
+一边 `peineiluopo`；「泛用型布里/试作型布里MKII」在 SD 表里都指向 `buli_super`），
+策略顺序、阈值也各不相同——同一舰娘在不同界面可能匹配到不同资源。
+
+现在统一到 [ShipNameMatcher]（纯 Kotlin，无 Context，可 JVM 全量回归）：
+
+| 级别 | 策略 | 例子 |
+|------|------|------|
+| ALIAS | 别名精确（**有序候选**，按索引实际存在者择优） | 贝露→HDN401 / 倔强→juejiang |
+| SPECIAL | 变体优先：META→`_alter`、μ兵装→`_idol`、小X→`_younv`、`.改`→`_g` | 长春.改→changchun_g |
+| TAIL_MARK | 尾部标记：`霞(DOA)`→`xia_doa`、`天城CV`→`tiancheng_cv` | |
+| PINYIN | 全拼精确（含变体名全拼，`大黄蜂II`→`dahuangfengII`） | |
+| CONTAINING | 候选以「拼音_非皮肤后缀」开头 | suixiang_doa |
+| PREFIX | 候选是全拼前缀（音节边界对齐） | wuerlixi ← 乌尔里希·冯·胡滕 |
+| FUZZY | 全拼的音节对齐子串（占比闸门） | qinli ← 五河琴里 |
+| INITIALS | 首字母缩写 | welxfht ← 乌尔里希冯胡滕 |
+| SEGMENTS | 逐字拼音前 N 段拼接 | |
+| TYPO | 拼写容错（Damerau-Levenshtein ≤1/≤2） | jueqiang→juejiang |
+
+关键语义（从旧实现继承并固化）：
+
+- **音节边界闸门**：前缀/子串类匹配必须落在逐字拼音的边界上
+  （"水星号" ≠ "彗星"，防跨字拼接误配）；
+- **皮肤形态硬性不回退**：META / μ兵装 / `.改` 的专属资源缺失时返回 null，
+  绝不显示基础舰娘的形象（显示错图比显示空白更糟）；
+- **变体不剥离进全拼**：`大黄蜂II` 的全拼是 `dahuangfengii`（命中 `dahuangfengII.webp`），
+  `小赤城` 是 `xiaochicheng`——变体只影响「带后缀」的优先尝试；
+- **别名冲突按存在性择优**：`贝露` 保留 `[HDN401, peineiluopo]` 双候选，
+  哪个在当前索引里存在用哪个（船坞用 HDN401，永远不会误配皇家舰佩内洛珀）；
+- **SD 特有别名隔离**：`哈里森→molisen` 只在 SD 匹配生效（船坞头像会触发撞车审计）。
+
+消费方：船坞头像（`AvatarMatcher.match/matchOath` 委托）、秘书舰 SD
+（`LocalSdResolver.resolve` 委托）、`Live2dNameResolver` 反查（变体剥离走 `keyParts`）、
+`AvatarAssetIndex`（候选基名走 `keyParts`）——游戏资源导入的显示名
+（`2b_2` → 「2B · 换装2」）与头像封面因此自动受益。
+
+回归：`AvatarMatcherTest`（1004 舰全量语料 + 零撞车审计）、
+`ShipNameMatcherTest`（单点语义 10 组）、`PinyinSyllableAlignTest` 全部通过。
+
+本轮在已提交的引擎骨架上修复的三个实际缺陷：
+
+1. **尾部标记污染全拼**：`大黄蜂II` 曾因剥掉 `II` 只能撞上"大黄蜂"、`霞(DOA)` 曾拼出
+   `xiadoa_doa` 永远命中不了 `xia_doa`——现在 core 恒为原文（全拼保留 `ii`），
+   剥标记的基名单独存放专供「拼音_标记」尝试；
+2. **别名大小写**：表里的 `HDN401` / `zhixiao_DOA` 是大写写法，而索引键全为小写，
+   直接 `index[alias]` 永远落空（"贝露"才会误配皇家舰佩内洛珀）——统一小写比对；
+3. **SD 接入**：`LocalSdResolver` 886 行旧实现（含冲突 MANUAL_MAP）删除，
+   委托引擎并启用 `SD_EXTRA_ALIASES`；反向包含放行联动标记后缀
+   （`mengmeng_tolove` 是梦梦的唯一资源）而仍拒绝皮肤形态。
+
 ## 6. 目录布局
 
 ```
