@@ -2,6 +2,7 @@ package com.azurlane.blyy.util
 
 import android.content.ContentResolver
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
@@ -99,6 +100,14 @@ class Live2dImporter @Inject constructor(
             Log.e(TAG, "文件夹导入失败", e)
             createdTargets.forEach { runCatching { File(library.rootDir(), it).deleteRecursively() } }
             ImportResult(emptyList(), emptyList(), listOf("导入失败: ${e.message ?: "未知错误"}"), false)
+        } finally {
+            // 持久化授权只服务于「导入期间 Activity 重建后仍可读取目录」；用完即还。
+            // 不释放的话每次文件夹导入都会吃掉一个系统持久化授权配额（Android 10 起上限 128 个）
+            runCatching {
+                context.contentResolver.releasePersistableUriPermission(
+                    treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
         }
     }
 

@@ -17,6 +17,7 @@ import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.domain.SelectSecretaryUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
 import androidx.compose.runtime.snapshotFlow
+import com.azurlane.blyy.util.Live2dNameResolver
 import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.PinyinHelper
 import com.azurlane.blyy.util.SDResourceManager
@@ -79,7 +80,8 @@ class SecretaryManager @Inject constructor(
     private val selectSecretaryUseCase: SelectSecretaryUseCase,
     private val getVoicesUseCase: GetVoicesUseCase,
     private val playbackServiceConnection: PlaybackServiceConnection,
-    private val shipDao: ShipDao
+    private val shipDao: ShipDao,
+    private val nameResolver: Live2dNameResolver
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -748,6 +750,10 @@ class SecretaryManager @Inject constructor(
      *
      * 遍历所有 DOCK 类型舰娘，用 [PinyinHelper.toPinyin] 将舰名转拼音后与资源 ID 匹配。
      * 同时支持首字母缩写匹配和前缀匹配，覆盖 LocalSdResolver 的多种匹配策略。
+     *
+     * 数据库查不到（全新安装档案未刷新、联动舰、拼写差异）时退回
+     * [Live2dNameResolver.baseShipName]——其拼音表内置兜底条目，不依赖档案刷新。
+     * 没有这层兜底时，上述场景会被上层当成「无对应舰娘」清空秘书舰舰名与语音。
      */
     private suspend fun resolveShipNameByPinyin(resourceId: String): String? {
         return withContext(Dispatchers.IO) {
@@ -767,6 +773,8 @@ class SecretaryManager @Inject constructor(
                         val pinyin = PinyinHelper.toPinyin(it.name)
                         resourceId.length >= pinyin.length && resourceId.startsWith(pinyin)
                     }?.name
+                    // 5. 内置兜底表（含联动舰/纯字母数字舰名/拼写差异条目）
+                    ?: nameResolver.baseShipName(resourceId)
             } catch (e: Exception) {
                 Log.e(TAG, "resolveShipNameByPinyin: 反查舰名失败 $resourceId", e)
                 null
