@@ -62,6 +62,47 @@ class GameAssetLibrary @Inject constructor(
         }
     }
 
+    /**
+     * 轻量扫描：只返回各类资源在磁盘上实际存在的 id 集合。
+     *
+     * 供扫描状态判定（`GameBundleScanner.resolveState`）使用——那里只需要
+     * 「这个 id 在不在」，不需要完整资源信息；走 [scanAll] 会对每个资产目录
+     * walkTopDown 统计大小、解析侧车与 Spine 头，资产一多就是纯浪费的重复 IO。
+     *
+     * 有效性准入门与 [scan] 一致：Spine 看有无 `.skel`，图片类看有无图片文件
+     * （分层残图目录同样排除），Live2D 看有无 `model3.json`。
+     */
+    suspend fun scanAllIds(): Map<GameAssetKind, Set<String>> = withContext(Dispatchers.IO) {
+        GameAssetKind.ordered.associateWith { kind ->
+            runCatching { scanIds(kind) }
+                .onFailure { Log.w(TAG, "扫描 ${kind.key} id 失败", it) }
+                .getOrDefault(emptySet())
+        }
+    }
+
+    private fun scanIds(kind: GameAssetKind): Set<String> {
+        val dirs = rootDir(kind).listFiles { f -> f.isDirectory }?.sortedBy { it.name }.orEmpty()
+        return when (kind) {
+            GameAssetKind.LIVE2D -> dirs
+                .filter { dir ->
+                    dir.listFiles { f -> f.isFile && f.name.endsWith(".model3.json", true) }
+                        .orEmpty().isNotEmpty()
+                }
+            GameAssetKind.PAINTING, GameAssetKind.LOADING_BG -> dirs
+                // 分层包（_rw/_bjN/_front）单独展示是残图，与 scanImageAssets 的过滤保持一致
+                .filterNot { kind == GameAssetKind.PAINTING && GameAssetNaming.isPaintingLayer(it.name) }
+                .filter { dir ->
+                    dir.listFiles { f -> f.isFile && f.name.endsWith(".png", true) }
+                        .orEmpty().isNotEmpty()
+                }
+            else -> dirs
+                .filter { dir ->
+                    dir.listFiles { f -> f.isFile && f.name.endsWith(".skel", true) }
+                        .orEmpty().isNotEmpty()
+                }
+        }.map { it.name }.toSet()
+    }
+
     suspend fun scan(kind: GameAssetKind): List<GameAssetInfo> = withContext(Dispatchers.IO) {
         when (kind) {
             GameAssetKind.LIVE2D -> scanLive2d()

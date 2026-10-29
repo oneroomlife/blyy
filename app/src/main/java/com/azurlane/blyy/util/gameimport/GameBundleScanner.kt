@@ -98,6 +98,12 @@ class GameBundleScanner @Inject constructor(
         /** 自动发现时列举的包数量上限 */
         private const val MAX_PACKAGE_SCAN = 600
 
+        /** 自动发现的 exists() 探测并发度（Binder 往返可安全并发） */
+        private const val DISCOVERY_PROBE_CONCURRENCY = 8
+
+        /** 自动发现最多收录的资源根数量 */
+        private const val MAX_DISCOVERY_ROOTS = 8
+
         /** 资源包扩展名（碧蓝部分版本没有扩展名，允许空扩展名） */
         private val BUNDLE_EXTENSIONS = setOf(
             "ys", "unity3d", "bundle", "ab", "assetbundle", "asset", "bin"
@@ -175,7 +181,8 @@ class GameBundleScanner @Inject constructor(
     fun addPermissionListener(listener: (Int, Int) -> Unit) = bridge.addPermissionResultListener(listener)
 
     fun removePermissionListener(listener: (Int, Int) -> Unit) {
-        runCatching { rikka.shizuku.Shizuku.removeRequestPermissionResultListener(listener) }
+        // 注册的是 bridge 内部包装过的监听实例，必须走 bridge 按原始引用配对移除
+        bridge.removePermissionResultListener(listener)
     }
 
     fun release() = bridge.release()
@@ -231,7 +238,7 @@ class GameBundleScanner @Inject constructor(
     }
 
     /** 找出设备上所有「含 `files/AssetBundles`」的游戏数据目录 */
-    private fun discoverBundlesRoots(service: IBlyyShellService): List<String> {
+    private suspend fun discoverBundlesRoots(service: IBlyyShellService): List<String> {
         val roots = LinkedHashMap<String, String>() // package -> AssetBundles 绝对路径
         for (pkg in KNOWN_PACKAGES) {
             for (prefix in STORAGE_PREFIXES) {
@@ -248,15 +255,33 @@ class GameBundleScanner @Inject constructor(
         val listing = runCatching { service.listFiles(STORAGE_PREFIXES.first(), 1, MAX_PACKAGE_SCAN) }
             .getOrNull()
             .orEmpty()
-        listing.lineSequence().forEach { line ->
-            if (roots.isNotEmpty() && roots.size >= 8) return@forEach
-            val parts = line.split('\t')
-            if (parts.size < 2 || parts[0] != "d") return@forEach
-            val dir = parts[1]
-            val candidate = "$dir/files/AssetBundles"
-            if (runCatching { service.exists(candidate) }.getOrDefault(false)) {
-                roots[dir.substringAfterLast('/')] = candidate
+        val packageDirs = listing.lineSequence()
+            .map { it.split('\t') }
+            .filter { it.size >= 2 && it[0] == "d" }
+            .map { it[1] }
+            .toList()
+        // 每个候选一次同步 Binder 往返，几百个包串行要数百毫秒到数秒；
+        // 分批并行探测，聚合出的根集合与串行版一致
+        val hits = coroutineScope {
+            val found = ArrayList<Pair<String, String>>()
+            for (batch in packageDirs.chunked(DISCOVERY_PROBE_CONCURRENCY)) {
+                if (found.size >= MAX_DISCOVERY_ROOTS) break
+                batch.map { dir ->
+                    async {
+                        val candidate = "$dir/files/AssetBundles"
+                        if (runCatching { service.exists(candidate) }.getOrDefault(false)) {
+                            dir to candidate
+                        } else {
+                            null
+                        }
+                    }
+                }.awaitAll().filterNotNullTo(found)
             }
+            found
+        }
+        for ((dir, candidate) in hits) {
+            if (roots.size >= MAX_DISCOVERY_ROOTS) break
+            roots[dir.substringAfterLast('/')] = candidate
         }
         Log.i(TAG, "自动发现资源目录：${roots.keys.joinToString()}")
         return roots.values.toList()
@@ -279,8 +304,12 @@ class GameBundleScanner @Inject constructor(
         val known = index.load().entries.associateBy { it.path }
         Log.d(TAG, "扫描阶段[读索引] ${known.size} 条 ${android.os.SystemClock.elapsedRealtime() - tStart}ms")
         val tLib = android.os.SystemClock.elapsedRealtime()
-        val importedIds = library.scanAll().mapValues { (_, list) -> list.map { it.id }.toSet() }
-        Log.d(TAG, "扫描阶段[本地库] ${android.os.SystemClock.elapsedRealtime() - tLib}ms")
+        val importedIds = library.scanAllIds()
+        Log.d(
+            TAG,
+            "扫描阶段[本地库] ${importedIds.values.sumOf { it.size }} 个 " +
+                "${android.os.SystemClock.elapsedRealtime() - tLib}ms"
+        )
 
         val entries = ArrayList<GameBundleEntry>()
         // 同类资源可能有多个目录（过场图的 loadingbg / loadingbg_hx）：
@@ -458,6 +487,15 @@ class GameBundleScanner @Inject constructor(
         val companions = ArrayList<File>(entry.companions.size)
         try {
             onProgress(0.01f, "从游戏目录复制资源包")
+            // 复制产物 + 解压镜像 ≈ 至少两倍包体积（都在内部 cache 分区）。
+            // 不预检的话空间不足会在复制/解压深处以「复制失败」这种误导信息出现
+            val usable = cacheDir.usableSpace
+            if (entry.size > 0L && usable > 0L && usable < entry.size * 2L) {
+                throw IOException(
+                    "存储空间不足：本次导入约需 ${(entry.size * 2L + (1 shl 20) - 1) / (1 shl 20)}MB，" +
+                        "当前可用 ${usable / (1 shl 20)}MB，请清理存储后重试"
+                )
+            }
             val copied = copyRemote(entry.path, local) { fraction ->
                 onProgress(0.01f + fraction * 0.13f, "复制资源包 ${(fraction * 100).toInt()}%")
             }

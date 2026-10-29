@@ -104,12 +104,26 @@ class ShizukuBridge @Inject constructor(
         true
     }.getOrDefault(false)
 
+    private val permissionListeners =
+        HashMap<(requestCode: Int, grantResult: Int) -> Unit, Shizuku.OnRequestPermissionResultListener>()
+
     fun addPermissionResultListener(listener: ((requestCode: Int, grantResult: Int) -> Unit)) {
         runCatching {
-            Shizuku.addRequestPermissionResultListener { requestCode, grantResult ->
+            // Shizuku 的移除按对象身份匹配：这里必须保住注册时实际挂上去的实例，
+            // 否则配对的 remove 拿着原始 lambda 永远移除不掉，每次进页泄漏一个监听
+            val registered = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
                 listener(requestCode, grantResult)
             }
+            Shizuku.addRequestPermissionResultListener(registered)
+            synchronized(permissionListeners) { permissionListeners[listener] = registered }
         }
+    }
+
+    /** 与 [addPermissionResultListener] 配对：按注册时的原始引用移除监听 */
+    fun removePermissionResultListener(listener: (requestCode: Int, grantResult: Int) -> Unit) {
+        val registered = synchronized(permissionListeners) { permissionListeners.remove(listener) }
+            ?: return
+        runCatching { Shizuku.removeRequestPermissionResultListener(registered) }
     }
 
     /**
@@ -127,11 +141,6 @@ class ShizukuBridge @Inject constructor(
      * 上一次超时的等待会一直被复用，重试也永远等不到结果。
      */
     fun reset() {
-        synchronized(lock) {
-            pending?.complete(null)
-            pending = null
-            binding = false
-        }
         release()
     }
 
@@ -205,7 +214,12 @@ class ShizukuBridge @Inject constructor(
         }
         return withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
             ?: throw IOException(
-                "连接 Shizuku 服务超时（可能被系统回收或服务端无法实例化，请点重试）"
+                if (deferred.isCompleted) {
+                    // 回调以 null 完成（服务端断开 / 通道被重置），不是超时，别误导用户
+                    "Shizuku 服务连接中断（服务被回收或被重置），请点重试"
+                } else {
+                    "连接 Shizuku 服务超时（可能被系统回收或服务端无法实例化，请点重试）"
+                }
             )
     }
 
@@ -214,10 +228,17 @@ class ShizukuBridge @Inject constructor(
      *
      * 即使 `service` 为空也要尝试解绑：绑定失败的重试路径里，代理可能还没回来，
      * 但远端已经登记过这次绑定，不解绑会让下一次 `bindUserService` 撞上重复绑定。
+     *
+     * `pending` 必须一并 complete 掉：否则重试路径（`requireService` 失败后 release
+     * 再绑）会复用同一个永不完成的 deferred，两次重试都只能等满超时。
      */
     fun release() {
         service = null
-        synchronized(lock) { binding = false }
+        synchronized(lock) {
+            pending?.complete(null)
+            pending = null
+            binding = false
+        }
         runCatching { Shizuku.unbindUserService(args, connection, true) }
     }
 }
