@@ -220,18 +220,65 @@ Downloads/BLYY/LoadingBg/<显示名>_<资源id>.png    过场图
 - 非法字符（`/ \ : * ? " < > |`）替换成 `_`，超长截断到 80 字符；
 - API 29+ 走 MediaStore（免存储权限），同名由系统追加 ` (1)`。
 
-### 5.5.3 设备能力：ASTC 6x6 的坑
+### 5.5.3 设备能力：ASTC 6x6 与 CPU 软件解码兜底
 
 过场图与 **SD 小人**的贴图都是 **ASTC 6x6**（Unity `TextureFormat=50`），而部分 GPU
 （模拟器、低端机）只实现 ASTC 4x4：`glCompressedTexImage2D` 直接返回 `GL_INVALID_VALUE`，
-表现为「导入成功但解码失败 / 黑屏」。
+旧版本表现为「导入成功但解码失败 / 黑屏」。
 
-- `CompressedTextureDecoder.supportedAstcBlockSizes()` 用 1x1 离屏上下文对每种块尺寸
-  上传**一个块**探测，结果缓存；
-- 应用在「游戏资源导入」顶部给出明确提示（当前设备只支持 ASTC 4x4），
-  解码失败时错误文案也改成 `不支持 ASTC 6x6（1920x1080，GL 错误 0x501）`；
-- 真机（Adreno / Mali）普遍支持全部块尺寸，无需处理；
-- 后续可选：内置 CPU ASTC 解码兜底（本轮未做，见「已知限制」）。
+现在分成两步：能上硬件就上硬件，上不去就**在 CPU 上解**。
+
+| 环节 | 实现 |
+|------|------|
+| 能力探测 | `CompressedTextureDecoder.supportedAstcBlockSizes()` 用 1x1 离屏上下文对每种块尺寸上传**一个块**，看 GL 是否报错；结果缓存 |
+| 路由 | `decode()`：ASTC 且硬件不支持该块尺寸 → 直接走 `decodeAstcSoftware()`；硬件支持但 GL 抛异常（驱动报错 / 上下文被回收 / 后台线程拿不到 GLES3）→ **同样回退软件解码** |
+| 软件解码 | `AstcDecoder`：纯 Kotlin，无 EGL / GL 依赖，覆盖 2D 全部块尺寸（4x4…12x12、8x5、10x6）、1~4 分区、双平面权重、16 种 CEM（含 HDR 7/11/14/15）、void-extent 与保留块 |
+| 结果 | 与 GL 路径同样输出 `ARGB_8888`（自上而下），`maxSize` 降采样语义一致 |
+
+**行序（最容易踩、也最难自查的坑）**：Unity 的压缩纹理是**自下而上**（OpenGL 约定）存的，
+参考实现原样返回，而 Android 位图要求自上而下。GL 路径靠「上传 → 读回 → 按行倒序」隐式翻转，
+CPU 路径必须在写像素时显式翻转（`AstcDecoder.decode(flipVertical = true)`）。
+漏了这一步的表现不是「图坏了」，而是：
+- 过场图整张上下颠倒（文字倒着读）；
+- Spine 图集每个区域都采到镜像位置 → **SD 小人「混乱错位」**。
+
+正确性用**块级黄金样本**兜住：`app/src/test/resources/astc/` 有 8 种块尺寸 × 240 个随机块
++ 32 个特殊块（共 1952 条），以及 7 张整图样本（含 37×41、13×7 这类非块整数倍尺寸），
+由「参考实现 + 权重夹紧补丁」（`tools/astc_fixture/`）生成，`AstcDecoderFixtureTest`
+逐块比对像素 SHA-256。规范外的越界块标成 `unsafe`，只校验「不崩 + 输出确定」。
+
+代价与提示：CPU 解码一张 1920×1080 的 ASTC 6x6（5.76 万块）在桌面 JVM 实测 **140ms/张**，
+手机端约数百毫秒；且只在**导入时**发生一次（产物是 PNG），不影响浏览性能。
+超过 4M 像素的大图会「边解边降采样」直接按目标尺寸输出，避免「全尺寸 int[] + 位图 + 缩放位图」
+三份内存同时在峰值。因此界面上的提示从「会失败，请换真机」
+改成了「当前 GPU 未硬件支持 ASTC 6x6：会自动改用 CPU 解码（画质一致，单张大图会慢一些）」。
+
+### 5.5.4 立绘完整性自检（「个别舰娘少素材」）
+
+有些皮肤的画面并不是「一张图」，而是 **`_tex` 图集 + MeshImage 声明的矩形**共同决定：
+`mRawSpriteSize` 给出画布尺寸，`mMesh` 给出真正有几何体的区域。两者不一致时，
+画面上就会出现「少了上半身/头部」。
+
+实测 `painting/beiqi_tex`（贝奇默认皮肤，客户端 2026-10 版本）：
+
+| 项 | 数值 |
+|----|------|
+| 图集 | 1024×418（ASTC 4x4） |
+| prefab 声明的画布 | 606×979 |
+| `beiqi-mesh` 顶点/三角形 | 120 / 60 |
+| mesh 实际覆盖高度 | 754（**77%**，顶部 23% 无几何体） |
+
+也就是说这个包里的图集**本身就没有头部/上半身像素**（左右两半都核对过），
+网格也只覆盖到胸口以上一点点 —— 属于「游戏内资源没下全 / 该皮肤为分层资源」，
+不是解码问题。因此导入时会做一次覆盖率自检并如实记录：
+
+```json
+"warning": "顶部约 23% 没有几何体覆盖（该立绘可能还有未下载的图层包，建议先在游戏内打开一次再重新导入）"
+```
+
+- 判据：`mesh.height / layer.height < 0.85` 记为缺层（低于 15% 的空白多是正常留白，不报警）；
+- 查看器副标题直接显示这条提示，避免用户以为是导入坏了；
+- 对照组：`22_tex`（1024×524 → 858×1024）、`beiqi_2_tex` 都是 `warning: null`，不误报。
 
 ### 5.6 游戏导入的 SD 小人如何进入秘书舰
 
@@ -247,6 +294,40 @@ Downloads/BLYY/LoadingBg/<显示名>_<资源id>.png    过场图
 | 按舰名回退 | `blhx_sd` 里没有该舰娘时，自动回退到游戏导入的小人（先比中文名，再比拼音前缀） |
 | 选择 | SD 资源管理页列出全部资源，游戏导入的标「游戏导入」徽章；**只读**（重命名/删除仍归游戏资源导入模块） |
 | 刷新 | 每次导入 / 删除 / 重命名 SD 资源后调用 `SDResourceManager.onGameImportChanged()`，选择器立刻可见 |
+
+### 5.6.1 「游戏资源导入 → 今日秘书舰」的完整链路（2026-10 打通）
+
+两条功能共用同一份产物目录（`game_assets/char/<id>/`），但历史上只「看起来」连通，
+实际有三处断点，全部已修：
+
+| 断点 | 现象 | 根因 | 修复 |
+|------|------|------|------|
+| ①索引早退 | SD 资源库里**一个游戏导入的小人都看不到** | `SDResourceManager.buildIndex()` 在 `blhx_sd/` 不存在时 `return emptyMap()`，后面扫 `game_assets/char` 的代码根本没执行；新用户往往从没手工放过 SD 资源，正好命中 | 本地目录不存在只记日志、继续扫游戏导入资源；日志会写明「本地 0，游戏导入 N」 |
+| ②只能单向 | 在导入页看到小人，却要回秘书舰设置里翻资源库 | 导入页卡片只有「查看 / 重新导入」 | 已导入的 SD 卡片新增**「设为今日秘书舰」**：`GameImportIntent.SetAsSecretary` → `SecretaryManager.setSdResourceId("game/<id>")`，一次点击完成 |
+| ③按舰名匹配走不到 | 没 pin、也没有网络立绘时小人整块不显示；皮肤选择器显示「未找到 SD 资源」 | 渲染门槛与皮肤列表都只看 `figureUrl / webChibiUrl / sdResourceId`，`SDResourceManager.resolve(…, shipName)` 这条「按舰名回退到游戏导入资源」的路径被绕过 | ① 状态新增 `sdAvailable`（IO 线程算「当前秘书舰能不能解析出 SD」），悬浮窗/主界面/Service 三处门槛统一带上它；② `SdSkinSelector` 未 pin 时先走统一 `resolve`（含游戏导入），再退回 `LocalSdResolver`；③ 监听 `LocalSdResolver.revision`，导入/删除后立刻重算 |
+
+另外补了**悬空 pin 自愈**：游戏导入页删除/改名后，`sdResourceId` 会指向不存在的资源，
+过去表现为「设置里显示已选择、画面却什么都没有」。现在 `SecretaryManager` 检出后自动清除
+pin 并回退到舰名匹配（不动舰名/语音）。
+
+验证（模拟器实测，pin 与不 pin 两条路都走通）：
+
+```
+SDResourceManager: buildIndex: 本地 SD 目录不存在（只扫游戏导入资源）：…/blhx_sd
+SDResourceManager: buildIndex: 发现 2 个资源（本地 0，游戏导入 2）
+SecretaryManager: sdAvailable=true（ship=2B, pin=game/2b）   # 卡片一键设置
+SecretaryManager: sdAvailable=true（ship=2B, pin=）          # 清除 pin 后按舰名回退
+SpineSdView: Loaded Spine asset=2B … Started idle animation: stand
+```
+
+**查看器的两个坑（都会让小人「看着像坏了」）**：
+
+1. **待机动画不能按「attachment 覆盖率」选**。`char/2b` 的 `dead` 覆盖率最高（倒地时部件反而全开），
+   旧逻辑按覆盖率排序就把 `dead` 选成待机 —— 一进查看器就是「躺在地上的一团」。
+   现在按「命中已知待机名（stand/normal/sit…）→ 排除死亡/受击名 → 覆盖率 → 时长」四级排序。
+2. **取景边界要用真正会播放的那条动画**。旧逻辑取所有 idle 名的**并集**，`sit`/`sleep`
+   会把包围盒撑大（2B 并集 829 高，`stand` 只有 801 但重心完全不同），
+   模型被缩成一小块还偏到右下。现在改用 `idleCoverageOrder.first()` 的边界重新采样。
 
 顺带修掉一个断点：`SecretaryShipSettingsScreen` 早就接收了 `onOpenSdGallery` 回调，
 但界面上从来没有渲染入口——用户在设置里根本进不去 SD 资源库（导入的小人自然也选不到）。
@@ -397,8 +478,10 @@ Spine 二进制版本读取注意：字符串长度是 **`len + 1`** 编码（`0
   （界面仍正常，只是少了商店贴纸/角标一类的小装饰）。
 - `_rw`（人物层）/`_bjN`（背景条）仍是**图层**而不是独立立绘：扫描时只列主包，
   但它们会作为附属包参与合成。
-- 设备 GPU 只支持 ASTC 4x4 时，过场图与 SD 小人（ASTC 6x6）无法解码：
-  应用内会显式提示，不是静默失败。要在这类设备上显示，需要补一个 CPU ASTC 解码器。
+- 设备 GPU 只支持 ASTC 4x4（模拟器常见）时，过场图与 SD 小人（ASTC 6x6）走 **CPU 软件解码**：
+  已不再黑屏，只比硬件解码慢（单张大图几十毫秒，仅导入时一次）。
+- ETC2 / ETC1 仍只走 GL 通路（游戏现网资源都是 ASTC，这两条是兼容老包的旁路）；
+  若某天遇到「只支持 ETC2 的包 + 不支持 GLES3 的设备」，同样需要补软件解码。
 
 ---
 
@@ -420,6 +503,15 @@ Spine 二进制版本读取注意：字符串长度是 **`len + 1`** 编码（`0
 | 9 | 离开查看器时模型残留在上一屏 | 见 #6 | 已实测退出后立即清理，无残留 |
 | 10 | 进入「游戏资源导入」长时间卡在「正在扫描游戏资源目录…」（实测约 4 分钟） | 附属包判定写成了「每个候选扫一遍全目录」：6382 个候选 × 10881 个文件名 ≈ 6900 万次 `split/lowercase/joinToString`。列举本身只占 0.7s（服务端 `buildListing` 10 881 项 561ms） | ① 附属包改为**一次遍历**建 `基础名→文件` / `主包→图层` 两张索引，候选 O(1) 查表（374→162ms）；② 四类目录**并发列举**，服务端快照改成多槽 LRU（单槽会被彼此顶掉、每次重建整棵目录）；③ 每行只 `split` 一次，候选判定与文件名索引同一循环。实测 **1082ms**（列举 594ms + 附属包 162ms + 其余 320ms） |
 | 11 | `2b_hx` 导入后只有背景、没有人物（`layers=1/4`，跳过 3 层） | 换装图层命名是**变体夹在中间**：`2b_rw_hx_tex`、`2b_bj1_hx_tex`，旧规则只认 `<主包>_` 前缀，全部漏掉 | 改为变体感知：拆名时把变体标记（`hx/n/doa/shophx/buildhx`）从任意位置摘出，图层包要求「基础名 = 主包基础名 + 图层关键字」且变体集合是主包子集；prefab 要求完全同名。实测同一资源从 `1 层（跳过 3）` 变为 **`4 层（跳过 0）`**，查看器显示「2048×1800 · 4 层合成」 |
+| 12 | **release 包「Shizuku 已连接却扫描不到任何资源」**（debug 包正常） | R8 把 `BlyyShellService::class.java.name` 折叠成字符串常量后，服务实现类变成「只被字符串引用」：类名保留、**构造器与全部 AIDL 方法被删**（`build/outputs/mapping/release/usage.txt` 里能直接看到）。Shizuku 在独立进程里反射 `newInstance(Context)` 失败 → 绑定回调永远不来 → `discoverRoots()` 吞掉异常返回空表，UI 只显示「未找到资源目录」 | ① `proguard-rules.pro` 增加 keep（服务类 + `<init>(Context)` + AIDL 包 + `rikka.shizuku` 入口）；② 绑定层加**真实 `ping()` 往返**校验与一次重绑重试；③ `discoverRoots()` 不再吞异常，失败原因上浮成可读文案。release APK 实测：`mapping.txt` 里服务类名与 `<init>` 保持原名，`classes.dex` 中 `listFilesPage` / `copyTo` 均在 |
+| 13 | Shizuku 连上后页面顶部一直挂着「Shizuku 已连接（v13）」横幅 | 提示卡无条件渲染，连接成功后成了纯噪音 | `ShellState` 新增 `SERVICE_UNREACHABLE`（权限给了但服务不通），提示卡只在 `NOT_RUNNING / NO_PERMISSION / SERVICE_UNREACHABLE` 时出现；`READY` 时整张卡片从列表移除，空态文案也改成「点右上角刷新」而不是教用户去连 Shizuku |
+| 14 | 模拟器上 SD 小人（ASTC 6x6）导入后黑屏 | 该 GPU 只实现 ASTC 4x4 | 见 §5.5.3：新增纯 Kotlin `AstcDecoder` 兜底 + 1952 条块级对拍夹具；`canDecode()` 不再依赖 GPU 能力 |
+| 15 | **过场图整张上下颠倒；SD 小人「混乱错位」** | CPU 解码漏了行序翻转：Unity 压缩纹理自下而上，位图要求自上而下。GL 路径靠读回时倒序隐式翻转，CPU 路径直接按原序写入 | `AstcDecoder.decode(flipVertical = true)`：未缩放与降采样两条路径都在写目标行时翻转；新增两条单测（翻转 = 解完全尺寸后倒序、降采样路径同样只翻行）。模拟器实测：`bg_1` 标题栏文字恢复正常方向 |
+| 16 | SD 小人一进查看器就是「躺在地上的一团」/ 缩成右下角一小块 | ① 待机动画按覆盖率排序选中了 `dead`；② 取景边界用了所有 idle 动画的并集 | ① 待机四级排序（已知名 → 排除 dead/hurt → 覆盖率 → 时长），日志 `Started idle animation: stand`；② 用真正播放的那条动画重采样边界，日志 `取景边界改用待机动画 stand` |
+| 18 | **「今日秘书舰」的 SD 资源库里看不到刚从游戏导入的小人** | `SDResourceManager.buildIndex()` 在 `blhx_sd/` 不存在时直接返回空表 —— 新用户从来没有手工放过 SD 资源，游戏导入的 `game_assets/char/*` 根本没被扫描 | 见 §5.6.1 断点①：本地目录缺失不再早退，继续扫游戏导入资源；日志区分「本地/游戏导入」计数 |
+| 19 | 清掉 SD 选择（或从没设置过）后秘书舰小人整块不显示，皮肤选择器还提示「未找到 SD 资源」 | 显示门槛与皮肤列表只看 `figureUrl / webChibiUrl / sdResourceId`，绕过了「按舰名回退到游戏导入资源」；删除资源后 pin 还会悬空 | 见 §5.6.1 断点③：新增 `sdAvailable` 门槛 + 皮肤列表走统一 `resolve` + 监听资源修订号；并补悬空 pin 自愈 |
+| 17 | 贝奇默认立绘「少了上半身」 | 该客户端的 `painting/beiqi_tex` 图集本身只有下半身（1024×418），`beiqi-mesh` 只覆盖声明的 606×979 画布中的 754 高（77%） | 见 §5.5.4：新增覆盖率自检，写入 `painting.json.warning` 并在查看器副标题展示；对照组 `22_tex` / `beiqi_2_tex` 不误报 |
+
 
 已验证可用（模拟器实测）：
 
@@ -428,5 +520,71 @@ Spine 二进制版本读取注意：字符串长度是 **`len + 1`** 编码（`0
 - 渲染：动态皮肤完整显示（含背景层，贴图方向/UV 正确，动作可切换）；静态立绘 2048×1206 正常显示与缩放
 - 入库：索引记录、已导入计数、卡片状态（待导入/已导入/失败原因）均正确
 
-未能在该模拟器验证：`char` SD 小人的最终渲染（受 ASTC 6x6 限制）。
-真机（Adreno/Mali 全块尺寸 ASTC）上该路径与动态皮肤共用同一套解码/渲染代码，只差纹理格式。
+`char` SD 小人的最终渲染：该模拟器没有 ASTC 6x6，现在走 CPU 软件解码路径出图
+（`CompressedTextureDecoder.decode` → `decodeAstcSoftware`），与真机（Adreno/Mali 全块尺寸 ASTC）
+共用同一套后续流程，差别只在「谁来解这个压缩块」。
+
+release 包验证方式（无需真机）：
+
+```bash
+./gradlew :app:assembleRelease
+grep -n "BlyyShellService" app/build/outputs/mapping/release/mapping.txt   # 类名与 <init> 必须保持原名
+unzip -p app/build/outputs/apk/release/*.apk classes.dex | strings | grep -E "listFilesPage|copyTo"
+```
+
+---
+
+## 11. Shizuku 通道：状态机、release 裁剪与失败可见性
+
+扫描链路只有一条：`ShizukuBridge`（绑定 UserService）→ `BlyyShellService`（shell 身份列目录 / 拷文件）。
+这条链路有三处容易「静默失败」，现在都被显式处理：
+
+### 11.1 状态机（UI 与扫描共用）
+
+```kotlin
+enum class ShellState { UNKNOWN, NOT_RUNNING, NO_PERMISSION, SERVICE_UNREACHABLE, READY }
+```
+
+| 状态 | 判据 | 界面 |
+|------|------|------|
+| `NOT_RUNNING` | `Shizuku.pingBinder()` 失败 | 卡片：未检测到 Shizuku 服务 |
+| `NO_PERMISSION` | `checkSelfPermission() != GRANTED` | 卡片 + 「授权」按钮 |
+| `SERVICE_UNREACHABLE` | 权限有、但 `requireService().ping()` 失败/超时 | 卡片 + 失败原因 + 「重试」按钮 |
+| `READY` | `ping()` 真的回了一个字符串 | **不渲染任何 Shizuku 提示**（连接成功后提示即噪音） |
+
+`probeState()` 是唯一判据来源：只判断「有权限」是不够的——`bindUserService` 是异步的，
+绑定失败只会让等待超时，UI 却会一直显示「已连接」。
+
+### 11.2 release 包为什么必须 keep UserService
+
+服务实现类跑在 Shizuku 拉起的**独立进程**里，由框架反射实例化：
+
+```java
+Class.forName(className).getConstructor(Context.class).newInstance(context);
+```
+
+`ShizukuBridge` 里写的是 `BlyyShellService::class.java.name`。R8 会把这种「类字面量取名字」
+折叠成字符串常量，于是该类的可达性只剩一个字符串 → **类被保留、成员全删**：
+
+```
+# app/build/outputs/mapping/release/usage.txt（修复前）
+com.azurlane.blyy.util.shizuku.BlyyShellService:
+    public void <init>(android.content.Context)     ← 构造器被删
+    public java.lang.String listFilesPage(...)      ← AIDL 方法被删
+    public long copyTo(...)
+```
+
+现象：`pingBinder()` 正常、权限也给了，`bindUserService()` 不报错，但回调永远不来 →
+`requireService()` 超时 → `discoverRoots()` 返回空 → 「已连接却扫不到资源」。
+
+修法是 `proguard-rules.pro` 里显式 keep（类 + `<init>(Context)` + AIDL 包 + `rikka.shizuku` 入口）。
+验证不看真机，看产物：`mapping.txt` 里服务类名与 `<init>` 必须保持**原名**，且
+`classes.dex` 里能搜到 `listFilesPage` / `copyTo`。
+
+### 11.3 失败必须可见
+
+- `discoverRoots()` 不再 `runCatching{}.getOrNull()`：绑定失败与「游戏没下载资源」是两件事，
+  吞掉之后用户只看到「未找到资源目录」；
+- `requireService()` 带一次重绑重试（远端进程被系统回收后，第二次基本都能成），
+  并把底层异常翻译成人话（`NoSuchMethodError` → 「安装包被裁剪，请安装完整版」）；
+- 权限回调、进入页面、点刷新、点重试都走同一个 `probeState()`，不存在「三个入口三套判断」。

@@ -63,6 +63,13 @@ data class PaintingAssetMeta(
     val skippedLayers: Int = 0,
     /** 主图集尺寸，如 `2048x1132`；null = 未记录（历史产物） */
     val atlas: String? = null,
+    /**
+     * 还原完整性提示；null = 正常。
+     *
+     * 典型值：`顶部约 23% 没有图层覆盖（该立绘可能还有未下载的图层包）` —— 说明 prefab
+     * 声明的画布比实际能拿到的网格高，通常意味着游戏内资源没下全，或该皮肤是分层资源。
+     */
+    val warning: String? = null,
     val source: String? = null,
     val createdAt: Long = 0L
 ) {

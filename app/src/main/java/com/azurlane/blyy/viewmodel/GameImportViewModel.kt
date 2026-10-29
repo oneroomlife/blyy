@@ -71,6 +71,14 @@ sealed interface GameImportIntent {
 
     /** 关闭提示横幅 */
     data object ConsumeMessage : GameImportIntent
+
+    /**
+     * 把已导入的 SD 小人直接设为「今日秘书舰」。
+     *
+     * 打通「游戏资源导入 → 秘书舰」的最后一步：以前用户要先记住资源名，
+     * 再去秘书舰设置里翻 SD 资源库；现在导入完在卡片上点一下即可。
+     */
+    data class SetAsSecretary(val kind: GameAssetKind, val id: String) : GameImportIntent
 }
 
 /**
@@ -85,7 +93,8 @@ class GameImportViewModel @Inject constructor(
     private val library: GameAssetLibrary,
     private val index: GameImportIndex,
     private val nameResolver: Live2dNameResolver,
-    private val skinNameRegistry: Live2dSkinNameRegistry
+    private val skinNameRegistry: Live2dSkinNameRegistry,
+    private val secretaryManager: SecretaryManager
 ) : ViewModel() {
 
     data class ImportProgress(
@@ -99,6 +108,8 @@ class GameImportViewModel @Inject constructor(
     data class State(
         val shellState: ShellState = ShellState.UNKNOWN,
         val shizukuVersion: String? = null,
+        /** 通道应答文本（READY 时是服务端 ping，失败时是原因） */
+        val shellDetail: String? = null,
         val tab: GameImportTab = GameImportTab.BUNDLES,
         /** null = 全部类型 */
         val kindFilter: GameAssetKind? = null,
@@ -129,6 +140,17 @@ class GameImportViewModel @Inject constructor(
         val deviceWarning: String? = null
     ) {
         val busy: Boolean get() = scanning || progress != null
+
+        /**
+         * 是否需要在资源列表顶部展示 Shizuku 提示卡。
+         *
+         * 只覆盖「没连通」的状态：确认连上（[ShellState.READY]）之后提示就该消失，
+         * 页面顶部留给资源内容本身。`UNKNOWN` 只是首帧的瞬态，不算「需要提示」。
+         */
+        val shellNeedsAttention: Boolean
+            get() = shellState == ShellState.NOT_RUNNING ||
+                shellState == ShellState.NO_PERMISSION ||
+                shellState == ShellState.SERVICE_UNREACHABLE
 
         val filteredEntries: List<GameBundleEntry>
             get() = kindFilter?.let { kind -> entries.filter { it.kind == kind } } ?: entries
@@ -177,11 +199,13 @@ class GameImportViewModel @Inject constructor(
     private var cancelRequested = false
 
     private val permissionListener: (Int, Int) -> Unit = { _, grantResult ->
-        refreshShellState()
-        if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            scan()
-        } else {
-            _state.update { it.copy(error = "Shizuku 授权被拒绝，可稍后重新授权") }
+        viewModelScope.launch {
+            refreshShellStateNow()
+            if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                scan()
+            } else {
+                _state.update { it.copy(error = "Shizuku 授权被拒绝，可稍后重新授权") }
+            }
         }
     }
 
@@ -201,9 +225,9 @@ class GameImportViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            refreshShellState()
             refreshLibrary()
             refreshDeviceCapability()
+            refreshShellStateNow()
             if (_state.value.shellState == ShellState.READY) scan()
         }
     }
@@ -240,6 +264,22 @@ class GameImportViewModel @Inject constructor(
             GameImportIntent.ConsumeMessage -> _state.update {
                 it.copy(batchMessage = null, error = null)
             }
+            is GameImportIntent.SetAsSecretary -> setAsSecretary(intent.kind, intent.id)
+        }
+    }
+
+    /**
+     * 把导入的 SD 小人设为今日秘书舰。
+     *
+     * SD 资源库给游戏导入的资源统一加 `game/` 前缀（见 `SDResourceManager`），
+     * 这里按同一约定拼 id；同时清空皮肤选择，让秘书舰落到该资源的默认骨骼。
+     */
+    private fun setAsSecretary(kind: GameAssetKind, id: String) {
+        if (kind != GameAssetKind.SD_CHAR) return
+        val resourceId = "game/$id"
+        secretaryManager.setSdResourceId(resourceId)
+        _state.update {
+            it.copy(batchMessage = "已设为今日秘书舰：${displayNameFor(kind, id)}（可到「今日秘书舰 → 秘书舰设置」调整皮肤/大小）")
         }
     }
 
@@ -278,8 +318,9 @@ class GameImportViewModel @Inject constructor(
     /**
      * 探测 GPU 实际支持的 ASTC 块尺寸并生成提示。
      *
-     * 屏幕上的「过场图 / SD 小人」都用 ASTC 6x6；模拟器与部分低端 GPU 只实现 4x4，
-     * 此时导入会在解码阶段失败。
+     * 屏幕上的「过场图 / SD 小人」都用 ASTC 6x6；模拟器与部分低端 GPU 只实现 4x4。
+     * 这类设备现在会自动走 CPU 软件解码（见 `CompressedTextureDecoder.decodeAstcSoftware`），
+     * **不再导入失败**，所以这里只提示「会用软件解码、首次稍慢」，不再是错误警告。
      */
     private fun refreshDeviceCapability() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -287,28 +328,55 @@ class GameImportViewModel @Inject constructor(
                 com.azurlane.blyy.util.unity.CompressedTextureDecoder.supportedAstcBlockSizes()
             }.getOrDefault(emptySet())
             val warning = when {
-                blocks.isEmpty() -> null
                 6 in blocks -> null
-                else -> "当前设备 GPU 只支持 ASTC 4x4：过场图与 SD 小人（ASTC 6x6）" +
-                    "会在解码阶段失败，请换用支持 ASTC 6x6 的真机（Adreno / Mali 均可）"
+                else -> "当前 GPU 未硬件支持 ASTC 6x6：SD 小人与过场图会自动改用 CPU 解码" +
+                    "（画质一致，单张大图解码会慢一些）"
             }
             _state.update { it.copy(deviceWarning = warning) }
         }
     }
 
+    /**
+     * 刷新通道状态（含一次真实 Binder 往返）。
+     *
+     * 会先丢掉缓存代理，等价于用户点「重试」：服务端进程被回收、
+     * 或者上次绑定卡死之后，这是唯一能让扫描恢复的动作。
+     */
     fun refreshShellState() {
-        val shell = scanner.shellState()
-        _state.update { it.copy(shellState = shell, shizukuVersion = scanner.versionLabel()) }
+        viewModelScope.launch {
+            scanner.resetShell()
+            refreshShellStateNow()
+        }
+    }
+
+    /** 探测通道并写回状态（挂起版，供需要「探测完再决定」的流程调用） */
+    private suspend fun refreshShellStateNow() {
+        val (shell, detail) = scanner.probeState()
+        _state.update {
+            it.copy(
+                shellState = shell,
+                shizukuVersion = scanner.versionLabel(),
+                shellDetail = detail
+            )
+        }
     }
 
     fun requestPermission() {
-        refreshShellState()
-        if (_state.value.shellState == ShellState.NOT_RUNNING) {
-            _state.update { it.copy(error = "请先启动 Shizuku 应用（并保持服务运行）") }
-            return
-        }
-        if (!scanner.requestPermission()) {
-            _state.update { it.copy(error = "无法拉起 Shizuku 授权弹窗") }
+        viewModelScope.launch {
+            refreshShellStateNow()
+            when (_state.value.shellState) {
+                ShellState.NOT_RUNNING -> _state.update {
+                    it.copy(error = "请先启动 Shizuku 应用（并保持服务运行）")
+                }
+                ShellState.SERVICE_UNREACHABLE -> {
+                    // 已授权但服务不可用：重试绑定比再弹一次授权更有效
+                    scanner.resetShell()
+                    refreshShellStateNow()
+                }
+                else -> if (!scanner.requestPermission()) {
+                    _state.update { it.copy(error = "无法拉起 Shizuku 授权弹窗") }
+                }
+            }
         }
     }
 
@@ -316,12 +384,24 @@ class GameImportViewModel @Inject constructor(
     fun scan() {
         if (_state.value.scanning) return
         viewModelScope.launch {
-            refreshShellState()
+            refreshShellStateNow()
             val shell = _state.value.shellState
             if (shell != ShellState.READY) {
                 refreshLibrary()
-                if (shell == ShellState.NO_PERMISSION) {
-                    _state.update { it.copy(error = "授权 Shizuku 后才能读取游戏资源目录") }
+                when (shell) {
+                    ShellState.NO_PERMISSION -> _state.update {
+                        it.copy(error = "授权 Shizuku 后才能读取游戏资源目录")
+                    }
+                    ShellState.SERVICE_UNREACHABLE -> _state.update {
+                        it.copy(
+                            error = "Shizuku 已授权但通道不可用：" +
+                                (_state.value.shellDetail ?: "服务未响应") + "（可点重试重新连接）"
+                        )
+                    }
+                    ShellState.NOT_RUNNING -> _state.update {
+                        it.copy(error = "请先启动 Shizuku（并保持服务运行）后再扫描")
+                    }
+                    else -> Unit
                 }
                 return@launch
             }
@@ -349,11 +429,18 @@ class GameImportViewModel @Inject constructor(
                     )
                 }
                 refreshLibrary()
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
             } catch (t: Throwable) {
+                val reason = t.message ?: "扫描失败：${t.javaClass.simpleName}"
+                // 扫描失败多通道导致（绑定超时 / 远端进程被杀）：
+                // 同步把通道状态降级，界面才会重新出现「重试」入口，而不是继续显示已连接
                 _state.update {
                     it.copy(
                         scanning = false,
-                        error = t.message ?: "扫描失败：${t.javaClass.simpleName}"
+                        shellState = ShellState.SERVICE_UNREACHABLE,
+                        shellDetail = reason,
+                        error = reason
                     )
                 }
             }

@@ -18,8 +18,14 @@ import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Shizuku 通道状态（UI 直接消费） */
-enum class ShellState { UNKNOWN, NOT_RUNNING, NO_PERMISSION, READY }
+/**
+ * Shizuku 通道状态（UI 直接消费）。
+ *
+ * [SERVICE_UNREACHABLE] 是「权限给了、Shizuku 也在跑，但 UserService 绑不上 / 不应答」——
+ * 典型场景是 release 包被裁剪掉了 `BlyyShellService` 的构造器（见 proguard-rules）。
+ * 单独列出来是为了别再把这种情况显示成「已连接」（用户会以为已经能扫描了）。
+ */
+enum class ShellState { UNKNOWN, NOT_RUNNING, NO_PERMISSION, SERVICE_UNREACHABLE, READY }
 
 /**
  * 扫描结果中的单个资源包。
@@ -132,6 +138,36 @@ class GameBundleScanner @Inject constructor(
         else -> ShellState.READY
     }
 
+    /**
+     * 真实探测通道：可用性 → 权限 → **一次 Binder 往返**（`ping`）。
+     *
+     * 只判断「有权限」是不够的：Shizuku 里 `bindUserService` 是异步的，绑定失败
+     * 只会让等待超时。release 包如果被 R8 裁掉服务实现的构造器/AIDL 方法，
+     * 表现就是「权限给了、ping 通、却永远扫不到目录」——必须把这条路径显式区分出来。
+     *
+     * @return 状态 + 服务端应答文本（失败时是原因）
+     */
+    suspend fun probeState(): Pair<ShellState, String?> = withContext(Dispatchers.IO) {
+        // 前两步是便宜的本地判断，先短路掉；只有「看起来就绪」才值得付一次绑定开销
+        when (shellState()) {
+            ShellState.NOT_RUNNING -> return@withContext ShellState.NOT_RUNNING to null
+            ShellState.NO_PERMISSION -> return@withContext ShellState.NO_PERMISSION to null
+            else -> Unit
+        }
+        try {
+            val reply = bridge.requireService().ping()
+            ShellState.READY to reply.ifBlank { "blyy-shell" }
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            Log.w(TAG, "Shizuku 通道探测失败：${t.javaClass.simpleName} ${t.message}")
+            ShellState.SERVICE_UNREACHABLE to (t.message ?: t.javaClass.simpleName)
+        }
+    }
+
+    /** 丢弃缓存的服务代理并允许重新绑定（用户点「重试」时用） */
+    fun resetShell() = bridge.reset()
+
     fun versionLabel(): String? = bridge.versionLabel()
 
     fun requestPermission(): Boolean = bridge.requestPermission()
@@ -161,7 +197,9 @@ class GameBundleScanner @Inject constructor(
      * 3. 在找到的资源根下按 `live2d / char / spinepainting / painting` 探测子目录。
      */
     suspend fun discoverRoots(): Map<GameAssetKind, String> = withContext(Dispatchers.IO) {
-        val service = runCatching { bridge.requireService() }.getOrNull() ?: return@withContext emptyMap()
+        // 这里**不能**把异常吞掉：绑定失败与「游戏没装资源」是两回事，
+        // 吞掉之后用户只会看到「未找到资源目录」，永远不知道是通道坏了。
+        val service = bridge.requireService()
         val bundlesRoots = discoverBundlesRoots(service)
         if (bundlesRoots.isEmpty()) return@withContext emptyMap()
 

@@ -222,6 +222,7 @@ class GameAssetLibrary @Inject constructor(
             paintingMode = meta?.mode,
             paintingLayers = meta?.layers ?: 0,
             paintingAtlas = meta?.atlas,
+            paintingWarning = meta?.warning,
             previewFile = image,
             avatarAsset = avatarAssets.resolve(dir.name),
             variantLabel = GameAssetNaming.variantOf(dir.name)?.second,

@@ -34,6 +34,9 @@ class ShizukuBridge @Inject constructor(
         private const val TAG = "ShizukuBridge"
         const val REQUEST_PERMISSION_CODE = 0x5348
         private const val BIND_TIMEOUT_MS = 8_000L
+
+        /** 绑定重试次数：远端进程刚被回收时，第二次基本都能成 */
+        private const val MAX_BIND_ATTEMPTS = 2
     }
 
     private val args: Shizuku.UserServiceArgs = Shizuku.UserServiceArgs(
@@ -117,16 +120,71 @@ class ShizukuBridge @Inject constructor(
         service = null
     }
 
+    /**
+     * 彻底重置通道：丢弃缓存代理 + 松开等待中的绑定。
+     *
+     * 用户点「重试」或 Shizuku 服务重启后调用；不清 `pending` 的话，
+     * 上一次超时的等待会一直被复用，重试也永远等不到结果。
+     */
+    fun reset() {
+        synchronized(lock) {
+            pending?.complete(null)
+            pending = null
+            binding = false
+        }
+        release()
+    }
+
     private fun alive(svc: IBlyyShellService?): Boolean =
         svc != null && runCatching { svc.asBinder().isBinderAlive }.getOrDefault(false)
 
-    /** 绑定并返回服务；不可用时抛出可读异常 */
+    /**
+     * 绑定并返回服务；不可用时抛出可读异常。
+     *
+     * 绑定成功 ≠ 服务可用：Shizuku 在**独立进程**里反射实例化服务实现类，
+     * 若该类被裁剪/混淆掉构造器（release 包常见），`bindUserService` 照样返回成功，
+     * 但等待回调永远不来。因此这里拿到代理后先做一次真实 `ping()` 往返，
+     * 把它当成「通道健康」的唯一判据。
+     */
     suspend fun requireService(): IBlyyShellService = withContext(Dispatchers.IO) {
         // 远端进程可能在「大目录列举撑爆 Binder」后死亡：缓存代理必须先验证存活
         service?.let { if (alive(it)) return@withContext it else service = null }
         if (!isAvailable()) throw IOException("Shizuku 未运行，请先启动 Shizuku 并授权本应用")
         if (!isPermissionGranted()) throw SecurityException("尚未授予 Shizuku 权限")
 
+        var failure: Throwable? = null
+        for (attempt in 1..MAX_BIND_ATTEMPTS) {
+            try {
+                val svc = bindOnce()
+                val reply = svc.ping()
+                if (reply.isBlank()) throw IOException("Shizuku 服务端无应答")
+                Log.i(TAG, "Shizuku 通道可用：$reply（第 $attempt 次绑定）")
+                return@withContext svc
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                failure = t
+                Log.w(TAG, "绑定 Shizuku 服务失败（第 $attempt 次）：${t.javaClass.simpleName} ${t.message}")
+                // 远端可能刚崩 / 上一次绑定半途而废：解绑后再从头绑一次
+                release()
+            }
+        }
+        throw IOException(describeFailure(failure))
+    }
+
+    /** 把底层异常翻译成用户能看懂、能行动的一句话 */
+    private fun describeFailure(t: Throwable?): String {
+        val raw = t?.message?.takeIf { it.isNotBlank() } ?: t?.javaClass?.simpleName ?: "未知原因"
+        return when (t) {
+            null -> "连接 Shizuku 服务失败"
+            is NoSuchMethodError, is NoClassDefFoundError, is AbstractMethodError ->
+                "Shizuku 服务实现类不完整（安装包被裁剪或二次精简），请安装完整版安装包：$raw"
+            else -> "连接 Shizuku 服务失败：$raw"
+        }
+    }
+
+    /** 单次绑定：并发调用共享同一个等待中的 deferred */
+    private suspend fun bindOnce(): IBlyyShellService {
         // 并发调用（四类目录同时列举）必须共享同一个等待中的绑定：
         // 各自 new 一个 deferred 会互相覆盖，先到的那个永远等不到结果，只能超时。
         val deferred: CompletableDeferred<IBlyyShellService?> = synchronized(lock) {
@@ -134,25 +192,32 @@ class ShizukuBridge @Inject constructor(
                 pending = created
                 if (!binding) {
                     binding = true
-                    val ok = runCatching { Shizuku.bindUserService(args, connection) }.isSuccess
-                    if (!ok) {
+                    val result = runCatching { Shizuku.bindUserService(args, connection) }
+                    if (result.isFailure) {
                         binding = false
                         pending = null
-                        throw IOException("无法绑定 Shizuku 服务")
+                        throw IOException(
+                            "无法绑定 Shizuku 服务：${result.exceptionOrNull()?.message ?: "未知原因"}"
+                        )
                     }
                 }
             }
         }
-        val svc = withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
-        svc ?: throw IOException("连接 Shizuku 服务超时（可能被系统回收，请重试）")
+        return withTimeoutOrNull(BIND_TIMEOUT_MS) { deferred.await() }
+            ?: throw IOException(
+                "连接 Shizuku 服务超时（可能被系统回收或服务端无法实例化，请点重试）"
+            )
     }
 
-    /** 解绑（退出扫描页时调用，避免常驻进程） */
+    /**
+     * 解绑（退出扫描页 / 重试前调用，避免常驻进程与「半绑定」状态）。
+     *
+     * 即使 `service` 为空也要尝试解绑：绑定失败的重试路径里，代理可能还没回来，
+     * 但远端已经登记过这次绑定，不解绑会让下一次 `bindUserService` 撞上重复绑定。
+     */
     fun release() {
-        val svc = service
         service = null
-        if (svc == null) return
-        runCatching { Shizuku.unbindUserService(args, connection, true) }
         synchronized(lock) { binding = false }
+        runCatching { Shizuku.unbindUserService(args, connection, true) }
     }
 }

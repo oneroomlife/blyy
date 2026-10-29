@@ -37,6 +37,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -197,6 +198,11 @@ fun GameImportScreen(
                         val name = viewModel.displayNameOfEntry(entry)
                         if (entry.kind == GameAssetKind.LIVE2D) onOpenLive2d(entry.assetId, name)
                         else onOpenAsset(entry.kind, entry.assetId, name)
+                    },
+                    onSetSecretary = { entry ->
+                        viewModel.onIntent(
+                            GameImportIntent.SetAsSecretary(entry.kind, entry.assetId)
+                        )
                     }
                 )
 
@@ -332,7 +338,8 @@ private fun BundlesTab(
     onSearchChange: (String) -> Unit,
     onImport: (GameBundleEntry) -> Unit,
     onImportAll: () -> Unit,
-    onOpen: (GameBundleEntry) -> Unit
+    onOpen: (GameBundleEntry) -> Unit,
+    onSetSecretary: (GameBundleEntry) -> Unit
 ) {
     val progress = state.progress
     // 「需要导入」= 从未导入过（NEW）或上次失败（FAILED）。
@@ -355,7 +362,10 @@ private fun BundlesTab(
         ),
         verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
     ) {
-        item(key = "shell") { ShellStateCard(state, viewModel) }
+        // Shizuku 提示只在「没跑起来 / 没授权」时出现：连接成功后这张卡片纯属噪音
+        if (state.shellNeedsAttention) {
+            item(key = "shell") { ShellStateCard(state, viewModel) }
+        }
         state.deviceWarning?.let { warning ->
             item(key = "device-warning") { DeviceWarningCard(warning) }
         }
@@ -456,7 +466,11 @@ private fun BundlesTab(
                         visible = true,
                         icon = Icons.Rounded.CloudDownload,
                         title = "没有待导入的资源包",
-                        description = "接通 Shizuku 后点右上角刷新，自动扫描游戏资源目录\n（支持官服 / 渠道服 / 外服包名）"
+                        description = if (state.shellState == ShellState.READY) {
+                            "Shizuku 已连接，点右上角刷新可重新扫描资源目录\n（若游戏资源未下载完，请先在游戏内下载）"
+                        } else {
+                            "接通 Shizuku 后点右上角刷新，自动扫描游戏资源目录\n（支持官服 / 渠道服 / 外服包名）"
+                        }
                     )
                 }
             }
@@ -469,7 +483,8 @@ private fun BundlesTab(
                 sizeText = viewModel.formatSize(entry.size),
                 busy = state.busy,
                 onImport = { onImport(entry) },
-                onOpen = { onOpen(entry) }
+                onOpen = { onOpen(entry) },
+                onSetSecretary = { onSetSecretary(entry) }
             )
         }
     }
@@ -480,12 +495,9 @@ private fun ShellStateCard(
     state: GameImportViewModel.State,
     viewModel: GameImportViewModel
 ) {
+    // 连接成功后整张卡片不再渲染（BundlesTab 也不会给它 item 位置），这里再兜一层
+    if (state.shellState == ShellState.READY) return
     val (icon, title, description) = when (state.shellState) {
-        ShellState.READY -> Triple(
-            Icons.Rounded.CheckCircle,
-            "Shizuku 已连接${state.shizukuVersion?.let { "（$it）" } ?: ""}",
-            if (state.roots.isEmpty()) "正在等待扫描结果" else "已发现 ${state.roots.size} 类资源目录"
-        )
         ShellState.NO_PERMISSION -> Triple(
             Icons.Rounded.Shield,
             "等待 Shizuku 授权",
@@ -496,7 +508,14 @@ private fun ShellStateCard(
             "未检测到 Shizuku 服务",
             "启动 Shizuku 后可一键扫描游戏目录；也可以直接从本地文件导入"
         )
-        ShellState.UNKNOWN -> Triple(
+        // 已授权但 UserService 绑不上/不应答：以前会被误显示成「已连接」，
+        // 用户看到的是「连上了却扫不到资源」，这里把真实原因摆出来
+        ShellState.SERVICE_UNREACHABLE -> Triple(
+            Icons.Rounded.WarningAmber,
+            "Shizuku 通道未连通",
+            state.shellDetail?.takeIf { it.isNotBlank() } ?: "服务未响应，点「重试」重新绑定"
+        )
+        ShellState.READY, ShellState.UNKNOWN -> Triple(
             Icons.Rounded.Shield,
             "正在检查 Shizuku 状态",
             "首次进入需要一次授权，之后无需重复操作"
@@ -504,7 +523,6 @@ private fun ShellStateCard(
     }
 
     val accent = when (state.shellState) {
-        ShellState.READY -> MaterialTheme.colorScheme.primary
         ShellState.NO_PERMISSION -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.error
     }
@@ -528,22 +546,17 @@ private fun ShellStateCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (state.shellState == ShellState.NO_PERMISSION) {
-                    TextButton(onClick = { viewModel.onIntent(GameImportIntent.RequestPermission) }) {
-                        Text("授权")
-                    }
+                when (state.shellState) {
+                    ShellState.NO_PERMISSION -> TextButton(
+                        onClick = { viewModel.onIntent(GameImportIntent.RequestPermission) }
+                    ) { Text("授权") }
+
+                    ShellState.SERVICE_UNREACHABLE -> TextButton(
+                        onClick = { viewModel.onIntent(GameImportIntent.RequestPermission) }
+                    ) { Text("重试") }
+
+                    else -> Unit
                 }
-            }
-            if (state.roots.isNotEmpty()) {
-                Text(
-                    state.roots.entries.joinToString(" · ") { (kind, path) ->
-                        "${kind.shortLabel} ${path.substringAfterLast('/')}"
-                    },
-                    style = AppTypography.CaptionSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
             }
         }
     }
@@ -626,7 +639,8 @@ private fun BundleEntryCard(
     sizeText: String,
     busy: Boolean,
     onImport: () -> Unit,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    onSetSecretary: () -> Unit
 ) {
     val isDark = LocalIsDark.current
     val stateColor = when (entry.state) {
@@ -750,6 +764,29 @@ private fun BundleEntryCard(
                         enabled = !busy,
                         modifier = Modifier.weight(1f)
                     )
+                }
+            }
+
+            // SD 小人导入后可以直接设成今日秘书舰：省掉「去秘书舰设置里翻资源库」这一步。
+            // 其它类型（Live2D/立绘/过场图）不属于秘书舰 SD 资源，不显示该入口。
+            if (entry.kind == GameAssetKind.SD_CHAR &&
+                (entry.state == GameBundleEntry.State.IMPORTED ||
+                    entry.state == GameBundleEntry.State.CHANGED)
+            ) {
+                TextButton(
+                    onClick = onSetSecretary,
+                    enabled = !busy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = AppSpacing.Xs)
+                ) {
+                    Icon(
+                        Icons.Rounded.SmartToy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.size(AppSpacing.Xs))
+                    Text("设为今日秘书舰", style = AppTypography.LabelMedium)
                 }
             }
         }

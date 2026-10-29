@@ -58,3 +58,28 @@
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;
 }
+
+# ── Shizuku UserService（release 必须保留）──
+# 服务实现类跑在 Shizuku 拉起的**独立进程**里，由框架反射实例化：
+#   Class.forName(<连接时登记的类名>).getConstructor(Context::class.java).newInstance(...)
+# R8 会把 `BlyyShellService::class.java.name` 折叠成字符串常量，于是这个类
+# 「只被字符串引用」→ 类被保留、但构造器与全部 AIDL 方法被删掉
+# （可在 build/outputs/mapping/release/usage.txt 里直接看到）。
+# 运行时表现：debug 正常；release 里 bindUserService 成功、ping 正常、权限也给了，
+# 但 requireService() 永远超时 → 扫描永远返回空目录（「连上了却扫不到资源」）。
+-keep class com.azurlane.blyy.util.shizuku.BlyyShellService {
+    <init>(android.content.Context);
+    <init>();
+    *;
+}
+# AIDL 生成的 Stub / Proxy / _Parcel 同样只被反射与 Binder 事务按名使用
+-keep interface com.azurlane.blyy.shizuku.IBlyyShellService { *; }
+-keep class com.azurlane.blyy.shizuku.** { *; }
+-keepclassmembers class com.azurlane.blyy.shizuku.** { *; }
+
+# ── Shizuku API 本体 ──
+# 库自带 consumer 规则，这里再显式保留入口与 Provider：
+# Shizuku 的权限回调、UserServiceArgs 构造都通过反射/清单声明访问。
+-keep class rikka.shizuku.** { *; }
+-keepclassmembers class rikka.shizuku.** { *; }
+-dontwarn rikka.shizuku.**

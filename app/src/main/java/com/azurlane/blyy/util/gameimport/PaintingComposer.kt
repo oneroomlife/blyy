@@ -63,7 +63,9 @@ internal class PaintingComposer(private val context: Context) {
         /** 主贴图的 Unity TextureFormat */
         val textureFormat: Int,
         /** 主包内的贴图数量（含未被使用的碎图） */
-        val textureCount: Int
+        val textureCount: Int,
+        /** 完整性提示（null = 没发现问题） */
+        val warning: String? = null
     )
 
     companion object {
@@ -74,6 +76,15 @@ internal class PaintingComposer(private val context: Context) {
 
         /** 布局模式下的画布上限（防异常 prefab 声明出几万像素的画布） */
         private const val MAX_CANVAS_SIDE = 8192
+
+        /**
+         * 画布未被图层覆盖的比例上限。
+         *
+         * prefab 的矩形通常比画面略大（留白/安全区），所以不能「有一像素空白就报警」；
+         * 超过 15% 才判定为「可能缺层」——贝奇默认立绘实测差 23%（画布 979 高，
+         * 网格只有 754），正是「少了头部」的那种比例。
+         */
+        private const val MIN_MESH_COVERAGE = 0.85f
     }
 
     /**
@@ -159,6 +170,8 @@ internal class PaintingComposer(private val context: Context) {
 
         var drawn = 0
         var skipped = 0
+        /** 所有图层里「网格覆盖率」的最小值（1 = 网格正好铺满声明的矩形） */
+        var minMeshCoverage = 1f
         var atlasWidth = 0
         var atlasHeight = 0
         var format = 0
@@ -172,6 +185,15 @@ internal class PaintingComposer(private val context: Context) {
             if (resolved == null) {
                 skipped++
                 return@forEachIndexed
+            }
+            // 覆盖率自检：MeshImage 声明的矩形（mRawSpriteSize / RectTransform）如果比
+            // 实际能拿到的网格大，中间那段就没有几何体 —— 画面上表现为「少了上半身/头部」。
+            // 贝奇默认立绘就是这种：画布 979 高，网格只有 754（77%）。
+            if (layer.meshPathId != 0L && layer.height > 0f) {
+                val mesh = findMesh(resolved.source, layer.meshPathId, sources)
+                if (mesh != null && mesh.usable && mesh.height > 0f) {
+                    minMeshCoverage = minOf(minMeshCoverage, mesh.height / layer.height)
+                }
             }
             val bitmap = runCatching { buildLayerBitmap(resolved, layer, sources, maxSide) }
                 .onFailure { Log.w(TAG, "图层 ${layer.name} 还原失败", it) }
@@ -213,6 +235,19 @@ internal class PaintingComposer(private val context: Context) {
             return null
         }
 
+        // 完整性自检：prefab 声明的画布（mRawSpriteSize）比「实际能画出来的图层包围盒」高出一截，
+        // 说明顶部/底部有一段画布没有任何图层覆盖 —— 通常是该皮肤的某层资源包没下载全
+        // （例如 char/painting 资源按需下载），此时立绘看起来就是「少了上半身/头部」。
+        val warning = when {
+            minMeshCoverage >= MIN_MESH_COVERAGE -> null
+            else -> {
+                val missing = Math.round((1f - minMeshCoverage) * 100)
+                "顶部约 $missing% 没有几何体覆盖（该立绘可能还有未下载的图层包，" +
+                    "建议先在游戏内打开一次再重新导入）"
+            }
+        }
+        if (warning != null) Log.w(TAG, "立绘可能缺层：$warning（画布 ${canvasWidth}x$canvasHeight）")
+
         onProgress(0.93f, "写入立绘 PNG")
         writePng(canvas, outputFile)
         val result = Outcome(
@@ -224,7 +259,8 @@ internal class PaintingComposer(private val context: Context) {
             atlasWidth = atlasWidth,
             atlasHeight = atlasHeight,
             textureFormat = format,
-            textureCount = textureCount
+            textureCount = textureCount,
+            warning = warning
         )
         Log.i(TAG, "布局合成完成：${canvasWidth}x$canvasHeight，$drawn 层（跳过 $skipped）")
         return result

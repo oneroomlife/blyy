@@ -35,6 +35,14 @@ data class GameAssetInfo(
     val paintingLayers: Int = 0,
     /** 主图集尺寸（如 `2048x1132`），用于界面说明「由图集还原」 */
     val paintingAtlas: String? = null,
+    /**
+     * 立绘完整性提示（null = 正常）。
+     *
+     * 典型情况：prefab 声明的画布比能拿到的网格高一大截（贝奇默认立绘差 23%），
+     * 说明该皮肤在游戏里还有没下载下来的图层包 —— 此时查看器要显式说明，
+     * 而不是让用户以为「导入坏了」。
+     */
+    val paintingWarning: String? = null,
     /** 卡片预览图（立绘本身 / Live2D 截图） */
     val previewFile: File? = null,
     /** 内置舰娘头像兜底资产名 */

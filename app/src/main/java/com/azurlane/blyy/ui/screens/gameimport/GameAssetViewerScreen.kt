@@ -218,6 +218,10 @@ private fun subtitleOf(asset: GameAssetInfo): String = buildString {
                 }
                 "mesh" -> append(" · 网格还原")
             }
+            // 素材不全时如实说明：这类资源在游戏内也是「按需下载」的，
+            // 用户需要先在游戏里打开一次，再回来重新导入。
+            asset.paintingWarning?.let { append(" · ⚠ ").append(it) }
         }
     }
+    asset.paintingWarning?.takeIf { asset.isLoadingBg }?.let { append(" · ⚠ ").append(it) }
 }

@@ -104,6 +104,7 @@ class PaintingBundleExtractor @Inject constructor(
                 } else {
                     null
                 },
+                warning = outcome.warning,
                 source = bundleFile.name,
                 createdAt = System.currentTimeMillis()
             )
