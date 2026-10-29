@@ -22,7 +22,8 @@ import javax.inject.Singleton
  *
  * 失败语义：
  * - 提取失败不留下半成品目录（暂存目录整体删除，目标目录保持原样）；
- * - 失败详情写入索引，列表里能直接看到原因，而不是静默消失。
+ * - 失败详情写入索引，列表里能直接看到原因，而不是静默消失；
+ * - 协程取消**不算**失败：只清理暂存，不写 FAILED 记录、不改变旧产物。
  */
 @Singleton
 class GameBundleImporter @Inject constructor(
@@ -62,6 +63,34 @@ class GameBundleImporter @Inject constructor(
         modifiedHint: Long = 0L,
         paintingCompanions: List<File> = emptyList(),
         onProgress: (Float, String) -> Unit = { _, _ -> }
+    ): Result = withContext(Dispatchers.IO) {
+        // 解压镜像（与包等大的 .img）只服务于本次导入内「探测 → 提取」的复用，
+        // 结束后必须删除，否则每个包都会在 cacheDir 里永久留下几十 MB 的残留
+        try {
+            doImport(
+                bundleFile = bundleFile,
+                sourcePath = sourcePath,
+                fileNameHint = fileNameHint,
+                kindHint = kindHint,
+                sizeHint = sizeHint,
+                modifiedHint = modifiedHint,
+                paintingCompanions = paintingCompanions,
+                onProgress = onProgress
+            )
+        } finally {
+            runCatching { UnityBundleSession.imageCacheFile(context, bundleFile).delete() }
+        }
+    }
+
+    private suspend fun doImport(
+        bundleFile: File,
+        sourcePath: String,
+        fileNameHint: String?,
+        kindHint: GameAssetKind?,
+        sizeHint: Long,
+        modifiedHint: Long,
+        paintingCompanions: List<File>,
+        onProgress: (Float, String) -> Unit
     ): Result = withContext(Dispatchers.IO) {
         val started = System.currentTimeMillis()
         val displayName = fileNameHint ?: bundleFile.name
@@ -167,13 +196,26 @@ class GameBundleImporter @Inject constructor(
                 }
             }
 
-            // 原子落库：暂存目录 rename 到目标目录（跨分区时退化为复制）
+            // 原子落库：暂存目录 rename 到目标目录（跨分区时退化为复制）。
+            // 旧资产先挪到暂存区备份而不是直接删除：落库中途失败（复制半途抛 IO 异常、
+            // 协程取消等）时把备份放回原位，用户已导入的资源不会凭空消失
             val target = library.dirOf(kind, assetId)
-            if (target.exists()) target.deleteRecursively()
-            if (!staging.renameTo(target)) {
-                staging.copyRecursively(target, overwrite = true)
-                staging.deleteRecursively()
+            val backup = File(library.stagingDir(kind), "$assetId.replaced")
+            if (target.exists()) {
+                runCatching { backup.deleteRecursively() }
+                if (!target.renameTo(backup)) target.deleteRecursively()
             }
+            try {
+                if (!staging.renameTo(target)) {
+                    staging.copyRecursively(target, overwrite = true)
+                    staging.deleteRecursively()
+                }
+            } catch (t: Throwable) {
+                runCatching { target.deleteRecursively() }
+                if (backup.isDirectory) runCatching { backup.renameTo(target) }
+                throw t
+            }
+            runCatching { backup.deleteRecursively() }
 
             index.upsert(
                 GameImportRecord(
@@ -198,6 +240,11 @@ class GameBundleImporter @Inject constructor(
             Log.i(TAG, "导入完成：${kind.key}/$assetId（${System.currentTimeMillis() - started}ms）")
             onProgress(1f, "完成")
             Result(kind = kind, assetId = assetId, probe = probe, elapsedMs = System.currentTimeMillis() - started)
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            // 取消不是导入失败：只清理半成品，绝不写 FAILED 记录——
+            // 否则用户退出页面后，剩余没导完的条目会被永久标记成「失败」
+            runCatching { staging.deleteRecursively() }
+            throw c
         } catch (t: Throwable) {
             runCatching { staging.deleteRecursively() }
             val reason = describe(t)

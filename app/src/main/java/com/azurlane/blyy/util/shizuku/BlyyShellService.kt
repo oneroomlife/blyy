@@ -6,7 +6,6 @@ import android.util.Log
 import com.azurlane.blyy.shizuku.IBlyyShellService
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
 
 /**
  * 运行在 Shizuku 提供的独立进程里的 shell 服务（UID = shell/root）。
@@ -165,16 +164,18 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
         var total = 0L
         return try {
             FileInputStream(src).use { input ->
-                // 注意：不要 close 这个流，否则会连带关闭调用方传入的 fd
-                val output = FileOutputStream(destination.fileDescriptor)
-                val buffer = ByteArray(COPY_BUFFER)
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n <= 0) break
-                    output.write(buffer, 0, n)
-                    total += n
+                // fd 经 Binder 传递后是本进程的独立副本，用完必须关闭；
+                // AutoCloseOutputStream 会在关闭流的同时释放 pfd，不影响调用方自己的 fd
+                ParcelFileDescriptor.AutoCloseOutputStream(destination).use { output ->
+                    val buffer = ByteArray(COPY_BUFFER)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n <= 0) break
+                        output.write(buffer, 0, n)
+                        total += n
+                    }
+                    output.flush()
                 }
-                output.flush()
             }
             total
         } catch (e: Exception) {

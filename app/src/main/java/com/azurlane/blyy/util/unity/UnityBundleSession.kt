@@ -47,8 +47,10 @@ internal object UnityValues {
  * 命名规则 = 文件名-长度-修改时间），因此「先探测再提取」不会把 30MB+ 的包
  * 解压两遍：探测阶段写好的镜像，Live2D 提取器会直接命中。
  *
- * 镜像文件**不在 close 时删除**：Live2D 提取器依赖它做同一次导入内的复用，
- * 缓存整体由 [com.azurlane.blyy.util.CacheManager] 清理。
+ * 镜像文件**不在 close 时删除**：Live2D 提取器依赖它做同一次导入内的复用。
+ * 它的生命周期由调用方（导入管线）负责：`GameBundleImporter.importLocal` 结束时
+ * 统一删除本次包的镜像——探测与提取共用同一份，结束后立即释放，
+ * 否则每个包都会在 cacheDir 留下几十 MB 的永久残留。
  */
 internal class UnityBundleSession private constructor(
     val bundleFile: File,

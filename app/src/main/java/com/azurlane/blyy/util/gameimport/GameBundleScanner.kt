@@ -653,7 +653,9 @@ class GameBundleScanner @Inject constructor(
                 android.os.ParcelFileDescriptor.MODE_WRITE_ONLY or
                 android.os.ParcelFileDescriptor.MODE_TRUNCATE
         ).use { pfd ->
-            coroutineScope {
+            // 服务端中途失败（空间不足/源文件消失）返回 -1，但目标文件里已写出部分字节：
+            // 只凭「文件非空」会把半截包当成完整包送进解析管线，必须校验返回值与总长
+            val returned = coroutineScope {
                 val poller = launch {
                     while (isActive) {
                         val len = target.length()
@@ -667,10 +669,16 @@ class GameBundleScanner @Inject constructor(
                     poller.cancel()
                 }
             }
+            val copied = target.length()
+            when {
+                returned < 0L ->
+                    throw IOException("复制失败（服务端错误，可能磁盘空间不足或源文件不可读）：$remotePath")
+                total > 0L && returned != total ->
+                    throw IOException("复制不完整（$copied/$total 字节）：$remotePath")
+                copied <= 0L -> throw IOException("复制失败：0 字节：$remotePath")
+            }
+            onProgress(1f)
+            copied
         }
-        val copied = target.length()
-        if (copied <= 0) throw IOException("Shizuku 复制失败：$remotePath")
-        onProgress(1f)
-        copied
     }
 }

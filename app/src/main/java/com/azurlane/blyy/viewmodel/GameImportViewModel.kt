@@ -510,6 +510,10 @@ class GameImportViewModel @Inject constructor(
                             }
                         }
                     }
+                } catch (c: kotlinx.coroutines.CancellationException) {
+                    // 页面销毁导致协程取消：取消不是导入失败，
+                    // 剩余条目保持原状态，索引也不会被写成 FAILED
+                    throw c
                 } catch (t: Throwable) {
                     val reason = t.message ?: t.javaClass.simpleName
                     failed += entry.fileName to reason

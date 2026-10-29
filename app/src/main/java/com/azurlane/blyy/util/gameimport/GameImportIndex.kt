@@ -275,8 +275,10 @@ class GameImportIndex @Inject constructor(
             val file = indexFile()
             val tmp = File(file.parentFile, "$FILE_NAME.tmp")
             tmp.writeText(json.encodeToString(GameImportIndexData.serializer(), data))
-            if (file.exists()) file.delete()
+            // Android(Linux) 上 rename 会原子替换已存在的目标文件；
+            // 先 delete 再 rename 会在两步之间留下「整份索引消失」的崩溃窗口
             if (!tmp.renameTo(file)) {
+                // 极少数文件系统不支持覆盖 rename 时退化为读写
                 file.writeText(tmp.readText())
                 tmp.delete()
             }
