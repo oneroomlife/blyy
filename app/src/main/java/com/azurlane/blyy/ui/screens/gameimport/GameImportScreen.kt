@@ -446,7 +446,7 @@ private fun BundlesTab(
                     )
                     Spacer(Modifier.size(AppSpacing.Sm))
                     Text(
-                        "正在扫描游戏资源目录…",
+                        state.scanStatus ?: "正在扫描游戏资源目录…",
                         style = AppTypography.BodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -506,7 +506,7 @@ private fun ShellStateCard(
         ShellState.NOT_RUNNING -> Triple(
             Icons.Rounded.WarningAmber,
             "未检测到 Shizuku 服务",
-            "启动 Shizuku 后可一键扫描游戏目录；也可以直接从本地文件导入"
+            "启动 Shizuku 后可一键扫描游戏目录并导入资源包"
         )
         // 已授权但 UserService 绑不上/不应答：以前会被误显示成「已连接」，
         // 用户看到的是「连上了却扫不到资源」，这里把真实原因摆出来

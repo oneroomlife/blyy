@@ -114,6 +114,8 @@ class GameImportViewModel @Inject constructor(
         /** null = 全部类型 */
         val kindFilter: GameAssetKind? = null,
         val scanning: Boolean = false,
+        /** 扫描进行中的实时文案（已发现的候选数），完成或失败后清空 */
+        val scanStatus: String? = null,
         val entries: List<GameBundleEntry> = emptyList(),
         val assets: Map<GameAssetKind, List<GameAssetInfo>> = emptyMap(),
         val roots: Map<GameAssetKind, String> = emptyMap(),
@@ -405,24 +407,28 @@ class GameImportViewModel @Inject constructor(
                 }
                 return@launch
             }
-            _state.update { it.copy(scanning = true, error = null) }
+            _state.update { it.copy(scanning = true, error = null, scanStatus = null) }
             try {
                 val roots = scanner.discoverRoots()
                 if (roots.isEmpty()) {
                     _state.update {
                         it.copy(
                             scanning = false,
-                            error = "未找到碧蓝航线资源目录（请确认游戏已下载资源，或从本地文件导入）"
+                            error = "未找到碧蓝航线资源目录（请确认游戏已安装并下载过资源，然后点「重试」重新扫描）"
                         )
                     }
                     refreshLibrary()
                     return@launch
                 }
                 roots.forEach { (kind, path) -> index.rememberRoot(kind, path) }
-                val entries = scanner.scan(roots)
+                val entries = scanner.scan(roots) { found ->
+                    // scanner 的进度回调在 IO 线程触发，StateFlow.update 线程安全
+                    _state.update { it.copy(scanStatus = "已发现 $found 个资源包…") }
+                }
                 _state.update {
                     it.copy(
                         scanning = false,
+                        scanStatus = null,
                         entries = entries,
                         roots = roots,
                         lastScanAt = System.currentTimeMillis()
@@ -438,6 +444,7 @@ class GameImportViewModel @Inject constructor(
                 _state.update {
                     it.copy(
                         scanning = false,
+                        scanStatus = null,
                         shellState = ShellState.SERVICE_UNREACHABLE,
                         shellDetail = reason,
                         error = reason
@@ -628,7 +635,8 @@ class GameImportViewModel @Inject constructor(
         }
     }
 
-    private fun renameAsset(kind: GameAssetKind, id: String, newName: String) {        viewModelScope.launch {
+    private fun renameAsset(kind: GameAssetKind, id: String, newName: String) {
+        viewModelScope.launch {
             val target = GameAssetNaming.sanitizeId(newName)
             val error = library.rename(kind, id, target)
             if (error == null && target != id) {
