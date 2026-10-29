@@ -33,9 +33,11 @@ object AppModule {
         )
             // 显式注册已知升级路径，避免破坏性迁移清库
             .addMigrations(DatabaseMigrations.MIGRATION_7_8, DatabaseMigrations.MIGRATION_8_9)
-            // 安全网：仅当未来版本遗漏 Migration 时兜底（避免升级崩溃），
-            // 正常升级路径因已注册 Migration 不会触发此处。
-            .fallbackToDestructiveMigration()
+            // 兜底收窄为「仅降级时破坏性重建」：升级路径一旦未来遗漏 Migration，
+            // 宁可启动崩溃（开发期立刻暴露）也不要静默清空用户的收藏/生日/猜题历史；
+            // 降级（回装旧版 APK）本身不受支持，允许重建。schema 快照已导出到
+            // app/schemas/（见 build.gradle.kts 的 room.schemaLocation），可用于迁移测试。
+            .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
             .build()
     }
 

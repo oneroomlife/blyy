@@ -106,6 +106,8 @@ tasks.matching { it.name.startsWith("merge") && it.name.contains("JniLibFolders"
 
 ksp {
     arg("room.generateKotlin", "false")
+    // 导出 schema 快照到 app/schemas/：未来写 Migration 时可基于快照做回归测试
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {

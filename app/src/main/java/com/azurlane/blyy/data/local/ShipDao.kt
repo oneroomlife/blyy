@@ -2,6 +2,7 @@ package com.azurlane.blyy.data.local
 
 import androidx.room.*
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.data.model.StudentFilterData
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -67,6 +68,13 @@ abstract class ShipDao {
     @Query("SELECT name, birthday FROM ships WHERE archiveType = :archiveType AND birthday != ''")
     abstract suspend fun getBirthdaysByArchiveType(archiveType: String): List<NameBirthday>
 
+    /** ships 表 name + filterData 投影（upsert 前读取已有筛选数据用于保留合并） */
+    data class NameFilter(val name: String, val filterData: String)
+
+    /** 已有非空 filterData 的 name → filterData 映射（upsert 保留用，避免 REPLACE 抹掉 enrich 结果） */
+    @Query("SELECT name, filterData FROM ships WHERE archiveType = :archiveType AND filterData != ''")
+    abstract suspend fun getFilterDatasByArchiveType(archiveType: String): List<NameFilter>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertAll(ships: List<Ship>)
 
@@ -76,14 +84,24 @@ abstract class ShipDao {
         val archiveType = ships.first().archiveType
         val favorites = getFavoriteNamesByArchiveType(archiveType).toSet()
         // OnConflictStrategy.REPLACE 是"删旧插新"，不在新对象里的列会丢——
-        // 收藏状态与生日都必须从库里带回后再写
+        // 收藏状态、生日与 filterData 都必须先读库再决定写什么
         val birthdays = getBirthdaysByArchiveType(archiveType)
             .associate { it.name to it.birthday }
+        val filterDatas = getFilterDatasByArchiveType(archiveType)
+            .associate { it.name to it.filterData }
         val shipsToUpsert = ships.map { ship ->
             var merged = if (ship.name in favorites) ship.copy(isFavorite = true) else ship
             val existingBirthday = birthdays[ship.name]
             if (existingBirthday != null && ship.birthday != existingBirthday) {
                 merged = merged.copy(birthday = existingBirthday)
+            }
+            // filterData 按完整度保留：列表刷新只解析到少数几维，不能把 enrich
+            // 写入的完整 14 维数据冲回子集；反过来 enrich 的全量也能正常覆盖旧子集
+            val existingFilter = filterDatas[ship.name]
+            if (existingFilter != null &&
+                StudentFilterData.richnessOf(existingFilter) > StudentFilterData.richnessOf(ship.filterData)
+            ) {
+                merged = merged.copy(filterData = existingFilter)
             }
             merged
         }

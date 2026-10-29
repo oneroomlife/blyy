@@ -56,6 +56,19 @@ data class StudentFilterData(
             }
         }
 
+        /**
+         * 非空筛选维度数量——衡量一份筛选数据的完整度。
+         *
+         * 学生档案有两个写入方：列表刷新只解析到少数几维（子集），
+         * 详情页 enrich 才有完整 14 维（全量）。upsert 保留合并时按此比较，
+         * **更完整的一方胜出**：既防止列表刷新把 enrich 的全量数据冲回子集，
+         * 也不妨碍 enrich 的全量覆盖旧的子集。解析失败返回 -1（视为最弱，让位）。
+         */
+        fun richnessOf(jsonStr: String): Int {
+            val data = fromJson(jsonStr) ?: return -1
+            return FILTER_CATEGORIES.count { data.getFieldValue(it.key).isNotEmpty() }
+        }
+
         /** 14 个筛选维度的元数据定义 — 用于 UI 动态生成筛选选项 */
         val FILTER_CATEGORIES = listOf(
             FilterCategory("starRating", "星级", listOf("1星", "2星", "3星")),
