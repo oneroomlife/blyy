@@ -28,6 +28,11 @@ import java.nio.FloatBuffer
  * - `painting` / `spinepainting` 包：ASTC 4x4（`48`）
  *
  * 顺带支持 ETC2 / ETC1（GLES3 核心格式），兼容部分老资源。
+ *
+ * 【软件兜底】GL 路径依赖 `GL_KHR_texture_compression_astc_ldr` 且不同驱动接受的块尺寸不同，
+ * 模拟器/部分低端 GPU 只实现 ASTC 4x4，导致 **ASTC 6x6 的 SD 小人与过场图必然黑屏**。
+ * 现在 ASTC 解码在 GL 失败（或探测到硬件不支持该块尺寸）时自动回退到
+ * [AstcDecoder]（纯 Kotlin、无 GL 依赖），因此这两类资源在任何设备上都能出图。
  */
 object CompressedTextureDecoder {
 
@@ -70,6 +75,9 @@ object CompressedTextureDecoder {
             gl_FragColor = texture2D(uTex, vUv);
         }
     """
+
+    /** 超过这个像素数就按目标尺寸直接解码（4M 像素 ≈ 16MB 的 IntArray） */
+    private const val LARGE_TEXTURE_PIXELS = 4_194_304L
 
     @Volatile
     private var astcSupported: Boolean? = null
@@ -165,21 +173,30 @@ object CompressedTextureDecoder {
         return probed
     }
 
-    /** 该 Unity 贴图格式在当前设备上能否解码（非压缩格式一律 true，交给 Bitmap 路径） */
+    /**
+     * 该 Unity 贴图格式在当前设备上能否解码。
+     *
+     * ASTC 一律返回 true：硬件不支持对应块尺寸时自动走 [AstcDecoder] 软件解码，
+     * 所以「设备只支持 ASTC 4x4」不再等于「SD / 过场图解不出来」。
+     */
     fun canDecode(unityFormat: Int): Boolean {
-        val gl = glFormatOf(unityFormat) ?: return unityFormat == 4
         if (unityFormat == 4) return true
-        val block = when (gl) {
-            GL_ASTC_4X4 -> 4
-            GL_ASTC_5X5 -> 5
-            GL_ASTC_6X6 -> 6
-            GL_ASTC_8X8 -> 8
-            GL_ASTC_10X10 -> 10
-            GL_ASTC_12X12 -> 12
-            else -> return true // ETC2 / ETC1：GLES3 核心格式，按支持处理
-        }
-        return block in supportedAstcBlockSizes()
+        return glFormatOf(unityFormat) != null
     }
+
+    /** ASTC 内部格式 → 块尺寸；非 ASTC 返回 null */
+    private fun astcBlockOf(internalFormat: Int): Pair<Int, Int>? = when (internalFormat) {
+        GL_ASTC_4X4 -> 4 to 4
+        GL_ASTC_5X5 -> 5 to 5
+        GL_ASTC_6X6 -> 6 to 6
+        GL_ASTC_8X8 -> 8 to 8
+        GL_ASTC_10X10 -> 10 to 10
+        GL_ASTC_12X12 -> 12 to 12
+        else -> null
+    }
+
+    /** 硬件是否真的接受该 ASTC 块尺寸（不接受就走软件解码，别让 GL 白失败一次） */
+    fun hardwareSupportsAstc(blockSide: Int): Boolean = blockSide in supportedAstcBlockSizes()
 
     private fun probeAstcBlocks(): Set<Int> {
         val formats = linkedMapOf(
@@ -313,6 +330,102 @@ object CompressedTextureDecoder {
         maxSize: Int = 2048
     ): Bitmap {
         require(width > 0 && height > 0) { "贴图尺寸非法：${width}x$height" }
+        val astcBlock = astcBlockOf(internalFormat)
+        if (astcBlock == null) return decodeWithGl(data, width, height, internalFormat, maxSize)
+
+        // 硬件明确不接受这个块尺寸（模拟器常见：只实现 4x4）：直接用 CPU 解码，
+        // 省掉一次必然失败的 EGL 上下文创建 + 上传
+        if (!hardwareSupportsAstc(astcBlock.first)) {
+            Log.i(
+                TAG,
+                "ASTC ${astcBlock.first}x${astcBlock.second} 硬件不支持，走软件解码（${width}x$height）"
+            )
+            return decodeAstcSoftware(data, width, height, astcBlock, maxSize)
+        }
+        return try {
+            decodeWithGl(data, width, height, internalFormat, maxSize)
+        } catch (t: Throwable) {
+            // 驱动报错 / 上下文被回收 / 后台线程拿不到 GLES3：CPU 兜底
+            Log.w(
+                TAG,
+                "GL 解码 ASTC ${astcBlock.first}x${astcBlock.second} 失败，回退软件解码：${t.message}"
+            )
+            decodeAstcSoftware(data, width, height, astcBlock, maxSize)
+        }
+    }
+
+    /**
+     * ASTC 软件解码（纯 Kotlin，不依赖 GPU / EGL）。
+     *
+     * @param data 压缩数据（从 buffer 位置 0 开始的整块）
+     */
+    internal fun decodeAstcSoftware(
+        data: ByteBuffer,
+        width: Int,
+        height: Int,
+        block: Pair<Int, Int>,
+        maxSize: Int
+    ): Bitmap {
+        // 与 GL 路径保持一致：压缩数据总是从 buffer 起点开始，长度取到 limit
+        val source = data.duplicate()
+        source.position(0)
+        val bytes = ByteArray(source.remaining())
+        source.get(bytes)
+        val limit = if (maxSize <= 0) 0 else maxSize
+        val longest = maxOf(width, height)
+        val needScale = limit in 1 until longest
+        val scale = if (needScale) limit.toFloat() / longest else 1f
+        val outW = if (needScale) {
+            kotlin.math.round(width * scale).toInt().coerceAtLeast(1)
+        } else {
+            width
+        }
+        val outH = if (needScale) {
+            kotlin.math.round(height * scale).toInt().coerceAtLeast(1)
+        } else {
+            height
+        }
+
+        // 大图（>4M 像素 ≈ 16MB IntArray）直接按目标尺寸解码：先解全尺寸再缩放会同时
+        // 占着「全尺寸 int[] + 全尺寸位图 + 缩放后位图」三份内存，弱机上直接 OOM。
+        // 小图仍走「全尺寸解码 + 双线性缩放」，与 GL 路径的采样观感保持一致。
+        val decodeAtTarget = needScale && width.toLong() * height > LARGE_TEXTURE_PIXELS
+        val argb = try {
+            AstcDecoder.decode(
+                data = bytes,
+                offset = 0,
+                width = width,
+                height = height,
+                bw = block.first,
+                bh = block.second,
+                outWidth = if (decodeAtTarget) outW else width,
+                outHeight = if (decodeAtTarget) outH else height,
+                // Unity 的压缩纹理是自下而上存的；GL 路径靠「上传+读回+行倒序」翻过来，
+                // CPU 路径必须显式翻转，否则 SD 图集与过场图整体上下镜像
+                flipVertical = true
+            )
+        } catch (e: IllegalArgumentException) {
+            throw IOException(e.message ?: "ASTC 软件解码失败", e)
+        }
+        val decodedW = if (decodeAtTarget) outW else width
+        val decodedH = if (decodeAtTarget) outH else height
+        var bitmap = Bitmap.createBitmap(argb, decodedW, decodedH, Bitmap.Config.ARGB_8888)
+        if (needScale && !decodeAtTarget) {
+            val scaled = Bitmap.createScaledBitmap(bitmap, outW, outH, true)
+            if (scaled !== bitmap) bitmap.recycle()
+            bitmap = scaled
+        }
+        return bitmap
+    }
+
+    /** GL 路径：离屏 EGL + 压缩纹理上传 + glReadPixels */
+    private fun decodeWithGl(
+        data: ByteBuffer,
+        width: Int,
+        height: Int,
+        internalFormat: Int,
+        maxSize: Int = 2048
+    ): Bitmap {
         val dataSize = data.remaining()
         if (dataSize <= 0) throw IOException("压缩纹理数据为空")
 
