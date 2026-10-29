@@ -31,6 +31,7 @@ import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.data.model.VoiceLanguage
+import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.domain.SelectSecretaryUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
@@ -54,6 +55,7 @@ private const val TAG = "WidgetActions"
 interface WidgetEntryPoint {
     fun playerSettings(): PlayerSettingsDataStore
     fun shipDao(): ShipDao
+    fun shipRepository(): ShipRepository
     fun selectSecretaryUseCase(): SelectSecretaryUseCase
     fun getVoicesUseCase(): GetVoicesUseCase
     fun playbackServiceConnection(): PlaybackServiceConnection
@@ -224,6 +226,47 @@ class PlayVoiceAction : ActionCallback {
 class OpenDailyAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         performOpenDaily(context)
+    }
+}
+
+// ---------- 生日组件跳转 ----------
+
+/** 生日组件：舰娘语音页跳转参数键（actionRunCallback 携参） */
+val birthdayShipNameKey = ActionParameters.Key<String>("birthday_widget.ship_name")
+val birthdayShipAvatarKey = ActionParameters.Key<String>("birthday_widget.ship_avatar")
+
+/** 生日组件整卡/头部点击：打开生日日历页（近期寿星、月历、寿星列表） */
+suspend fun performOpenBirthdayCalendar(context: Context) {
+    val appContext = context.applicationContext
+    runCatching { appContext.startActivity(widgetNavIntent(appContext, "birthday_calendar")) }
+}
+
+/**
+ * 生日组件寿星点击：直达该舰娘语音页（路由格式与船坞/日历页一致：
+ * 舰名不编码、avatarUrl 编码）；参数缺失（旧布局缓存/异常）回退日历页。
+ */
+suspend fun performOpenBirthdayShip(context: Context, parameters: ActionParameters) {
+    val appContext = context.applicationContext
+    val name = parameters[birthdayShipNameKey]
+    val route = if (name.isNullOrBlank()) {
+        "birthday_calendar"
+    } else {
+        "voice/$name?avatarUrl=${Uri.encode(parameters[birthdayShipAvatarKey].orEmpty())}"
+    }
+    runCatching { appContext.startActivity(widgetNavIntent(appContext, route)) }
+}
+
+/** 「生日日历」点击：打开日历页 */
+class OpenBirthdayCalendarAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        performOpenBirthdayCalendar(context)
+    }
+}
+
+/** 生日组件寿星条目点击：直达语音页 */
+class OpenBirthdayShipAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        performOpenBirthdayShip(context, parameters)
     }
 }
 

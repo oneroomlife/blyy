@@ -147,16 +147,20 @@ abstract class ShipDao {
     /**
      * 生日回填：仅当库内值与名单值不同才写（名单是唯一权威源，且未知名单舰不受影响）。
      * 条件更新让重复调用天然幂等，不触发 Room 无效化监听器的无谓重发射。
+     * 返回实际写库行数（UPDATE 匹配 0 行即 0）。
      */
     @Query("UPDATE ships SET birthday = :birthday WHERE name = :name AND archiveType = 'DOCK' AND birthday != :birthday")
-    abstract suspend fun updateDockBirthdayIfChanged(name: String, birthday: String)
+    abstract suspend fun updateDockBirthdayIfChanged(name: String, birthday: String): Int
 
+    /** 批量回填 DOCK 生日，返回实际写库的行数（0 = 无变化，调用方据此决定是否触发小组件刷新） */
     @Transaction
-    open suspend fun seedDockBirthdays(birthdays: Map<String, String>) {
-        if (birthdays.isEmpty()) return
+    open suspend fun seedDockBirthdays(birthdays: Map<String, String>): Int {
+        if (birthdays.isEmpty()) return 0
+        var changed = 0
         birthdays.forEach { (name, birthday) ->
-            updateDockBirthdayIfChanged(name, birthday)
+            changed += updateDockBirthdayIfChanged(name, birthday)
         }
+        return changed
     }
 
     /** 有生日数据的 DOCK 舰娘（日历页数据源，收藏/头像等字段随行携带） */

@@ -7,4 +7,6 @@
     <string name="secretary_greeting_widget_description">组件专属舰娘：一键换人、播放语音与台词问候</string>
     <string name="daily_ship_widget_name">今日推荐舰娘</string>
     <string name="daily_ship_widget_description">每天为你推荐一位舰娘，点击直达语音页</string>
+    <string name="birthday_widget_name">舰娘生日</string>
+    <string name="birthday_widget_description">今日寿星与近期生日提醒，点击查看完整日历</string>
 </resources>

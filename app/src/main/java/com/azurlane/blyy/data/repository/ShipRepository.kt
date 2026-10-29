@@ -243,12 +243,23 @@ class ShipRepository @Inject constructor(
         }
     }
 
-    /** 把静态名单回填进 ships 表（仅写差异行）。档案刷新与生日日历打开时调用 */
-    suspend fun seedDockBirthdaysIfNeeded() {
+    /** 把静态名单回填进 ships 表（仅写差异行），返回实际变更行数 */
+    suspend fun seedDockBirthdaysIfNeeded(): Int {
         val map = loadPackagedBirthdays()
-        if (map.isNotEmpty()) {
-            shipDao.seedDockBirthdays(map)
+        return if (map.isNotEmpty()) shipDao.seedDockBirthdays(map) else 0
+    }
+
+    /**
+     * 回填生日并在确有变更时同步刷新桌面小组件。
+     * 生日日历页打开时调用：v9 迁移后旧库首次回填会让小组件从"无数据"变为可用，
+     * 无变更时不发无谓的组件刷新。
+     */
+    suspend fun seedDockBirthdaysAndSyncWidgets(): Int {
+        val changed = seedDockBirthdaysIfNeeded()
+        if (changed > 0) {
+            WidgetSync.enqueueUpdate(context)
         }
+        return changed
     }
 
     private fun formatUrl(url: String): String {        if (url.isEmpty()) return ""

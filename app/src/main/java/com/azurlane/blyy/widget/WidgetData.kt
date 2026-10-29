@@ -260,6 +260,7 @@ private fun drawableToBitmap(drawable: Drawable): Bitmap {
 object WidgetSync {
     private val secretaryWidget = SecretaryGreetingWidget()
     private val dailyWidget = DailyShipWidget()
+    private val birthdayWidget = BirthdayWidget()
 
     /** 双段刷新：低延迟首刷 + 1.5s 确认刷保证最终一致 */
     suspend fun updateAll(context: Context) {
@@ -279,6 +280,11 @@ object WidgetSync {
         runCatching {
             manager.getGlanceIds(DailyShipWidget::class.java).forEach { id ->
                 dailyWidget.update(context, id)
+            }
+        }
+        runCatching {
+            manager.getGlanceIds(BirthdayWidget::class.java).forEach { id ->
+                birthdayWidget.update(context, id)
             }
         }
     }

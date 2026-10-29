@@ -36,6 +36,11 @@ android {
         jvmToolchain(17)
     }
 
+    compileOptions {
+        // java.time（生日日历/小组件）在 minSdk 24 < API 26 的设备上需要脱糖到字节码
+        isCoreLibraryDesugaringEnabled = true
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -186,6 +191,8 @@ dependencies {
      *  声明式 AppWidget：GlanceAppWidget + GlanceAppWidgetReceiver，
      *  数据全部来自 DataStore / Room，无独立进程。 */
     implementation(libs.androidx.glance.appwidget)
+    // java.time 脱糖运行时（配合 compileOptions.isCoreLibraryDesugaringEnabled）
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 
     /** ---------------- 水印相机 ----------------
      *  拍照走系统相机（ACTION_IMAGE_CAPTURE + FileProvider），无需 CameraX 依赖。

@@ -142,7 +142,20 @@
                 android:resource="@xml/daily_ship_widget_info" />
         </receiver>
 
-        <!-- 跨零点/时间与时区变化：刷新小组件（每日推荐换舰、问候语切时段）。
+        <!-- 桌面小组件：舰娘生日（4x2，今日寿星 + 近期生日，点击进生日日历页） -->
+        <receiver
+            android:name=".widget.BirthdayWidgetReceiver"
+            android:exported="false"
+            android:label="@string/birthday_widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/birthday_widget_info" />
+        </receiver>
+
+        <!-- 跨零点/时间与时区变化：刷新小组件（每日推荐换舰、问候语切时段、生日跨日）。
              三者均为豁免隐式广播，manifest 注册可正常收到 -->
         <receiver
             android:name=".widget.WidgetDateChangeReceiver"

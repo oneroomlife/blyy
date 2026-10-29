@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 舰娘生日小组件（4x2）：今日寿星 + 近期生日，点击深链生日日历页。
+     数据来自 Room ships.birthday（静态名单回填），跨零点由 WidgetDateChangeReceiver
+     刷新；周期更新仅作自愈兜底（进程死亡/漏收广播后 30 分钟内必然恢复），不做耗电轮询 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="250dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="4"
+    android:targetCellHeight="2"
+    android:maxResizeWidth="420dp"
+    android:maxResizeHeight="180dp"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/widget_initial_stub"
+    android:widgetCategory="home_screen"
+    android:description="@string/birthday_widget_description" />

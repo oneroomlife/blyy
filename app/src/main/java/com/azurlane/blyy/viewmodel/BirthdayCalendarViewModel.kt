@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.domain.BirthdayCalendar
 import com.azurlane.blyy.domain.GetShipsUseCase
+import com.azurlane.blyy.domain.ShipOrdering
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -80,7 +81,7 @@ class BirthdayCalendarViewModel @Inject constructor(
                 val day = BirthdayCalendar.dayInMonth(birthday, month) ?: continue
                 getOrPut(day) { mutableListOf() }.add(DayBirthday(ship, day))
             }
-        }.mapValues { (_, list) -> list.sortedWith(compareBy({ it.ship.rarityRank() }, { it.ship.name })) }
+        }.mapValues { (_, list) -> list.sortedWith(compareBy({ ShipOrdering.rarityRank(it.ship.rarity) }, { it.ship.name })) }
 
         val selectedShips = byDay[selected.dayOfMonth].orEmpty()
 
@@ -90,7 +91,7 @@ class BirthdayCalendarViewModel @Inject constructor(
             if (days > UPCOMING_WINDOW_DAYS) null
             else UpcomingBirthday(ship, date, days)
         }.sortedWith(
-            compareBy({ it.daysUntil }, { it.ship.rarityRank() }, { it.ship.name })
+            compareBy({ it.daysUntil }, { ShipOrdering.rarityRank(it.ship.rarity) }, { it.ship.name })
         ).take(UPCOMING_LIMIT)
 
         UiState(
@@ -107,9 +108,9 @@ class BirthdayCalendarViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UiState())
 
     init {
-        // 打开页面即触发静态名单回填（幂等、仅写差异行）；失败静默（无生日数据降级）
+        // 打开页面即触发静态名单回填（幂等、仅写差异行）；确有变更时同步刷新生日小组件
         viewModelScope.launch {
-            runCatching { shipRepository.seedDockBirthdaysIfNeeded() }
+            runCatching { shipRepository.seedDockBirthdaysAndSyncWidgets() }
         }
     }
 
@@ -136,16 +137,6 @@ class BirthdayCalendarViewModel @Inject constructor(
         if (date.year == monthFlow.value.year && date.month == monthFlow.value.month) {
             selectedFlow.value = date
         }
-    }
-
-    /** 稀有度排序键（数字越小越稀有），沿用 ShipDao 查询里的 CASE 顺序 */
-    private fun Ship.rarityRank(): Int = when (rarity) {
-        "海上传奇", "决战方案", "三星" -> 1
-        "超稀有", "最高方案", "二星" -> 2
-        "精锐", "一星" -> 3
-        "稀有" -> 4
-        "普通" -> 5
-        else -> 6
     }
 
     companion object {
