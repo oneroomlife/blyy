@@ -949,7 +949,9 @@ fun AppContent() {
                 val overlayEnabledForChibi by secretaryViewModel.overlayRunning.collectAsState()
                 val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
                     secretaryState.webChibiUrl.isNotEmpty() ||
-                    secretaryState.sdResourceId.isNotEmpty()
+                    secretaryState.sdResourceId.isNotEmpty() ||
+                    // 只有游戏导入的 SD、没设置 pin 也没网络立绘时也要显示
+                    secretaryState.sdAvailable
                 val currentRoute = currentDestination?.route
                 val routeAllowsChibi = currentRoute?.startsWith("live2d") != true &&
                     currentRoute?.startsWith("gameimport/view") != true
@@ -966,7 +968,8 @@ fun AppContent() {
                         selectedSkin = secretaryState.sdSkin,
                         sdScale = secretaryState.sdScale,
                         sdResourceId = secretaryState.sdResourceId,
-                        webChibiUrl = secretaryState.webChibiUrl
+                        webChibiUrl = secretaryState.webChibiUrl,
+                        hasSdBundle = secretaryState.sdAvailable
                     )
                 }
 

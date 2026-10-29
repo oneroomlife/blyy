@@ -262,7 +262,9 @@ class SecretaryOverlayService : Service() {
                         // 同时驱动：辅助窗口增删 + 主窗口增删（僵尸窗口修复）+ 内容可见性动画
                         val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
                             secretaryState.webChibiUrl.isNotEmpty() ||
-                            secretaryState.sdResourceId.isNotEmpty()
+                            secretaryState.sdResourceId.isNotEmpty() ||
+                            // 只有「游戏资源导入」的 SD 时同样要显示
+                            secretaryState.sdAvailable
 
                         // 监听对话/拖动状态变化：添加或移除辅助窗口
                         LaunchedEffect(dialogue, isDragging, secretaryState.figureUrl, secretaryState.webChibiUrl, secretaryState.sdResourceId) {
@@ -320,6 +322,7 @@ class SecretaryOverlayService : Service() {
                                 sdScale = secretaryState.sdScale,
                                 sdResourceId = secretaryState.sdResourceId,
                                 webChibiUrl = secretaryState.webChibiUrl,
+                                hasSdBundle = secretaryState.sdAvailable,
                                 // 静态图分支交互上报：可交互矩形（窗口本地坐标）与分支模式。
                                 // Service 层 OverlayGestureHandler 据此做屏幕空间命中判断——
                                 // Compose 层 pointerInput 已摘除（修复自参考系拖拽漂移）

@@ -36,6 +36,8 @@ data class SecretaryShipState(
     val sdScale: Float = 1.0f,
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源） */
     val sdResourceId: String = "",
+    /** 当前秘书舰能否解析出 SD 资源（本地库 / 游戏导入），悬浮窗据此决定是否显示 */
+    val sdAvailable: Boolean = false,
     /** wiki 网页端 Q版小人（SD 静态图）URL：本地 SD 资源未匹配时的回退显示图，
      *  优先取「查看立绘」中用户选择的 SD 小人，跟随其皮肤选择 */
     val webChibiUrl: String = "",
@@ -161,6 +163,7 @@ class SecretaryShipViewModel @Inject constructor(
             sdSkin = managerState.sdSkin,
             sdScale = managerState.sdScale,
             sdResourceId = managerState.sdResourceId,
+            sdAvailable = managerState.sdAvailable,
             webChibiUrl = managerState.webChibiUrl,
             overlayTouchPassthrough = managerState.overlayTouchPassthrough
         )

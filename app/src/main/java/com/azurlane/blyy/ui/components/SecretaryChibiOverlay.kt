@@ -189,13 +189,21 @@ fun SecretaryChibiOverlay(
      * - 拖动开始 → 辅助窗口显示"拖动调整位置"提示
      * - 拖动结束 → 辅助窗口恢复显示气泡（若有对话）或移除
      */
-    onDragStateChanged: ((Boolean) -> Unit)? = null
+    onDragStateChanged: ((Boolean) -> Unit)? = null,
+    /**
+     * 当前秘书舰是否能解析出 SD 资源（本地库 / 游戏导入）。
+     *
+     * 由 [com.azurlane.blyy.viewmodel.SecretaryManager] 在 IO 线程算好：
+     * 没有它时「只有游戏导入的 SD、没有 pin、也没有网络立绘」会被开头的
+     * 早退判空挡掉，小人完全不显示。
+     */
+    hasSdBundle: Boolean = false
 ) {
     // 同时检查 figureUrl / webChibiUrl / sdResourceId：
     // - 三者都空 → 无任何可渲染内容，提前返回
     // - figureUrl 空 + webChibiUrl 空 + sdResourceId 非空 → 有 SD 资源，继续渲染（Spine/静态图片不依赖 figureUrl）
     // - figureUrl 或 webChibiUrl 非空 → 有静态回退图（网页 Q版小人 / 网络立绘），继续渲染
-    if (figureUrl.isEmpty() && webChibiUrl.isEmpty() && sdResourceId.isEmpty()) return
+    if (figureUrl.isEmpty() && webChibiUrl.isEmpty() && sdResourceId.isEmpty() && !hasSdBundle) return
 
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current

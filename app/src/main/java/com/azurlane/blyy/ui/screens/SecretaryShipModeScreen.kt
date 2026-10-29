@@ -679,7 +679,16 @@ private fun SdSkinSelector(
             when {
                 sdResourceId.isNotBlank() -> SDResourceManager.listSkins(context, sdResourceId)
                 shipName.isBlank() -> emptyList()
-                else -> LocalSdResolver.listSkins(context, shipName)
+                else -> {
+                    // 未 pin 时按舰名走「统一解析」：先看 SD 资源库（含「游戏资源导入」解出的
+                    // 小人），再退回旧的 blhx_sd 索引。只查 LocalSdResolver 的话，
+                    // 用户明明导入了该舰娘的 SD，这里却显示「未找到 SD 资源」。
+                    val unified = SDResourceManager
+                        .resolve(context, "", shipName, null)
+                        ?.skinNames
+                        .orEmpty()
+                    unified.ifEmpty { LocalSdResolver.listSkins(context, shipName) }
+                }
             }
         }
     }
@@ -728,7 +737,11 @@ private fun SdSkinSelector(
         } else {
             Column(modifier = Modifier.padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)) {
                 Text(
-                    if (shipName.isNotBlank()) "未找到「$shipName」的 SD 资源" else "未选择秘书舰",
+                    if (shipName.isNotBlank()) {
+                        "未找到「$shipName」的 SD 资源（可到「游戏资源导入」导入该舰娘的 SD 包）"
+                    } else {
+                        "未选择秘书舰"
+                    },
                     style = AppTypography.BodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

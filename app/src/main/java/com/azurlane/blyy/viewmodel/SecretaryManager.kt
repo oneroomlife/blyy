@@ -16,6 +16,8 @@ import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import com.azurlane.blyy.domain.SelectSecretaryUseCase
 import com.azurlane.blyy.service.PlaybackServiceConnection
+import androidx.compose.runtime.snapshotFlow
+import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.PinyinHelper
 import com.azurlane.blyy.util.SDResourceManager
 import com.google.common.util.concurrent.MoreExecutors
@@ -44,6 +46,14 @@ data class SecretaryManagerState(
     val sdScale: Float = 1.0f,
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
     val sdResourceId: String = "",
+    /**
+     * 当前秘书舰是否**能解析出 SD 资源**（pin 的资源，或按舰名命中的本地/游戏导入资源）。
+     *
+     * 悬浮窗与主界面的显示门槛过去只看 `figureUrl / webChibiUrl / sdResourceId`，
+     * 于是「只有游戏导入的 SD、没有设置 pin、也没有网络立绘」时整个小人不显示 ——
+     * 明明资源就在本地。现在这个标志由主线程外算好，作为第四条显示依据。
+     */
+    val sdAvailable: Boolean = false,
     /** 悬浮窗触摸穿透（true=触摸事件穿透到下层应用，false=正常响应触摸交互） */
     val overlayTouchPassthrough: Boolean = false,
     /**
@@ -99,6 +109,9 @@ class SecretaryManager @Inject constructor(
     private var voicesOwnerShip: String = ""
 
     private var autoPlayJob: Job? = null
+
+    /** 「SD 是否可渲染」重算任务（防抖：资源修订号/舰名变化时合并） */
+    private var sdAvailabilityJob: Job? = null
     private var dialogueClearJob: Job? = null
 
     // ── MediaController 解析缓存 ──
@@ -112,9 +125,16 @@ class SecretaryManager @Inject constructor(
     init {
         resolveControllerWhenReady()
 
+        // SD 资源索引变化（游戏导入完成 / 删除 / 改名）后重算「是否可渲染」，
+        // 否则刚导入的小人要等下一次秘书舰切换才会出现。
+        scope.launch {
+            snapshotFlow { LocalSdResolver.revision.value }.collect { refreshSdAvailability() }
+        }
+
         scope.launch {
             settingsDataStore.secretaryShipName.collect { name ->
                 updateState { it.copy(shipName = name) }
+                refreshSdAvailability()
                 // 冷启动恢复：语音缺失（旧版本升级/数据异常）时后台补载，
                 // 内部会顺带补齐空缺的立绘与 webChibiUrl（见守卫逻辑）
                 if (name.isNotEmpty() && _state.value.voices.isEmpty()) {
@@ -168,6 +188,7 @@ class SecretaryManager @Inject constructor(
         scope.launch {
             settingsDataStore.secretarySdSkin.collect { skin ->
                 updateState { it.copy(sdSkin = skin) }
+                refreshSdAvailability()
             }
         }
         scope.launch {
@@ -178,6 +199,11 @@ class SecretaryManager @Inject constructor(
         scope.launch {
             settingsDataStore.secretarySdResourceId.collect { id ->
                 updateState { it.copy(sdResourceId = id) }
+                // 自愈：pin 的可能是「游戏资源导入」解出的 `game/<id>`。
+                // 用户在导入页删除/改名该资源后，pin 就成了悬空引用 —— 悬浮窗与主界面
+                // 会静默不渲染（看起来像「小人不显示」，但设置里仍显示"已选择"）。
+                refreshSdAvailability()
+                if (id.isNotBlank()) healDanglingSdResource(id)
             }
         }
         scope.launch {
@@ -553,6 +579,52 @@ class SecretaryManager @Inject constructor(
             withContext(NonCancellable) {
                 settingsDataStore.setSecretaryOverlayTouchPassthrough(enabled)
             }
+        }
+    }
+
+    /** 重算 [SecretaryManagerState.sdAvailable]（IO 线程解析，主线程只写状态） */
+    private fun refreshSdAvailability() {
+        sdAvailabilityJob?.cancel()
+        sdAvailabilityJob = scope.launch {
+            val current = _state.value
+            if (current.shipName.isBlank() && current.sdResourceId.isBlank()) {
+                if (current.sdAvailable) updateState { it.copy(sdAvailable = false) }
+                return@launch
+            }
+            val available = withContext(Dispatchers.IO) {
+                runCatching {
+                    SDResourceManager.resolve(
+                        appContext,
+                        current.sdResourceId,
+                        current.shipName,
+                        current.sdSkin
+                    ) != null
+                }.getOrDefault(false)
+            }
+            if (_state.value.sdAvailable != available) {
+                Log.d(TAG, "sdAvailable=$available（ship=${current.shipName}, pin=${current.sdResourceId}）")
+                updateState { it.copy(sdAvailable = available) }
+            }
+        }
+    }
+
+    /**
+     * 校验当前 pin 的 SD 资源是否还存在；不存在就清空选择并回退到舰名匹配。
+     *
+     * 只清 pin，不动舰名/语音：资源没了不代表用户不想要这个秘书舰，
+     * 回退到「按舰名匹配」是更合理的降级（可能命中 wiki 小人或 `blhx_sd` 里的同名资源）。
+     */
+    private suspend fun healDanglingSdResource(resourceId: String) {
+        val exists = withContext(Dispatchers.IO) {
+            runCatching { SDResourceManager.resolveById(appContext, resourceId) != null }
+                .getOrDefault(true) // 扫描本身出错时不要误清
+        }
+        if (exists) return
+        Log.w(TAG, "SD 资源 $resourceId 已不存在（删除/改名？），清除选择并回退舰名匹配")
+        updateState { it.copy(sdResourceId = "", sdSkin = "") }
+        withContext(NonCancellable) {
+            settingsDataStore.setSecretarySdResourceId("")
+            settingsDataStore.setSecretarySdSkin("")
         }
     }
 

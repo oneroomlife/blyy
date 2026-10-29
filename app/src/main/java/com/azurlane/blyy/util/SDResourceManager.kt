@@ -390,42 +390,50 @@ object SDResourceManager {
      * - 每个有效目录生成一个 [SDResource]
      */
     private fun buildIndex(context: Context): Map<String, SDResource> {
-        val rootDir = LocalSdResolver.getResourceDir(context)
-        if (!rootDir.exists() || !rootDir.isDirectory) {
-            Log.w(TAG, "buildIndex: 资源目录不存在 $rootDir")
-            return emptyMap()
-        }
-
         val index = LinkedHashMap<String, SDResource>()
-        val customDir = File(rootDir, CUSTOM_DIR)
 
-        // 1. 扫描根目录下的资源目录（舰娘资源 + 可能的自定义资源）
-        rootDir.listFiles()?.filter { it.isDirectory && it.name != CUSTOM_DIR && it.name != "manifest.json" }
-            ?.forEach { dir ->
-                val resource = scanResourceDir(dir, SDResourceSource.SHIP)
-                if (resource != null) {
-                    index[resource.id] = resource
+        // 【关键】`blhx_sd` 不存在时**不能**直接返回空表：
+        // 新用户往往从没手工放过 SD 资源，只从「游戏资源导入」解过小人。
+        // 旧实现 `if (!rootDir.exists()) return emptyMap()` 会把游戏导入的 SD
+        // 一起丢掉 —— 表现就是「今日秘书舰的 SD 资源库里看不到任何刚导入的小人」。
+        val rootDir = LocalSdResolver.getResourceDir(context)
+        if (rootDir.exists() && rootDir.isDirectory) {
+            val customDir = File(rootDir, CUSTOM_DIR)
+
+            // 1. 扫描根目录下的资源目录（舰娘资源 + 可能的自定义资源）
+            rootDir.listFiles()
+                ?.filter { it.isDirectory && it.name != CUSTOM_DIR && it.name != "manifest.json" }
+                ?.forEach { dir ->
+                    val resource = scanResourceDir(dir, SDResourceSource.SHIP)
+                    if (resource != null) {
+                        index[resource.id] = resource
+                    }
+                }
+
+            // 2. 扫描 custom/ 子目录
+            if (customDir.exists() && customDir.isDirectory) {
+                customDir.listFiles()?.filter { it.isDirectory }?.forEach { dir ->
+                    val resource = scanResourceDir(dir, SDResourceSource.CUSTOM)
+                    if (resource != null) {
+                        // 自定义资源 ID 加 custom/ 前缀避免与舰娘资源冲突
+                        val customId = "custom/${dir.name}"
+                        index[customId] = resource.copy(id = customId)
+                    }
                 }
             }
-
-        // 2. 扫描 custom/ 子目录
-        if (customDir.exists() && customDir.isDirectory) {
-            customDir.listFiles()?.filter { it.isDirectory }?.forEach { dir ->
-                val resource = scanResourceDir(dir, SDResourceSource.CUSTOM)
-                if (resource != null) {
-                    // 自定义资源 ID 加 custom/ 前缀避免与舰娘资源冲突
-                    val customId = "custom/${dir.name}"
-                    index[customId] = resource.copy(id = customId)
-                }
-            }
+        } else {
+            Log.i(TAG, "buildIndex: 本地 SD 目录不存在（只扫游戏导入资源）：$rootDir")
         }
 
         // 3. 游戏资源导入解出来的 SD 小人（只读，id 带 game/ 前缀）
-        buildList { addAll(scanImportedResources(context)) }.forEach { resource ->
-            index[resource.id] = resource
-        }
+        val imported = scanImportedResources(context)
+        imported.forEach { resource -> index[resource.id] = resource }
 
-        Log.i(TAG, "buildIndex: 发现 ${index.size} 个资源（含游戏导入 ${index.keys.count { it.startsWith(GAME_ID_PREFIX) }}） from $rootDir")
+        Log.i(
+            TAG,
+            "buildIndex: 发现 ${index.size} 个资源" +
+                "（本地 ${index.size - imported.size}，游戏导入 ${imported.size}）from $rootDir"
+        )
         return index
     }
 

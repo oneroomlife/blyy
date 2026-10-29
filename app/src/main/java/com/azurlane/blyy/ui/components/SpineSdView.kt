@@ -571,6 +571,19 @@ private class SpineRenderer(
     /** 碧蓝航线 SD 小人的拖拽动画名（长按拖动时循环播放） */
     private val dragAnimationNames = setOf("tuozhuai", "drag", "move", "pick", "hold")
 
+    /**
+     * **绝不能当待机循环**的动画名（死亡/受击/破坏）。
+     *
+     * 踩过的坑：`char/2b` 这类资源里 `dead` 的 attachment 覆盖率最高（倒地时部件反而全开），
+     * 旧逻辑「按覆盖率排序」就会把 `dead` 选成待机 —— 模型一进查看器就是「躺在地上的一团」，
+     * 用户看到的是「SD 小人乱成一团/位置错乱」。待机必须优先命中已知待机名，
+     * 覆盖率只在同优先级内做参考。
+     */
+    private val nonIdleAnimationNames = setOf(
+        "dead", "die", "death", "broken", "break", "dmg", "damage",
+        "hurt", "hit", "down", "fall", "gameover"
+    )
+
     private var batch: PolygonSpriteBatch? = null
     private var skeleton: Skeleton? = null
     private var animState: AnimationState? = null
@@ -935,20 +948,75 @@ private class SpineRenderer(
             // 待机候选：只从「会动」的动画里挑；若整包全是 0 秒动画才退回全部
             val idlePool = allAnimationNames.filter { it in animatedNames }
                 .ifEmpty { allAnimationNames.toList() }
-            availableIdleNames = idleAnimationNames.filter { it in idlePool && it in fullBodyNames }
-                .ifEmpty { idlePool.filter { it in fullBodyNames } }
+            // 待机候选的四级优先：
+            //   1) 命中已知待机名（stand/normal/sit…）且形态完整；
+            //   2) 命中已知待机名（形态可以差一点，但绝不能是死亡/受击）；
+            //   3) 排除死亡/受击后的形态完整动画；
+            //   4) 排除死亡/受击后的任意动画；
+            //   5) 兜底：全部（极端资源里只有 dead 一条有名字时仍要能出图）。
+            val knownIdles = idleAnimationNames.filter { it in idlePool }
+            val safePool = idlePool.filter { it !in nonIdleAnimationNames }
+            availableIdleNames = knownIdles.filter { it in fullBodyNames }
+                .ifEmpty { knownIdles }
+                .ifEmpty { safePool.filter { it in fullBodyNames } }
+                .ifEmpty { safePool }
                 .ifEmpty { idlePool }
                 .ifEmpty { allAnimationNames.take(1) }
-            // 排序：形态完整优先，其次时长更长（长动画才是真正的循环待机）
+            // 排序：已知待机名的原始优先级（stand → stand2 → normal → sit …）最硬，
+            // 之后才是形态完整度与时长 —— 否则 `dead` 会靠覆盖率反超。
             val durationOf = skeletonData.animations.associate { it.name to it.duration }
+            val idlePriority = idleAnimationNames.withIndex().associate { it.value to it.index }
             idleCoverageOrder = availableIdleNames.sortedWith(
-                compareByDescending<String> { coverage[it] ?: 0 }
+                compareBy<String> { idlePriority[it] ?: Int.MAX_VALUE }
+                    .thenByDescending { coverage[it] ?: 0 }
                     .thenByDescending { durationOf[it] ?: 0f }
             )
+            // 【取景精修】上面先用「所有 idle 名的并集」当缩略边界，`sit`/`sleep` 这类姿态
+            // 会把包围盒撑得很大：实测 2B 的并集高 829，而 `stand` 只有 ~600，
+            // 结果模型被缩到屏幕一小块、还因为并集重心偏下而整体偏右下。
+            // 真正会循环播放的是 idleCoverageOrder.first()，用它的边界重新收一次。
+            run {
+                val chosen = idleCoverageOrder.firstOrNull() ?: return@run
+                val anim = skeletonData.animations.firstOrNull { it.name == chosen } ?: return@run
+                val frames = ArrayList<kotlin.FloatArray>()
+                val samples = if (anim.duration > 0f) 12 else 1
+                for (i in 0 until samples) {
+                    val t = if (anim.duration > 0f) anim.duration * i / samples else 0f
+                    sampler.setToSetupPose()
+                    anim.apply(
+                        sampler, 0f, t, false, null, 1f,
+                        Animation.MixBlend.first, Animation.MixDirection.`in`
+                    )
+                    sampler.updateWorldTransform()
+                    sampler.getBounds(offset, size, temp)
+                    if (size.x > 0f && size.y > 0f) {
+                        frames += kotlin.floatArrayOf(
+                            offset.x, offset.y, offset.x + size.x, offset.y + size.y
+                        )
+                    }
+                }
+                if (frames.isNotEmpty()) {
+                    val minX2 = frames.minOf { it[0] }
+                    val minY2 = frames.minOf { it[1] }
+                    val maxX2 = frames.maxOf { it[2] }
+                    val maxY2 = frames.maxOf { it[3] }
+                    baseBoundsOffsetX = minX2
+                    baseBoundsOffsetY = minY2
+                    baseBoundsW = (maxX2 - minX2).coerceAtLeast(50f)
+                    baseBoundsH = (maxY2 - minY2).coerceAtLeast(75f)
+                    Log.i(
+                        TAG,
+                        "取景边界改用待机动画 $chosen：offset=($minX2, $minY2)，" +
+                            "size=($baseBoundsW, $baseBoundsH)"
+                    )
+                }
+            }
+
             availableDragNames = dragAnimationNames.filter { it in idlePool }
             // action 动画排除 idle 和 drag，且排除 0 秒占位（点了也不动）
             actionAnimationNames = allAnimationNames.filter {
-                it !in idleAnimationNames && it !in dragAnimationNames && it in animatedNames
+                it !in idleAnimationNames && it !in dragAnimationNames &&
+                    it !in nonIdleAnimationNames && it in animatedNames
             }
             Log.i(
                 TAG,
