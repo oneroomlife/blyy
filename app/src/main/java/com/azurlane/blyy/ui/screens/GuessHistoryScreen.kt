@@ -3,18 +3,29 @@ package com.azurlane.blyy.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Delete
@@ -26,31 +37,44 @@ import androidx.compose.material.icons.rounded.Leaderboard
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.data.model.GuessHistory
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyConfirmDialog
-import com.azurlane.blyy.ui.components.BlyyEmptyState
-import com.azurlane.blyy.ui.components.BlyySkeletonList
+import com.azurlane.blyy.ui.components.BlyySegmentOption
+import com.azurlane.blyy.ui.components.BlyySegmentedControl
+import com.azurlane.blyy.ui.components.BlyyStateScaffold
 import com.azurlane.blyy.ui.components.BlyyTopBar
-import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
-import com.azurlane.blyy.ui.theme.LocalIsDark
-import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.viewmodel.GuessHistoryViewModel
 import com.azurlane.blyy.viewmodel.HistoryFilter
 import com.azurlane.blyy.viewmodel.RecordUploadStatus
@@ -58,7 +82,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GuessHistoryScreen(
     onBack: () -> Unit,
@@ -95,25 +118,30 @@ fun GuessHistoryScreen(
                 )
 
                 // 筛选栏
-                FilterRow(
-                    currentFilter = state.filter,
-                    onFilterChange = viewModel::setFilter
+                BlyySegmentedControl(
+                    options = listOf(
+                        BlyySegmentOption(HistoryFilter.ALL, "全部"),
+                        BlyySegmentOption(HistoryFilter.IMAGE, "看图识舰娘"),
+                        BlyySegmentOption(HistoryFilter.VOICE, "听音识舰娘")
+                    ),
+                    selected = state.filter,
+                    onSelect = viewModel::setFilter,
+                    modifier = Modifier.padding(
+                        horizontal = AppSpacing.Screen.Horizontal,
+                        vertical = AppSpacing.Sm
+                    )
                 )
 
-                // 内容区
-                if (state.isLoading) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        BlyySkeletonList(itemCount = 8)
-                    }
-                } else if (state.isEmpty) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        BlyyEmptyState(
-                            icon = Icons.Rounded.History,
-                            title = "暂无历史记录",
-                            description = "完成一局游戏后，战绩将显示在这里"
-                        )
-                    }
-                } else {
+                // 内容区：四态渲染（记录来自 Room，无网络错误态）
+                BlyyStateScaffold(
+                    isLoading = state.isLoading,
+                    error = null,
+                    hasContent = state.records.isNotEmpty(),
+                    emptyIcon = Icons.Rounded.History,
+                    emptyTitle = "暂无历史记录",
+                    emptyDescription = "完成一局游戏后，战绩将显示在这里",
+                    modifier = Modifier.fillMaxSize()
+                ) {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
@@ -205,49 +233,6 @@ fun GuessHistoryScreen(
     }
 }
 
-@Composable
-private fun FilterRow(
-    currentFilter: HistoryFilter,
-    onFilterChange: (HistoryFilter) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = AppSpacing.Sm),
-        horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
-    ) {
-        FilterChipItem(
-            label = "全部",
-            selected = currentFilter == HistoryFilter.ALL,
-            onClick = { onFilterChange(HistoryFilter.ALL) }
-        )
-        FilterChipItem(
-            label = "看图识舰娘",
-            selected = currentFilter == HistoryFilter.IMAGE,
-            onClick = { onFilterChange(HistoryFilter.IMAGE) }
-        )
-        FilterChipItem(
-            label = "听音识舰娘",
-            selected = currentFilter == HistoryFilter.VOICE,
-            onClick = { onFilterChange(HistoryFilter.VOICE) }
-        )
-    }
-}
-
-@Composable
-private fun FilterChipItem(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, style = AppTypography.LabelMedium) },
-        shape = RoundedCornerShape(AppSpacing.Corner.Full)
-    )
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HistoryRecordCard(
@@ -279,7 +264,7 @@ private fun HistoryRecordCard(
             }
         ),
         border = if (isSelected) {
-            androidx.compose.foundation.BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
         } else {
             null
         },

@@ -2,30 +2,39 @@ package com.azurlane.blyy.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ScrollableTabRow
@@ -34,26 +43,35 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.azurlane.blyy.ui.theme.AppAnimation
+import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.BlyyIcon
 import com.azurlane.blyy.ui.theme.BlyyShapes
+import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
@@ -378,5 +396,282 @@ fun BlyySuccessBanner(
                 textAlign = TextAlign.Center
             )
         }
+    }
+}
+
+// ───────────────────────── 四态内容渲染器（V2 §6.10 / 审计 T1.3） ─────────────────────────
+
+/** [BlyyStateScaffold] 首屏加载骨架的形态 */
+sealed interface BlyySkeletonKind {
+    /** 列表行骨架（圆形头像 + 两行文字） */
+    data class List(val itemCount: Int = 8) : BlyySkeletonKind
+
+    /** 网格卡片骨架，minSize 语义与 GridCells.Adaptive 一致 */
+    data class Grid(val minSize: Dp) : BlyySkeletonKind
+
+    /** 居中转圈（无明确形状预期的轻量场景） */
+    data object Spinner : BlyySkeletonKind
+}
+
+/**
+ * 四态内容渲染器 —— loading / error / empty / data 统一分支，配「缓存数据 + 顶部错误条」。
+ *
+ * 分支优先级（对齐 GalleryScreen 既有心智模型，审计 §3.1）：
+ * - 已有内容（[hasContent]）：始终渲染 [content]；[error] 非空时顶部滑入细错误条（非阻断，
+ *   缓存数据可用、刷新失败的语义），[onRetry] 非空时错误条带「重试」
+ * - 无内容：加载中按 [skeleton] 出骨架；[error] 非空出全屏错误态；否则出空态
+ *
+ * 各屏手写的四态 when 分支应收编到此组件，保证「重试 = 真重试」与骨架形态全局一致。
+ *
+ * @param hasContent 数据非空（缓存或网络）；与 [isLoading] 独立，两者同时为 true 表示刷新中仍展示旧数据
+ * @param error 最近一次加载/刷新失败的文案；null 表示无错误
+ * @param onRetry 错误重试回调（全 app 统一「重试 = 真重试」）
+ */
+@Composable
+fun BlyyStateScaffold(
+    isLoading: Boolean,
+    error: String?,
+    hasContent: Boolean,
+    modifier: Modifier = Modifier,
+    skeleton: BlyySkeletonKind = BlyySkeletonKind.List(),
+    emptyIcon: ImageVector = Icons.Rounded.Inbox,
+    emptyTitle: String = "暂无内容",
+    emptyDescription: String = "",
+    emptyActionLabel: String? = null,
+    onEmptyAction: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    Box(modifier = modifier) {
+        when {
+            hasContent -> {
+                Box(modifier = Modifier.fillMaxSize()) { content() }
+                // 错误条退出动画期间保留最后一条文案，避免收起时文字塌缩
+                var lastError by remember { mutableStateOf("") }
+                if (error != null) lastError = error
+                AnimatedVisibility(
+                    visible = error != null,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f),
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(
+                                horizontal = AppSpacing.Screen.Horizontal,
+                                vertical = AppSpacing.Xs
+                            ),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Warning,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                            Text(
+                                text = lastError,
+                                style = AppTypography.BodySmall,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 2
+                            )
+                            if (onRetry != null) {
+                                TextButton(onClick = onRetry) {
+                                    Text("重试", style = AppTypography.LabelMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            isLoading -> when (val kind = skeleton) {
+                is BlyySkeletonKind.List -> BlyySkeletonList(
+                    itemCount = kind.itemCount,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = AppSpacing.Screen.Horizontal)
+                )
+                is BlyySkeletonKind.Grid -> BlyySkeletonGrid(
+                    minSize = kind.minSize,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = AppSpacing.Screen.Horizontal)
+                )
+                BlyySkeletonKind.Spinner -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BlyyLoadingState()
+                }
+            }
+            error != null -> Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = AppSpacing.Screen.Horizontal),
+                contentAlignment = Alignment.Center
+            ) {
+                BlyyErrorState(message = error, onRetry = onRetry)
+            }
+            else -> Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                BlyyEmptyState(
+                    icon = emptyIcon,
+                    title = emptyTitle,
+                    description = emptyDescription,
+                    actionLabel = emptyActionLabel,
+                    onAction = onEmptyAction
+                )
+            }
+        }
+    }
+}
+
+// ───────────────────────── 通用分段控件（V2 §6.8，自 GuessDifficultySelector 抽取） ─────────────────────────
+
+/** [BlyySegmentedControl] 的单个分段 */
+data class BlyySegmentOption<T>(
+    val value: T,
+    val label: String,
+    val icon: ImageVector? = null
+)
+
+/**
+ * 通用分段控件 —— 容器与选中段规格与 GuessDifficultySelector 一致：
+ * 容器为 L1 受光渐变面板；选中段为 primary 三段受光渐变实体 + 主色辉光投影 + 按压缩放。
+ * 适用于筛选行、语言切换等 2-5 个互斥选项的场景（Tab 场景仍用 BlyyTabRow）。
+ */
+@Composable
+fun <T> BlyySegmentedControl(
+    options: List<BlyySegmentOption<T>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isDark = LocalIsDark.current
+    val containerShape = RoundedCornerShape(AppSpacing.Corner.Lg)
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .shadow(
+                elevation = AppElevation.Level1,
+                shape = containerShape,
+                ambientColor = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
+                spotColor = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
+            )
+            .clip(containerShape)
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.surfaceContainerLowest,
+                        MaterialTheme.colorScheme.surfaceContainerLow
+                    )
+                )
+            )
+            .border(
+                width = AppSpacing.Border.Thin,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                shape = containerShape
+            )
+            .padding(AppSpacing.Xs),
+        horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+    ) {
+        options.forEach { option ->
+            BlyySegment(
+                label = option.label,
+                icon = option.icon,
+                isSelected = selected == option.value,
+                onClick = { onSelect(option.value) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+/** 单个分段：选中态 = primary 受光渐变实体按键 */
+@Composable
+private fun BlyySegment(
+    label: String,
+    icon: ImageVector?,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) AppAnimation.Press.LightScale else 1f,
+        animationSpec = AppAnimation.Press.light(),
+        label = "segmentScale"
+    )
+
+    val primary = MaterialTheme.colorScheme.primary
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+
+    // 选中段：与 BlyyPrimaryButton 一致的三段垂直受光渐变（顶亮中实底深）
+    val segmentShape = RoundedCornerShape(AppSpacing.Corner.Lg - AppSpacing.Xs)
+    val segmentBrush = if (isSelected) {
+        Brush.verticalGradient(
+            colors = listOf(
+                lerp(primary, Color.White, 0.22f),
+                primary,
+                lerp(primary, Color.Black, 0.22f)
+            )
+        )
+    } else {
+        Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent))
+    }
+
+    val labelColor by animateColorAsState(
+        targetValue = if (isSelected) onPrimary else onSurfaceVariant,
+        animationSpec = AppAnimation.Specs.fast(),
+        label = "segmentLabel"
+    )
+
+    Row(
+        modifier = modifier
+            .scale(scale)
+            .shadow(
+                elevation = if (isSelected) AppElevation.Level1 else AppElevation.Level0,
+                shape = segmentShape,
+                ambientColor = if (LocalIsDark.current) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
+                // 直射阴影带主色 — 选中段的辉光投影
+                spotColor = primary.copy(alpha = if (isSelected) 0.45f else 0f)
+            )
+            .clip(segmentShape)
+            .background(segmentBrush)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = ripple(color = onPrimary.copy(alpha = if (isSelected) 0.2f else 0.08f)),
+                onClick = onClick
+            )
+            .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        icon?.let {
+            Icon(
+                it,
+                contentDescription = null,
+                tint = labelColor,
+                modifier = Modifier.size(AppSpacing.Icon.Md)
+            )
+            Spacer(Modifier.width(AppSpacing.Sm))
+        }
+        Text(
+            text = label,
+            style = AppTypography.LabelLarge,
+            fontWeight = FontWeight.Bold,
+            color = labelColor,
+            maxLines = 1
+        )
     }
 }
