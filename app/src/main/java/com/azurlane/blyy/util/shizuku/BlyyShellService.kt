@@ -26,9 +26,22 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
         /** 单份快照最多条目数（防止异常目录把服务端内存打爆） */
         private const val MAX_SNAPSHOT_ENTRIES = 200_000
 
+        /**
+         * 单份快照的文本字节上限。
+         *
+         * 条目数上限按行数计，真实内存要按字节算：painting 这类目录单行 ~100B，
+         * 正常目录远够用；病态目录（超长路径/海量条目）由字节上限兜底截断。
+         */
+        private const val MAX_SNAPSHOT_BYTES = 32L * 1024 * 1024
+
         /** 同时缓存几份目录快照（四类资源 + 余量） */
         private const val MAX_SNAPSHOTS = 8
+
+        /** 快照缓存总字节预算，超出时按 LRU 淘汰最旧的快照 */
+        private const val MAX_CACHE_BYTES = 64L * 1024 * 1024
     }
+
+    private class Snapshot(val lines: List<String>, val bytes: Long)
 
     /**
      * 目录列表快照：超大目录分页读时只走一次文件系统。
@@ -37,8 +50,8 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
      * painting）是并发列举的，单槽缓存会被互相顶掉，每次都重建整棵目录
      * （painting 有 1 万+ 文件，实测单次 0.5s）。
      */
-    private val snapshots = object : LinkedHashMap<String, List<String>>(8, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<String>>?): Boolean =
+    private val snapshots = object : LinkedHashMap<String, Snapshot>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Snapshot>?): Boolean =
             size > MAX_SNAPSHOTS
     }
 
@@ -77,9 +90,22 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
         val key = snapshotKey(root, depth)
         // 只在取/存快照时加锁：构建过程（可能几百毫秒）不占锁，
         // 否则四类目录的并发列举会被这把锁重新串起来
-        val cached = synchronized(snapshots) { if (refresh) null else snapshots[key] }
+        val cached = synchronized(snapshots) { if (refresh) null else snapshots[key]?.lines }
         val lines = cached ?: buildListing(root, depth, MAX_SNAPSHOT_ENTRIES).also { built ->
-            synchronized(snapshots) { snapshots[key] = built }
+            synchronized(snapshots) {
+                var bytes = 0L
+                for (line in built) bytes += line.length + 1
+                snapshots[key] = Snapshot(built, bytes)
+                // 条数上限挡不住「海量条目 × 长路径」的组合：按字节预算再兜一层，
+                // 超限时从最旧（LRU 队首）开始淘汰，最多保到刚放入的这份
+                var total = snapshots.values.sumOf { it.bytes }
+                while (total > MAX_CACHE_BYTES && snapshots.size > 1) {
+                    val iterator = snapshots.entries.iterator()
+                    iterator.next()
+                    iterator.remove()
+                    total = snapshots.values.sumOf { it.bytes }
+                }
+            }
         }
 
         val total = lines.size
@@ -107,6 +133,7 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
         val depthLimit = maxDepth.coerceIn(1, 12)
         val limit = maxEntries.coerceIn(1, MAX_SNAPSHOT_ENTRIES)
         val out = ArrayList<String>(minOf(limit, 4_096))
+        var bytes = 0L
         val queue = ArrayDeque<Pair<File, Int>>()
         queue.addLast(dir to 0)
         while (queue.isNotEmpty() && out.size < limit) {
@@ -118,7 +145,7 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
                 null
             } ?: continue
             for (child in children) {
-                if (out.size >= limit) break
+                if (out.size >= limit || bytes > MAX_SNAPSHOT_BYTES) break
                 val isDir = try {
                     child.isDirectory
                 } catch (e: Exception) {
@@ -126,14 +153,14 @@ class BlyyShellService(@Suppress("UNUSED_PARAMETER") context: Context) :
                 }
                 val size = if (isDir) 0L else runCatching { child.length() }.getOrDefault(0L)
                 val mtime = runCatching { child.lastModified() }.getOrDefault(0L)
-                out.add(
-                    buildString(96) {
-                        append(if (isDir) 'd' else 'f').append('\t')
-                        append(child.absolutePath).append('\t')
-                        append(size).append('\t')
-                        append(mtime)
-                    }
-                )
+                val line = buildString(96) {
+                    append(if (isDir) 'd' else 'f').append('\t')
+                    append(child.absolutePath).append('\t')
+                    append(size).append('\t')
+                    append(mtime)
+                }
+                bytes += line.length + 1
+                out.add(line)
                 if (isDir && depth + 1 < depthLimit) queue.addLast(child to depth + 1)
             }
         }
