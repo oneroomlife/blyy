@@ -16,6 +16,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AlertDialogDefaults
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -27,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -63,7 +66,8 @@ fun BlyyConfirmDialog(
     dismissText: String = "取消",
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
-    isDestructive: Boolean = false
+    isDestructive: Boolean = false,
+    icon: ImageVector? = null
 ) {
     val isCommandCenter = LocalUiStyle.current.isCommandCenter()
     val confirmColor = if (isDestructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
@@ -72,6 +76,15 @@ fun BlyyConfirmDialog(
         onDismissRequest = onDismiss,
         shape = if (isCommandCenter) BlyyShapes.Dialog else BlyyShapes.DialogClassic,
         containerColor = MaterialTheme.colorScheme.surface,
+        icon = icon?.let {
+            {
+                Icon(
+                    imageVector = it,
+                    contentDescription = null,
+                    tint = confirmColor
+                )
+            }
+        },
         title = {
             Text(
                 text = title,
@@ -147,6 +160,47 @@ fun BlyyDialog(
             content()
         }
     }
+}
+
+/**
+ * 表单对话框 — 与 [BlyyConfirmDialog] 同一弹窗外框（统一形状/底色/标题字级），
+ * 但内容与操作按钮为自定义槽位，供含输入框等复杂内容的对话框迁移使用
+ * （替代各 Screen 直接裸用 AlertDialog 造成的样式漂移）。
+ *
+ * @param onDismiss 外部点击/返回键回调
+ * @param title 标题文字
+ * @param text 自定义内容
+ * @param confirmButton 确认按钮槽位
+ * @param dismissButton 取消按钮槽位（null 不显示）
+ */
+@Composable
+fun BlyyFormDialog(
+    onDismiss: () -> Unit,
+    title: String,
+    text: @Composable () -> Unit,
+    confirmButton: @Composable () -> Unit,
+    dismissButton: (@Composable () -> Unit)? = null,
+    icon: (@Composable () -> Unit)? = null,
+    titleStyle: TextStyle = AppTypography.TitleLargeBold
+) {
+    val isCommandCenter = LocalUiStyle.current.isCommandCenter()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = if (isCommandCenter) BlyyShapes.Dialog else BlyyShapes.DialogClassic,
+        containerColor = MaterialTheme.colorScheme.surface,
+        icon = icon,
+        title = {
+            Text(
+                text = title,
+                style = titleStyle,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        },
+        text = text,
+        confirmButton = confirmButton,
+        dismissButton = dismissButton ?: {}
+    )
 }
 
 /**

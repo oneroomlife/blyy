@@ -38,7 +38,6 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.SdStorage
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.azurlane.blyy.ui.components.BlyySkeletonGrid
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
@@ -276,9 +276,9 @@ fun SdResourceGalleryScreen(
 
     // ── 删除确认对话框 ──
     deleteTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("删除资源") },
+        BlyyFormDialog(
+            onDismiss = { deleteTarget = null },
+            title = "删除资源",
             text = {
                 Text(
                     "确认删除「${target.name}」？\n该操作会移除资源目录，不可恢复。",
@@ -317,9 +317,9 @@ fun SdResourceGalleryScreen(
 
     // ── 重命名对话框 ──
     renameTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { renameTarget = null },
-            title = { Text("重命名资源") },
+        BlyyFormDialog(
+            onDismiss = { renameTarget = null },
+            title = "重命名资源",
             text = {
                 OutlinedTextField(
                     value = renameText,
@@ -551,15 +551,9 @@ private fun SdResourcePreviewDialog(
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                resource.name,
-                style = AppTypography.TitleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        },
+    BlyyFormDialog(
+        onDismiss = onDismiss,
+        title = resource.name,
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 // 预览图（大尺寸）

@@ -69,7 +69,6 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.automirrored.rounded.List
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -139,6 +138,7 @@ import com.azurlane.blyy.data.model.getGroupPosition
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyyHaptic
 import com.azurlane.blyy.ui.components.rememberBlyyHaptics
 import com.azurlane.blyy.ui.components.BlyyDragHandle
@@ -622,9 +622,9 @@ fun JiuxinChatScreen(
     showRenameDialog?.let { sessionId ->
         val targetSession = shipSessions.find { it.id == sessionId }
         var renameText by remember(sessionId) { mutableStateOf(targetSession?.name?.takeIf { it.isNotBlank() && !it.startsWith("对话-") } ?: targetSession?.jiuxinName ?: "") }
-        AlertDialog(
-            onDismissRequest = { showRenameDialog = null },
-            title = { Text("重命名对话") },
+        BlyyFormDialog(
+            onDismiss = { showRenameDialog = null },
+            title = "重命名对话",
             text = {
                 StableOutlinedTextField(
                     value = renameText,
@@ -684,21 +684,15 @@ fun JiuxinChatScreen(
 
     // ── API 配置缺失提示弹窗（新建对话时验证） ──
     if (showConfigMissingDialog) {
-        AlertDialog(
-            onDismissRequest = { showConfigMissingDialog = false },
-            title = { Text("需要先配置 API") },
-            text = {
-                Text("当前配置缺少 API URL 或 API 密钥，无法发送消息。\n是否前往配置页面完成设置？")
+        BlyyConfirmDialog(
+            title = "需要先配置 API",
+            message = "当前配置缺少 API URL 或 API 密钥，无法发送消息。\n是否前往配置页面完成设置？",
+            confirmText = "去配置",
+            onConfirm = {
+                showConfigMissingDialog = false
+                onNavigateToConfig()
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showConfigMissingDialog = false
-                    onNavigateToConfig()
-                }) { Text("去配置") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfigMissingDialog = false }) { Text("取消") }
-            }
+            onDismiss = { showConfigMissingDialog = false }
         )
     }
 

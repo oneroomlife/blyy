@@ -49,7 +49,6 @@ import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -83,6 +82,7 @@ import com.azurlane.blyy.data.model.ChatSession
 import com.azurlane.blyy.data.model.ApiConfig
 import com.azurlane.blyy.data.model.PersonaConfig
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
 import com.azurlane.blyy.ui.components.BlyyHaptic
 import com.azurlane.blyy.ui.components.RobustAvatar
 import com.azurlane.blyy.ui.components.rememberBlyyHaptics
@@ -409,44 +409,33 @@ fun ConversationListScreen(
 
     // ── 删除会话确认弹窗 ──
     showDeleteSessionConfirm?.let { session ->
-        AlertDialog(
-            onDismissRequest = { showDeleteSessionConfirm = null },
-            title = { Text("删除聊天") },
-            text = {
-                val displayName = session.jiuxinName.ifBlank { session.name.ifBlank { "此聊天" } }
-                Text("确定要删除「$displayName」吗？\n同一舰娘的所有历史对话都将被移除。此操作不可撤销。")
+        val displayName = session.jiuxinName.ifBlank { session.name.ifBlank { "此聊天" } }
+        BlyyConfirmDialog(
+            title = "删除聊天",
+            message = "确定要删除「$displayName」吗？\n同一舰娘的所有历史对话都将被移除。此操作不可撤销。",
+            confirmText = "删除",
+            onConfirm = {
+                haptic(BlyyHaptic.Heavy)
+                viewModel.deleteSessionsByShip(session.id)
+                showDeleteSessionConfirm = null
+                Toast.makeText(context, "已删除该舰娘的所有对话", Toast.LENGTH_SHORT).show()
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    haptic(BlyyHaptic.Heavy)
-                    viewModel.deleteSessionsByShip(session.id)
-                    showDeleteSessionConfirm = null
-                    Toast.makeText(context, "已删除该舰娘的所有对话", Toast.LENGTH_SHORT).show()
-                }) { Text("删除", color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteSessionConfirm = null }) { Text("取消") }
-            }
+            onDismiss = { showDeleteSessionConfirm = null },
+            isDestructive = true
         )
     }
 
     // ── API 配置缺失提示弹窗 ──
     if (showConfigMissingDialog) {
-        AlertDialog(
-            onDismissRequest = { showConfigMissingDialog = false },
-            title = { Text("需要先配置 API") },
-            text = {
-                Text("当前配置缺少 API URL 或 API 密钥，无法发送消息。\n是否前往配置页面完成设置？")
+        BlyyConfirmDialog(
+            title = "需要先配置 API",
+            message = "当前配置缺少 API URL 或 API 密钥，无法发送消息。\n是否前往配置页面完成设置？",
+            confirmText = "去配置",
+            onConfirm = {
+                showConfigMissingDialog = false
+                onNavigateToConfig()
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    showConfigMissingDialog = false
-                    onNavigateToConfig()
-                }) { Text("去配置", color = if (isDark) JuusPalette.ListPage.Dark.Primary else JuusPalette.ListPage.Primary) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfigMissingDialog = false }) { Text("取消") }
-            }
+            onDismiss = { showConfigMissingDialog = false }
         )
     }
 }

@@ -89,13 +89,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import androidx.compose.material3.AlertDialog
 import com.azurlane.blyy.data.model.ApiConfig
 import com.azurlane.blyy.data.model.JiuxinPreset
 import com.azurlane.blyy.data.model.PersonaConfig
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyyEntrance
@@ -347,9 +348,9 @@ fun JiuxinConfigScreen(
         val isDuplicateName = presets.any { it.name == presetNameInput.trim() && it.id != editingPreset?.id }
         // 检查 API 配置是否完整
         val isApiConfigured = apiUrl.isNotBlank() && apiKey.isNotBlank()
-        AlertDialog(
-            onDismissRequest = { showSavePresetDialog = false },
-            title = { Text(if (isEditing) "编辑预设" else "保存为预设") },
+        BlyyFormDialog(
+            onDismiss = { showSavePresetDialog = false },
+            title = if (isEditing) "编辑预设" else "保存为预设",
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     Text(
@@ -427,20 +428,17 @@ fun JiuxinConfigScreen(
     }
     // 删除预设确认对话框
     showDeletePresetConfirm?.let { preset ->
-        AlertDialog(
-            onDismissRequest = { showDeletePresetConfirm = null },
-            title = { Text("删除预设") },
-            text = { Text("确定要删除预设「${preset.name}」吗？此操作不可撤销。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deletePreset(preset.id)
-                    showDeletePresetConfirm = null
-                    Toast.makeText(context, "已删除预设「${preset.name}」", Toast.LENGTH_SHORT).show()
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        BlyyConfirmDialog(
+            title = "删除预设",
+            message = "确定要删除预设「${preset.name}」吗？此操作不可撤销。",
+            confirmText = "删除",
+            onConfirm = {
+                viewModel.deletePreset(preset.id)
+                showDeletePresetConfirm = null
+                Toast.makeText(context, "已删除预设「${preset.name}」", Toast.LENGTH_SHORT).show()
             },
-            dismissButton = {
-                TextButton(onClick = { showDeletePresetConfirm = null }) { Text("取消") }
-            }
+            onDismiss = { showDeletePresetConfirm = null },
+            isDestructive = true
         )
     }
     // 保存/编辑 API 配置对话框
@@ -448,9 +446,9 @@ fun JiuxinConfigScreen(
         val isEditing = editingApiConfig != null
         val isDuplicateName = apiConfigs.any { it.name == apiConfigNameInput.trim() && it.id != editingApiConfig?.id }
         val isApiConfigured = apiUrl.isNotBlank() && apiKey.isNotBlank()
-        AlertDialog(
-            onDismissRequest = { showSaveApiConfigDialog = false },
-            title = { Text(if (isEditing) "编辑 API 配置" else "保存为 API 配置") },
+        BlyyFormDialog(
+            onDismiss = { showSaveApiConfigDialog = false },
+            title = if (isEditing) "编辑 API 配置" else "保存为 API 配置",
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     Text(
@@ -528,29 +526,26 @@ fun JiuxinConfigScreen(
     }
     // 删除 API 配置确认对话框
     showDeleteApiConfigConfirm?.let { config ->
-        AlertDialog(
-            onDismissRequest = { showDeleteApiConfigConfirm = null },
-            title = { Text("删除 API 配置") },
-            text = { Text("确定要删除 API 配置「${config.name}」吗？此操作不可撤销。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deleteApiConfig(config.id)
-                    showDeleteApiConfigConfirm = null
-                    Toast.makeText(context, "已删除 API 配置「${config.name}」", Toast.LENGTH_SHORT).show()
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        BlyyConfirmDialog(
+            title = "删除 API 配置",
+            message = "确定要删除 API 配置「${config.name}」吗？此操作不可撤销。",
+            confirmText = "删除",
+            onConfirm = {
+                viewModel.deleteApiConfig(config.id)
+                showDeleteApiConfigConfirm = null
+                Toast.makeText(context, "已删除 API 配置「${config.name}」", Toast.LENGTH_SHORT).show()
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteApiConfigConfirm = null }) { Text("取消") }
-            }
+            onDismiss = { showDeleteApiConfigConfirm = null },
+            isDestructive = true
         )
     }
     // 保存/编辑舰娘人格配置对话框
     if (showSavePersonaConfigDialog) {
         val isEditing = editingPersonaConfig != null
         val isDuplicateName = personaConfigs.any { it.name == personaConfigNameInput.trim() && it.id != editingPersonaConfig?.id }
-        AlertDialog(
-            onDismissRequest = { showSavePersonaConfigDialog = false },
-            title = { Text(if (isEditing) "编辑舰娘人格" else "保存为舰娘人格") },
+        BlyyFormDialog(
+            onDismiss = { showSavePersonaConfigDialog = false },
+            title = if (isEditing) "编辑舰娘人格" else "保存为舰娘人格",
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     Text(
@@ -621,45 +616,39 @@ fun JiuxinConfigScreen(
     }
     // 删除舰娘人格配置确认对话框
     showDeletePersonaConfigConfirm?.let { config ->
-        AlertDialog(
-            onDismissRequest = { showDeletePersonaConfigConfirm = null },
-            title = { Text("删除舰娘人格") },
-            text = { Text("确定要删除舰娘人格「${config.name}」吗？此操作不可撤销。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.deletePersonaConfig(config.id)
-                    showDeletePersonaConfigConfirm = null
-                    Toast.makeText(context, "已删除舰娘人格「${config.name}」", Toast.LENGTH_SHORT).show()
-                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+        BlyyConfirmDialog(
+            title = "删除舰娘人格",
+            message = "确定要删除舰娘人格「${config.name}」吗？此操作不可撤销。",
+            confirmText = "删除",
+            onConfirm = {
+                viewModel.deletePersonaConfig(config.id)
+                showDeletePersonaConfigConfirm = null
+                Toast.makeText(context, "已删除舰娘人格「${config.name}」", Toast.LENGTH_SHORT).show()
             },
-            dismissButton = {
-                TextButton(onClick = { showDeletePersonaConfigConfirm = null }) { Text("取消") }
-            }
+            onDismiss = { showDeletePersonaConfigConfirm = null },
+            isDestructive = true
         )
     }
     // 清空当前舰娘人格确认对话框
     if (showClearPersonaConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearPersonaConfirm = false },
-            title = { Text("清空当前配置") },
-            text = { Text("将清空当前头像、名称、人格提示词、语音和表情包设置，方便重新填写。已保存的舰娘人格不受影响。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.clearPersonaFields()
-                    showClearPersonaConfirm = false
-                    Toast.makeText(context, "已清空当前配置", Toast.LENGTH_SHORT).show()
-                }) { Text("清空", color = MaterialTheme.colorScheme.error) }
+        BlyyConfirmDialog(
+            title = "清空当前配置",
+            message = "将清空当前头像、名称、人格提示词、语音和表情包设置，方便重新填写。已保存的舰娘人格不受影响。",
+            confirmText = "清空",
+            onConfirm = {
+                viewModel.clearPersonaFields()
+                showClearPersonaConfirm = false
+                Toast.makeText(context, "已清空当前配置", Toast.LENGTH_SHORT).show()
             },
-            dismissButton = {
-                TextButton(onClick = { showClearPersonaConfirm = false }) { Text("取消") }
-            }
+            onDismiss = { showClearPersonaConfirm = false },
+            isDestructive = true
         )
     }
     // 编辑长期记忆对话框
     if (showEditMemoryDialog) {
-        AlertDialog(
-            onDismissRequest = { showEditMemoryDialog = false },
-            title = { Text("编辑长期记忆") },
+        BlyyFormDialog(
+            onDismiss = { showEditMemoryDialog = false },
+            title = "编辑长期记忆",
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                     Text(
@@ -693,20 +682,17 @@ fun JiuxinConfigScreen(
     }
     // 清空长期记忆确认对话框
     if (showClearMemoryConfirm) {
-        AlertDialog(
-            onDismissRequest = { showClearMemoryConfirm = false },
-            title = { Text("清空长期记忆") },
-            text = { Text("确定要清空「${jiuxinName.ifBlank { "当前舰娘" }}」的长期记忆吗？她会忘记跨会话记住的内容，后续聊天会重新积累。此操作不可撤销。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.clearPersonaMemory()
-                    showClearMemoryConfirm = false
-                    Toast.makeText(context, "已清空长期记忆", Toast.LENGTH_SHORT).show()
-                }) { Text("清空", color = MaterialTheme.colorScheme.error) }
+        BlyyConfirmDialog(
+            title = "清空长期记忆",
+            message = "确定要清空「${jiuxinName.ifBlank { "当前舰娘" }}」的长期记忆吗？她会忘记跨会话记住的内容，后续聊天会重新积累。此操作不可撤销。",
+            confirmText = "清空",
+            onConfirm = {
+                viewModel.clearPersonaMemory()
+                showClearMemoryConfirm = false
+                Toast.makeText(context, "已清空长期记忆", Toast.LENGTH_SHORT).show()
             },
-            dismissButton = {
-                TextButton(onClick = { showClearMemoryConfirm = false }) { Text("取消") }
-            }
+            onDismiss = { showClearMemoryConfirm = false },
+            isDestructive = true
         )
     }
 

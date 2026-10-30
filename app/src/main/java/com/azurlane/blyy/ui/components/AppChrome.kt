@@ -894,8 +894,9 @@ internal fun UpdateAvailableDialog(
         label = "iconScale"
     )
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    BlyyFormDialog(
+        onDismiss = onDismiss,
+        title = "发现新版本",
         icon = {
             Box(
                 modifier = Modifier
@@ -920,13 +921,6 @@ internal fun UpdateAvailableDialog(
                         .scale(iconScale)
                 )
             }
-        },
-        title = {
-            Text(
-                text = "发现新版本",
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1087,8 +1081,7 @@ internal fun UpdateAvailableDialog(
             TextButton(onClick = onSkipVersion) {
                 Text("稍后自行更新")
             }
-        },
-        shape = if (isWatch) RoundedCornerShape(AppSpacing.Corner.Lg) else RoundedCornerShape(AppSpacing.Corner.Xxl)
+        }
     )
 }
 

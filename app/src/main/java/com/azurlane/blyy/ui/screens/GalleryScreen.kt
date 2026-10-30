@@ -68,6 +68,7 @@ import com.azurlane.blyy.data.model.StudentFilterData
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyEmptyState
+import com.azurlane.blyy.ui.components.BlyySecondaryButton
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.components.ShipCardShimmer
@@ -596,18 +597,12 @@ private fun GalleryErrorState(
             overflow = TextOverflow.Ellipsis
         )
         Spacer(modifier = Modifier.height(AppSpacing.Lg))
-        Button(
+        // 与 BlyyErrorState 的重试按钮同语言 — 全 App 错误态统一
+        BlyySecondaryButton(
+            text = "重试",
             onClick = onRetry,
-            shape = RoundedCornerShape(AppSpacing.Corner.Lg)
-        ) {
-            Icon(
-                Icons.Filled.Refresh,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-            Text("重试")
-        }
+            icon = Icons.Filled.Refresh
+        )
     }
 }
 

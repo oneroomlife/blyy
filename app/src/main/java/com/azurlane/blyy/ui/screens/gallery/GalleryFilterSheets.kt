@@ -65,6 +65,8 @@ import com.azurlane.blyy.data.model.StudentFilterData
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyEmptyState
+import com.azurlane.blyy.ui.components.BlyyPrimaryButton
+import com.azurlane.blyy.ui.components.BlyySecondaryButton
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.ShipCard
 import com.azurlane.blyy.ui.components.ShipCardShimmer
@@ -196,20 +198,19 @@ internal fun ModernFilterBottomSheet(
                         .padding(top = AppSpacing.Sm),
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
                 ) {
-                    OutlinedButton(
+                    BlyySecondaryButton(
+                        text = "重置",
                         onClick = {
                             haptic(BlyyHaptic.Tick)
                             tempFaction = "全部"
                             tempType = "全部"
                             tempRarity = "全部"
                         },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(AppSpacing.Corner.Lg)
-                    ) {
-                        Text("重置")
-                    }
+                        modifier = Modifier.weight(1f)
+                    )
 
-                    Button(
+                    BlyyPrimaryButton(
+                        text = "应用筛选",
                         onClick = {
                             haptic(BlyyHaptic.Tick)
                             onFactionSelected(tempFaction)
@@ -217,11 +218,8 @@ internal fun ModernFilterBottomSheet(
                             onRaritySelected(tempRarity)
                             onDismiss()
                         },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(AppSpacing.Corner.Lg)
-                    ) {
-                        Text("应用筛选")
-                    }
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
         }
@@ -379,28 +377,24 @@ internal fun StudentFilterBottomSheet(
                         .padding(top = AppSpacing.Sm),
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
                 ) {
-                    OutlinedButton(
+                    BlyySecondaryButton(
+                        text = "重置全部",
                         onClick = {
                             haptic(BlyyHaptic.Tick)
                             onReset()
                         },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(AppSpacing.Corner.Lg),
                         enabled = activeFilterCount > 0
-                    ) {
-                        Text("重置全部")
-                    }
+                    )
 
-                    Button(
+                    BlyyPrimaryButton(
+                        text = "完成",
                         onClick = {
                             haptic(BlyyHaptic.Tick)
                             onDismiss()
                         },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(AppSpacing.Corner.Lg)
-                    ) {
-                        Text("完成")
-                    }
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
         }

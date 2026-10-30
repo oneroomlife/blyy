@@ -61,6 +61,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyySecondaryButton
 import com.azurlane.blyy.ui.components.BlyyTextField
@@ -668,10 +669,10 @@ fun GuessSettlementDialog(
     onExit: () -> Unit,
     onContinue: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(AppSpacing.Corner.Dialog),
-        containerColor = MaterialTheme.colorScheme.surface,
+    BlyyFormDialog(
+        onDismiss = onDismiss,
+        title = "游戏结算",
+        titleStyle = AppTypography.HeadlineSmall.copy(fontWeight = FontWeight.Bold),
         icon = {
             Box(
                 modifier = Modifier
@@ -694,15 +695,6 @@ fun GuessSettlementDialog(
                     modifier = Modifier.size(36.dp)
                 )
             }
-        },
-        title = {
-            Text(
-                "游戏结算",
-                style = AppTypography.HeadlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
         },
         text = {
             Column(

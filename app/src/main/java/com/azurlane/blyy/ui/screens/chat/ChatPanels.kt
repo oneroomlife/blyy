@@ -69,7 +69,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.automirrored.rounded.List
-import androidx.compose.material3.AlertDialog
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -174,9 +174,10 @@ internal fun UserConfigDialog(
     var avatarUrl by remember(currentAvatarUrl) { mutableStateOf(currentAvatarUrl) }
     var showAvatarPicker by remember { mutableStateOf(false) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("指挥官信息设置", style = AppTypography.TitleMedium) },
+    BlyyFormDialog(
+        onDismiss = onDismiss,
+        title = "指挥官信息设置",
+        titleStyle = AppTypography.TitleMedium,
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 // 头像选择

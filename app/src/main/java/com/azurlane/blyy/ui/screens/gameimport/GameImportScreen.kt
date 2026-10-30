@@ -40,7 +40,6 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.WarningAmber
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -80,6 +79,8 @@ import com.azurlane.blyy.ui.components.BlyyButton
 import com.azurlane.blyy.ui.components.BlyyButtonVariant
 import com.azurlane.blyy.ui.components.BlyyCard
 import com.azurlane.blyy.ui.components.BlyyCardElevation
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyySearchBar
 import com.azurlane.blyy.ui.components.BlyyTabRow
 import com.azurlane.blyy.ui.components.BlyyTopBar
@@ -253,43 +254,27 @@ fun GameImportScreen(
 
     // ---- 删除确认 ----
     deleteTarget?.let { asset ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            icon = {
-                Icon(
-                    Icons.Rounded.DeleteOutline,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error
-                )
+        BlyyConfirmDialog(
+            title = "删除资源？",
+            message = "「${viewModel.displayNameFor(asset)}」（${viewModel.formatSize(asset.sizeBytes)}）将被永久删除，" +
+                "游戏资源包本身不受影响，可随时重新导入。",
+            confirmText = "删除",
+            onConfirm = {
+                viewModel.onIntent(GameImportIntent.DeleteAsset(asset.kind, asset.id))
+                deleteTarget = null
             },
-            title = { Text("删除资源？") },
-            text = {
-                Text(
-                    "「${viewModel.displayNameFor(asset)}」（${viewModel.formatSize(asset.sizeBytes)}）将被永久删除，" +
-                        "游戏资源包本身不受影响，可随时重新导入。",
-                    style = AppTypography.BodyMedium
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.onIntent(GameImportIntent.DeleteAsset(asset.kind, asset.id))
-                    deleteTarget = null
-                }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
-            }
+            onDismiss = { deleteTarget = null },
+            isDestructive = true,
+            icon = Icons.Rounded.DeleteOutline
         )
     }
 
     // ---- 重命名 ----
     renameTarget?.let { asset ->
-        AlertDialog(
-            onDismissRequest = { renameTarget = null },
+        BlyyFormDialog(
+            onDismiss = { renameTarget = null },
+            title = "重命名资源",
             icon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
-            title = { Text("重命名资源") },
             text = {
                 Column {
                     Text(
@@ -866,36 +851,20 @@ private fun LibraryTab(
         // 批量删除确认：一次说清数量与总体积，避免误删
         if (confirmBatchDelete && selected.isNotEmpty()) {
             val targets = selected.values.toList()
-            AlertDialog(
-                onDismissRequest = { confirmBatchDelete = false },
-                icon = {
-                    Icon(
-                        Icons.Rounded.DeleteOutline,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.error
-                    )
+            BlyyConfirmDialog(
+                title = "删除 ${targets.size} 个资源？",
+                message = "将永久删除已选资源（共 ${viewModel.formatSize(targets.sumOf { it.sizeBytes })}），" +
+                    "游戏资源包本身不受影响，可随时重新导入。",
+                confirmText = "删除",
+                onConfirm = {
+                    confirmBatchDelete = false
+                    val keys = targets.map { it.kind to it.id }
+                    exitSelection()
+                    viewModel.onIntent(GameImportIntent.DeleteAssets(keys))
                 },
-                title = { Text("删除 ${targets.size} 个资源？") },
-                text = {
-                    Text(
-                        "将永久删除已选资源（共 ${viewModel.formatSize(targets.sumOf { it.sizeBytes })}），" +
-                            "游戏资源包本身不受影响，可随时重新导入。",
-                        style = AppTypography.BodyMedium
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        confirmBatchDelete = false
-                        val keys = targets.map { it.kind to it.id }
-                        exitSelection()
-                        viewModel.onIntent(GameImportIntent.DeleteAssets(keys))
-                    }) {
-                        Text("删除", color = MaterialTheme.colorScheme.error)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") }
-                }
+                onDismiss = { confirmBatchDelete = false },
+                isDestructive = true,
+                icon = Icons.Rounded.DeleteOutline
             )
         }
 

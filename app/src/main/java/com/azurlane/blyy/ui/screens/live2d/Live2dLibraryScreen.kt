@@ -42,7 +42,6 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.WarningAmber
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -79,6 +78,8 @@ import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyAnimatedEmptyState
 import com.azurlane.blyy.ui.components.BlyyButton
 import com.azurlane.blyy.ui.components.BlyyButtonVariant
+import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyySearchBar
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.components.BlyyHaptic
@@ -538,72 +539,44 @@ fun Live2dLibraryScreen(
 
     // ── 删除确认 ──
     deleteTarget?.let { model ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            icon = { Icon(Icons.Rounded.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-            title = { Text("删除模型？") },
-            text = {
-                Text(
-                    "「${displayNameOf(model.id)}」（${formatSize(model.sizeBytes)}）将被永久删除，此操作不可恢复。",
-                    style = AppTypography.BodyMedium
-                )
+        BlyyConfirmDialog(
+            title = "删除模型？",
+            message = "「${displayNameOf(model.id)}」（${formatSize(model.sizeBytes)}）将被永久删除，此操作不可恢复。",
+            confirmText = "删除",
+            onConfirm = {
+                viewModel.onIntent(Live2dIntent.Delete(model.id))
+                deleteTarget = null
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.onIntent(Live2dIntent.Delete(model.id))
-                    deleteTarget = null
-                }) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) { Text("取消") }
-            }
+            onDismiss = { deleteTarget = null },
+            isDestructive = true,
+            icon = Icons.Rounded.DeleteOutline
         )
     }
 
     // ── 批量删除确认 ──
     if (confirmBatchDelete) {
         val count = state.selectedIds.size
-        AlertDialog(
-            onDismissRequest = { confirmBatchDelete = false },
-            icon = {
-                Icon(
-                    Icons.Rounded.DeleteOutline,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error
-                )
+        BlyyConfirmDialog(
+            title = "删除所选的 $count 个模型？",
+            message = "共 ${formatSize(state.selectedBytes)} 将被永久删除，此操作不可恢复。",
+            confirmText = "删除 $count 个",
+            onConfirm = {
+                haptic(BlyyHaptic.LongPress)
+                viewModel.onIntent(Live2dIntent.DeleteSelected(state.selectedIds.toSet()))
+                confirmBatchDelete = false
             },
-            title = { Text("删除所选的 $count 个模型？") },
-            text = {
-                Text(
-                    "共 ${formatSize(state.selectedBytes)} 将被永久删除，此操作不可恢复。",
-                    style = AppTypography.BodyMedium
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        haptic(BlyyHaptic.LongPress)
-                        viewModel.onIntent(Live2dIntent.DeleteSelected(state.selectedIds.toSet()))
-                        confirmBatchDelete = false
-                    }
-                ) {
-                    Text("删除 $count 个", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmBatchDelete = false }) { Text("取消") }
-            }
+            onDismiss = { confirmBatchDelete = false },
+            isDestructive = true,
+            icon = Icons.Rounded.DeleteOutline
         )
     }
 
     // ── 重命名 ──
     renameTarget?.let { model ->
-        AlertDialog(
-            onDismissRequest = { renameTarget = null },
+        BlyyFormDialog(
+            onDismiss = { renameTarget = null },
+            title = "重命名模型",
             icon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
-            title = { Text("重命名模型") },
             text = {
                 Column {
                     Text(

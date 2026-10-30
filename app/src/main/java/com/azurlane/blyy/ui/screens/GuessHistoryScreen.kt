@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.Leaderboard
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -69,6 +68,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.data.model.GuessHistory
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyConfirmDialog
+import com.azurlane.blyy.ui.components.BlyyFormDialog
 import com.azurlane.blyy.ui.components.BlyySegmentOption
 import com.azurlane.blyy.ui.components.BlyySegmentedControl
 import com.azurlane.blyy.ui.components.BlyyStateScaffold
@@ -520,18 +520,15 @@ private fun HistoryDetailDialog(
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
     val isImageMode = record.mode == "IMAGE"
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = if (isImageMode) Icons.Rounded.Image else Icons.Rounded.MusicNote,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                Text(if (isImageMode) "看图识舰娘" else "听音识舰娘")
-            }
+    BlyyFormDialog(
+        onDismiss = onDismiss,
+        title = if (isImageMode) "看图识舰娘" else "听音识舰娘",
+        icon = {
+            Icon(
+                imageVector = if (isImageMode) Icons.Rounded.Image else Icons.Rounded.MusicNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
@@ -719,8 +716,9 @@ private fun NicknamePromptDialog(
     var nickname by remember { mutableStateOf(suggestedNickname) }
     val isError = nickname.isBlank()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    BlyyFormDialog(
+        onDismiss = onDismiss,
+        title = "无法查询到玩家信息",
         icon = {
             Icon(
                 Icons.Rounded.DriveFileRenameOutline,
@@ -728,7 +726,6 @@ private fun NicknamePromptDialog(
                 tint = MaterialTheme.colorScheme.primary
             )
         },
-        title = { Text("无法查询到玩家信息") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
                 Text(
