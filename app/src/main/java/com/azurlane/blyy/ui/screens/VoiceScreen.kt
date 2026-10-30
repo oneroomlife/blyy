@@ -68,8 +68,8 @@ import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.ui.components.BlyyBottomSheet
 import com.azurlane.blyy.ui.components.BlyyErrorState
-import com.azurlane.blyy.ui.components.BlyyLoadingState
 import com.azurlane.blyy.ui.components.BlyyPanel
+import com.azurlane.blyy.ui.components.BlyySkeletonList
 import com.azurlane.blyy.ui.components.BlyySpeechBubble
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.LocalUiStyle
@@ -274,26 +274,33 @@ fun VoiceScreenContent(
                     )
                 }
             } else if (voiceState.isLoading && voiceState.voices.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
-                    ) {
-                        BlyyLoadingState()
-                        // 重试状态提示
-                        if (voiceState.isRetrying) {
-                            Text(
-                                text = "正在重试加载... (${voiceState.retryCount}/3)",
-                                style = AppTypography.BodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else if (voiceState.isCacheHit) {
-                            Text(
-                                text = "从缓存加载",
-                                style = AppTypography.LabelSmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                // 骨架屏 — 语音列表为行式条目，骨架形态与真实列表同构；
+                // 重试/缓存命中状态提示叠在骨架底部
+                Box(modifier = Modifier.fillMaxSize()) {
+                    BlyySkeletonList(
+                        itemCount = 8,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = innerPadding.calculateTopPadding())
+                    )
+                    if (voiceState.isRetrying) {
+                        Text(
+                            text = "正在重试加载... (${voiceState.retryCount}/3)",
+                            style = AppTypography.BodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(AppSpacing.Lg)
+                        )
+                    } else if (voiceState.isCacheHit) {
+                        Text(
+                            text = "从缓存加载",
+                            style = AppTypography.LabelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(AppSpacing.Lg)
+                        )
                     }
                 }
             } else {
