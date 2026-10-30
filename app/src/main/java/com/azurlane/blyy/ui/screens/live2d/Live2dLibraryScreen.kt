@@ -672,12 +672,7 @@ private fun Live2dModelCard(
                     .fillMaxWidth()
                     .aspectRatio(0.85f)
                     .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                AppColors.Live2DViewer.BgDark,
-                                Color(0xFF16233C)
-                            )
-                        )
+                        Brush.verticalGradient(AppColors.Live2DViewer.CoverGradient)
                     )
             ) {
                 when {
@@ -712,7 +707,7 @@ private fun Live2dModelCard(
                             .size(24.dp)
                             .clip(RoundedCornerShape(AppSpacing.Corner.Full))
                             // 已选：主色实心 + 白勾；未选：半透明底 + 白描边空圈
-                            .background(if (selected) accent else Color(0x660F1826))
+                            .background(if (selected) accent else AppColors.Live2DViewer.SelectedScrim)
                             .border(
                                 width = AppSpacing.Border.Thick,
                                 color = if (selected) accent else Color.White.copy(alpha = 0.7f),
@@ -737,7 +732,7 @@ private fun Live2dModelCard(
                         .align(Alignment.TopEnd)
                         .padding(AppSpacing.Sm),
                     shape = RoundedCornerShape(AppSpacing.Corner.Full),
-                    color = Color(0xCC0F1826),
+                    color = AppColors.Live2DViewer.ChipScrim,
                     // 角标底色与封面渐变同色系，加细亮描边避免胶囊边界消失
                     border = BorderStroke(AppSpacing.Border.Thin, Color.White.copy(alpha = 0.22f))
                 ) {
@@ -749,7 +744,7 @@ private fun Live2dModelCard(
                         Icon(
                             Icons.Rounded.Animation,
                             contentDescription = null,
-                            tint = Color(0xFF8EC9F0),
+                            tint = AppColors.Live2DViewer.AccentLight,
                             modifier = Modifier.size(12.dp)
                         )
                         Text(

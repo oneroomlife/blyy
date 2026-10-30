@@ -39,6 +39,7 @@ import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.azurlane.blyy.R
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.ui.theme.AppColors
 import kotlinx.coroutines.flow.first
 
 class DailyShipWidget : GlanceAppWidget() {
@@ -80,13 +81,13 @@ private fun DailyShipContent(ship: Ship?, avatar: Bitmap?) {
                 Box(
                     modifier = GlanceModifier
                         .cornerRadius(10.dp)
-                        .background(Color(0x3348CAE4))
+                        .background(AppColors.Widget.AccentCyanContainer)
                         .padding(horizontal = 7.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = "今日推荐",
                         style = TextStyle(
-                            color = ColorProvider(Color(0xFF6FD8F0)),
+                            color = ColorProvider(AppColors.Widget.AccentCyanBright),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -97,7 +98,7 @@ private fun DailyShipContent(ship: Ship?, avatar: Bitmap?) {
                     Text(
                         text = ship.type,
                         style = TextStyle(
-                            color = ColorProvider(Color(0xFF7C97B5)),
+                            color = ColorProvider(AppColors.Widget.TextTertiary),
                             fontSize = 11.sp
                         )
                     )
@@ -113,7 +114,7 @@ private fun DailyShipContent(ship: Ship?, avatar: Bitmap?) {
                         modifier = GlanceModifier
                             .size(78.dp)
                             .cornerRadius(16.dp)
-                            .background(Color(0xFF16293F)),
+                            .background(AppColors.Widget.PanelDark),
                         contentAlignment = Alignment.Center
                     ) {
                         if (avatar != null) {
@@ -164,7 +165,7 @@ private fun DailyShipContent(ship: Ship?, avatar: Bitmap?) {
                     Text(
                         text = "图鉴暂无数据，打开应用同步后使用",
                         style = TextStyle(
-                            color = ColorProvider(Color(0xFFA9C7DE)),
+                            color = ColorProvider(AppColors.Widget.TextSecondary),
                             fontSize = 12.sp
                         )
                     )

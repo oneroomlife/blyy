@@ -172,6 +172,58 @@ object AppColors {
         val WarningDark: Color = SemanticDark.Warning
         /** 浅色模式用更深的警示橙确保 WCAG AA 对比度（amber-600 在浅背景仅 ~3.5:1） */
         val WarningLight: Color = Color(0xFFE65100)
+
+        // ── 查看器雾面 / 渐变体系（原各屏内联色收敛归口）──
+        /** 深色雾面基色 — 查看器顶栏/底栏 scrim、沉浸提示底统一派生 */
+        val ScrimBase: Color = Color(0xFF0B1220)
+        /** 顶栏 scrim 渐变（暗）— 三段淡出 */
+        val TopScrimDark: List<Color> =
+            listOf(Color(0xE60B1220), Color(0x8C0B1220), Color.Transparent)
+        /** 顶栏 scrim（亮）— 瓷白淡出 */
+        val TopScrimLight: Color = Color(0xB3FFFFFF)
+        /** 沉浸提示 / 气泡底（暗） */
+        val BottomScrimDark: Color = Color(0x990B1220)
+        /** 芯片/小面板底（暗）— BgDark 的 80% 雾面 */
+        val ChipScrim: Color = Color(0xCC0F1826)
+        /** 选中底（暗）— BgDark 的 40% 雾面 */
+        val SelectedScrim: Color = Color(0x660F1826)
+        /** 浅色模式图标/文字着色 — 深蓝墨色 */
+        val IconTintLight: Color = Color(0xFF1B2735)
+        /** 浅色模式强调色 — 天青 */
+        val AccentLight: Color = Color(0xFF8EC9F0)
+        /** 全屏背景渐变（暗）— 深海模式三段 */
+        val BgGradientDark: List<Color> =
+            listOf(BgDark, Color(0xFF16233C), Color(0xFF0C1420))
+        /** 全屏背景渐变（亮）— 晨曦模式三段 */
+        val BgGradientLight: List<Color> =
+            listOf(BgLight, Color(0xFFFFFFFF), Color(0xFFE1EDF6))
+        /** 模型/资源卡封面渐变 — BgDark 向亮一阶蓝过渡，两处卡面共用 */
+        val CoverGradient: List<Color> = listOf(BgDark, Color(0xFF16233C))
+        /** 深渊级背景渐变 — 查看器沉浸底 */
+        val DeepBgGradient: List<Color> =
+            listOf(Color(0xFF0B0E14), Color(0xFF14181F), Color(0xFF0B0E14))
+        /** 通用半透明遮罩 — 悬浮层压暗 */
+        val GenericScrim: Color = Color(0x66000000)
+    }
+
+    // ==================== 桌面小组件（Glance 无 BlyyTheme 上下文，静态令牌） ====================
+    object Widget {
+        /** 组件面板底 — 深海夜蓝 */
+        val PanelDark: Color = Color(0xFF16293F)
+        /** 主强调 — 天青（与 SuperRare 同源，语义独立：组件主色调） */
+        val AccentCyan: Color = Color(0xFF48CAE4)
+        /** 强调容器 — 天青 20% */
+        val AccentCyanContainer: Color = Color(0x3348CAE4)
+        /** 亮强调 — 浅天青（数值/高亮） */
+        val AccentCyanBright: Color = Color(0xFF6FD8F0)
+        /** 文字层级：标题（最亮） */
+        val TextPrimary: Color = Color(0xFFD8ECF8)
+        /** 文字层级：正文 */
+        val TextSecondary: Color = Color(0xFFA9C7DE)
+        /** 文字层级：次要/说明 */
+        val TextTertiary: Color = Color(0xFF7C97B5)
+        /** 强调底上的文字 */
+        val TextOnAccent: Color = Color(0xFFB7D4EA)
     }
 
     // ==================== 毛玻璃效果 ====================

@@ -475,11 +475,9 @@ fun Live2dViewerScreen(
         // ── 顶部信息栏（渐变衬底保证可读性；陪伴沉浸模式下随界面一起收起） ──
         // 暗色下立绘常顶到上半屏，两段直落渐变对浅色发饰遮蔽不足 → 三段更实更平滑
         val topScrim = if (isDark) {
-            Brush.verticalGradient(
-                listOf(Color(0xE60B1220), Color(0x8C0B1220), Color.Transparent)
-            )
+            Brush.verticalGradient(AppColors.Live2DViewer.TopScrimDark)
         } else {
-            Brush.verticalGradient(listOf(Color(0xB3FFFFFF), Color.Transparent))
+            Brush.verticalGradient(listOf(AppColors.Live2DViewer.TopScrimLight, Color.Transparent))
         }
         AnimatedVisibility(
             visible = !state.companionEnabled || uiRevealed,
@@ -502,7 +500,7 @@ fun Live2dViewerScreen(
                 Icon(
                     imageVector = Icons.Rounded.ArrowBackIosNew,
                     contentDescription = "返回",
-                    tint = if (isDark) Color.White.copy(alpha = 0.9f) else Color(0xFF1B2735)
+                    tint = if (isDark) Color.White.copy(alpha = 0.9f) else AppColors.Live2DViewer.IconTintLight
                 )
             }
             Spacer(Modifier.width(AppSpacing.Xs))
@@ -511,7 +509,7 @@ fun Live2dViewerScreen(
                     text = displayName,
                     style = AppTypography.LabelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (isDark) Color.White else Color(0xFF1B2735),
+                    color = if (isDark) Color.White else AppColors.Live2DViewer.IconTintLight,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -530,7 +528,7 @@ fun Live2dViewerScreen(
                             }
                         },
                         style = AppTypography.CaptionSmall,
-                        color = (if (isDark) Color.White else Color(0xFF1B2735))
+                        color = (if (isDark) Color.White else AppColors.Live2DViewer.IconTintLight)
                             .copy(alpha = if (isDark) 0.78f else 0.6f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -806,7 +804,7 @@ fun Live2dViewerScreen(
                 color = Color.White.copy(alpha = 0.92f),
                 modifier = Modifier
                     .clip(RoundedCornerShape(999.dp))
-                    .background(Color(0x990B1220))
+                    .background(AppColors.Live2DViewer.BottomScrimDark)
                     .border(
                         width = AppSpacing.Border.Thin,
                         color = Color.White.copy(alpha = 0.14f),
@@ -1191,23 +1189,9 @@ private class SpeechBubbleShape(
 
 /** 背景渐变（深海/晨曦/夜幕），画布透明以让主题渐变透出 */
 private fun brushForBg(mode: L2dBgMode): Brush = when (mode) {
-    L2dBgMode.DEEP_SEA -> Brush.verticalGradient(
-        listOf(
-            AppColors.Live2DViewer.BgDark,
-            Color(0xFF16233C),
-            Color(0xFF0C1420)
-        )
-    )
-    L2dBgMode.DAWN -> Brush.verticalGradient(
-        listOf(
-            AppColors.Live2DViewer.BgLight,
-            Color(0xFFFFFFFF),
-            Color(0xFFE1EDF6)
-        )
-    )
-    L2dBgMode.NIGHT -> Brush.verticalGradient(
-        listOf(Color(0xFF0B0E14), Color(0xFF14181F), Color(0xFF0B0E14))
-    )
+    L2dBgMode.DEEP_SEA -> Brush.verticalGradient(AppColors.Live2DViewer.BgGradientDark)
+    L2dBgMode.DAWN -> Brush.verticalGradient(AppColors.Live2DViewer.BgGradientLight)
+    L2dBgMode.NIGHT -> Brush.verticalGradient(AppColors.Live2DViewer.DeepBgGradient)
 }
 
 // ---------- 陪伴模式 ----------

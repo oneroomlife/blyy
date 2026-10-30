@@ -1042,9 +1042,7 @@ private fun AssetCard(
                     .fillMaxWidth()
                     .aspectRatio(0.85f)
                     .background(
-                        Brush.verticalGradient(
-                            listOf(AppColors.Live2DViewer.BgDark, Color(0xFF16233C))
-                        )
+                        Brush.verticalGradient(AppColors.Live2DViewer.CoverGradient)
                     )
             ) {
                 val preview = asset.previewFile
@@ -1078,7 +1076,7 @@ private fun AssetCard(
                         .align(Alignment.TopStart)
                         .padding(AppSpacing.Sm),
                     shape = RoundedCornerShape(AppSpacing.Corner.Full),
-                    color = Color(0xCC0F1826),
+                    color = AppColors.Live2DViewer.ChipScrim,
                     border = BorderStroke(AppSpacing.Border.Thin, Color.White.copy(alpha = 0.22f))
                 ) {
                     Text(
@@ -1117,7 +1115,7 @@ private fun AssetCard(
                                 if (isSelected) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
-                                    Color(0x66000000)
+                                    AppColors.Live2DViewer.GenericScrim
                                 },
                                 CircleShape
                             )

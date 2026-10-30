@@ -42,6 +42,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.azurlane.blyy.R
+import com.azurlane.blyy.ui.theme.AppColors
 import kotlinx.coroutines.flow.first
 import java.util.Calendar
 
@@ -113,7 +114,7 @@ private fun SecretaryGreetingContent(
                     modifier = GlanceModifier
                         .size(56.dp)
                         .cornerRadius(16.dp)
-                        .background(Color(0xFF16293F)),
+                        .background(AppColors.Widget.PanelDark),
                     contentAlignment = Alignment.Center
                 ) {
                     if (avatar != null) {
@@ -150,12 +151,12 @@ private fun SecretaryGreetingContent(
                     )
                     Spacer(GlanceModifier.height(5.dp))
                     // 舰名下主色小分隔线：标题与台词的层次点缀
-                    Box(modifier = GlanceModifier.width(22.dp).height(2.dp).background(Color(0xFF48CAE4))) {}
+                    Box(modifier = GlanceModifier.width(22.dp).height(2.dp).background(AppColors.Widget.AccentCyan)) {}
                     Spacer(GlanceModifier.height(5.dp))
                     Text(
                         text = if (shipName.isEmpty()) "点下方骰子，为组件抽一位专属舰娘" else line,
                         style = TextStyle(
-                            color = ColorProvider(Color(0xFFB7D4EA)),
+                            color = ColorProvider(AppColors.Widget.TextOnAccent),
                             fontSize = 12.sp
                         )
                     )
@@ -199,7 +200,7 @@ private fun ActionChip(label: String, iconRes: Int, action: Action) {
         Text(
             text = label,
             style = TextStyle(
-                color = ColorProvider(Color(0xFFD8ECF8)),
+                color = ColorProvider(AppColors.Widget.TextPrimary),
                 fontSize = 11.sp
             )
         )

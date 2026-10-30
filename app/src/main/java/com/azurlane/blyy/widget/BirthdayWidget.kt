@@ -48,6 +48,7 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
 import com.azurlane.blyy.R
+import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.util.LocalAvatarResolver
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -129,14 +130,14 @@ private fun BirthdayWidgetContent(
                 Text(
                     text = state.dateLabel,
                     style = TextStyle(
-                        color = ColorProvider(Color(0xFF7C97B5)),
+                        color = ColorProvider(AppColors.Widget.TextTertiary),
                         fontSize = 11.sp
                     )
                 )
             }
             Spacer(GlanceModifier.height(4.dp))
             // 主色小分隔线：标题与内容的层次点缀（同秘书舰组件）
-            Box(modifier = GlanceModifier.width(22.dp).height(2.dp).background(Color(0xFF48CAE4))) {}
+            Box(modifier = GlanceModifier.width(22.dp).height(2.dp).background(AppColors.Widget.AccentCyan)) {}
             Spacer(GlanceModifier.defaultWeight())
 
             if (!state.hasAnyData) {
@@ -144,7 +145,7 @@ private fun BirthdayWidgetContent(
                 Text(
                     text = "打开应用，在船坞刷新档案后展示舰娘生日",
                     style = TextStyle(
-                        color = ColorProvider(Color(0xFFA9C7DE)),
+                        color = ColorProvider(AppColors.Widget.TextSecondary),
                         fontSize = 12.sp
                     )
                 )
@@ -176,13 +177,13 @@ private fun TodayBirthdayRow(
         Box(
             modifier = GlanceModifier
                 .cornerRadius(9.dp)
-                .background(Color(0x3348CAE4))
+                .background(AppColors.Widget.AccentCyanContainer)
                 .padding(horizontal = 7.dp, vertical = 2.dp)
         ) {
             Text(
                 text = "今日寿星",
                 style = TextStyle(
-                    color = ColorProvider(Color(0xFF6FD8F0)),
+                    color = ColorProvider(AppColors.Widget.AccentCyanBright),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -193,7 +194,7 @@ private fun TodayBirthdayRow(
             Text(
                 text = "今天没有舰娘生日",
                 style = TextStyle(
-                    color = ColorProvider(Color(0xFFA9C7DE)),
+                    color = ColorProvider(AppColors.Widget.TextSecondary),
                     fontSize = 12.sp
                 )
             )
@@ -208,7 +209,7 @@ private fun TodayBirthdayRow(
                 Text(
                     text = "+${state.todayCount - state.todayShips.size}",
                     style = TextStyle(
-                        color = ColorProvider(Color(0xFF7C97B5)),
+                        color = ColorProvider(AppColors.Widget.TextTertiary),
                         fontSize = 11.sp
                     ),
                     maxLines = 1
@@ -232,7 +233,7 @@ private fun UpcomingBirthdayRow(
         Text(
             text = "接下来",
             style = TextStyle(
-                color = ColorProvider(Color(0xFF7C97B5)),
+                color = ColorProvider(AppColors.Widget.TextTertiary),
                 fontSize = 11.sp
             )
         )
@@ -268,7 +269,7 @@ private fun ShipChip(
             modifier = GlanceModifier
                 .size(avatarSize)
                 .cornerRadius(8.dp)
-                .background(Color(0xFF16293F)),
+                .background(AppColors.Widget.PanelDark),
             contentAlignment = Alignment.Center
         ) {
             if (bitmap != null) {
@@ -290,7 +291,7 @@ private fun ShipChip(
         Text(
             text = ship.name,
             style = TextStyle(
-                color = ColorProvider(Color(0xFFD8ECF8)),
+                color = ColorProvider(AppColors.Widget.TextPrimary),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium
             ),
@@ -302,7 +303,7 @@ private fun ShipChip(
             Text(
                 text = BirthdayWidgetData.countdownLabel(ship.daysUntil),
                 style = TextStyle(
-                    color = ColorProvider(Color(0xFF6FD8F0)),
+                    color = ColorProvider(AppColors.Widget.AccentCyanBright),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )
