@@ -1,6 +1,7 @@
 package com.azurlane.blyy.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -75,6 +76,7 @@ import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.blyyDepthShadow
 import com.azurlane.blyy.ui.theme.isCommandCenter
+import com.azurlane.blyy.ui.theme.rememberReducedMotion
 
 enum class BlyyButtonVariant { Primary, Secondary, Tertiary, Text }
 
@@ -355,6 +357,20 @@ fun BlyyAnimatedEmptyState(
     actionLabel: String? = null,
     onAction: (() -> Unit)? = null
 ) {
+    // 减动效模式下退化为无动画直切（仅保留可见性语义）
+    val reducedMotion = rememberReducedMotion()
+    if (reducedMotion) {
+        if (visible) {
+            BlyyEmptyState(
+                icon = icon,
+                title = title,
+                description = description,
+                actionLabel = actionLabel,
+                onAction = onAction
+            )
+        }
+        return
+    }
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
@@ -444,91 +460,104 @@ fun BlyyStateScaffold(
     content: @Composable () -> Unit
 ) {
     Box(modifier = modifier) {
-        when {
-            hasContent -> {
-                Box(modifier = Modifier.fillMaxSize()) { content() }
-                // 错误条退出动画期间保留最后一条文案，避免收起时文字塌缩
-                var lastError by remember { mutableStateOf("") }
-                if (error != null) lastError = error
-                AnimatedVisibility(
-                    visible = error != null,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
-                ) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f),
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.fillMaxWidth()
+        // 四态键 — 与原 when 分支同优先级（hasContent 最高：缓存数据 + 错误条并存）
+        val stateKey = when {
+            hasContent -> "content"
+            isLoading -> "loading"
+            error != null -> "error"
+            else -> "empty"
+        }
+        Crossfade(
+            targetState = stateKey,
+            animationSpec = tween(AppAnimation.Duration.Smooth, easing = AppAnimation.Easings.Standard),
+            label = "stateScaffold"
+        ) { key ->
+            when (key) {
+                "content" -> {
+                    Box(modifier = Modifier.fillMaxSize()) { content() }
+                    // 错误条退出动画期间保留最后一条文案，避免收起时文字塌缩
+                    var lastError by remember { mutableStateOf("") }
+                    if (error != null) lastError = error
+                    AnimatedVisibility(
+                        visible = error != null,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(
-                                horizontal = AppSpacing.Screen.Horizontal,
-                                vertical = AppSpacing.Xs
-                            ),
-                            verticalAlignment = Alignment.CenterVertically
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.92f),
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Warning,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                            Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                            Text(
-                                text = lastError,
-                                style = AppTypography.BodySmall,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 2
-                            )
-                            if (onRetry != null) {
-                                TextButton(onClick = onRetry) {
-                                    Text("重试", style = AppTypography.LabelMedium)
+                            Row(
+                                modifier = Modifier.padding(
+                                    horizontal = AppSpacing.Screen.Horizontal,
+                                    vertical = AppSpacing.Xs
+                                ),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Warning,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                                Text(
+                                    text = lastError,
+                                    style = AppTypography.BodySmall,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 2
+                                )
+                                if (onRetry != null) {
+                                    TextButton(onClick = onRetry) {
+                                        Text("重试", style = AppTypography.LabelMedium)
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            isLoading -> when (val kind = skeleton) {
-                is BlyySkeletonKind.List -> BlyySkeletonList(
-                    itemCount = kind.itemCount,
+                "loading" -> when (val kind = skeleton) {
+                    is BlyySkeletonKind.List -> BlyySkeletonList(
+                        itemCount = kind.itemCount,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = AppSpacing.Screen.Horizontal)
+                    )
+                    is BlyySkeletonKind.Grid -> BlyySkeletonGrid(
+                        minSize = kind.minSize,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = AppSpacing.Screen.Horizontal)
+                    )
+                    BlyySkeletonKind.Spinner -> Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        BlyyLoadingState()
+                    }
+                }
+                "error" -> Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = AppSpacing.Screen.Horizontal)
-                )
-                is BlyySkeletonKind.Grid -> BlyySkeletonGrid(
-                    minSize = kind.minSize,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = AppSpacing.Screen.Horizontal)
-                )
-                BlyySkeletonKind.Spinner -> Box(
+                        .padding(horizontal = AppSpacing.Screen.Horizontal),
+                    contentAlignment = Alignment.Center
+                ) {
+                    BlyyErrorState(message = error ?: "", onRetry = onRetry)
+                }
+                else -> Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    BlyyLoadingState()
+                    BlyyEmptyState(
+                        icon = emptyIcon,
+                        title = emptyTitle,
+                        description = emptyDescription,
+                        actionLabel = emptyActionLabel,
+                        onAction = onEmptyAction
+                    )
                 }
-            }
-            error != null -> Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = AppSpacing.Screen.Horizontal),
-                contentAlignment = Alignment.Center
-            ) {
-                BlyyErrorState(message = error, onRetry = onRetry)
-            }
-            else -> Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                BlyyEmptyState(
-                    icon = emptyIcon,
-                    title = emptyTitle,
-                    description = emptyDescription,
-                    actionLabel = emptyActionLabel,
-                    onAction = onEmptyAction
-                )
             }
         }
     }
