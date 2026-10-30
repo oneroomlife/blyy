@@ -53,7 +53,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -82,6 +81,7 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.ui.theme.chamferedShape
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.isWatchScreen
+import com.azurlane.blyy.ui.theme.blyyDepthShadow
 import com.azurlane.blyy.ui.theme.withCjkLinePadding
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
@@ -181,8 +181,6 @@ fun BlyyTopBar(
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
     val panelFill = if (isDark) AppColors.Panel.FillDark() else AppColors.Panel.FillLight()
-    val shadowAmbient = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight
-    val shadowSpot = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
     val accentColor = MaterialTheme.colorScheme.primary
 
     Column(modifier = modifier.fillMaxWidth()) {
@@ -190,11 +188,9 @@ fun BlyyTopBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = if (isWatch) AppSpacing.Xs else AppSpacing.Sm)
-                .shadow(
+                .blyyDepthShadow(
                     elevation = AppElevation.Level2,
-                    shape = BlyyShapes.PanelMedium,
-                    ambientColor = shadowAmbient,
-                    spotColor = shadowSpot
+                    shape = BlyyShapes.PanelMedium
                 )
                 .clip(BlyyShapes.PanelMedium)
                 .background(panelFill)
@@ -281,11 +277,10 @@ fun ClassicTopBar(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AppSpacing.Screen.Horizontal, vertical = if (isWatch) AppSpacing.Xs else AppSpacing.Sm)
-                .shadow(
+                // blyyDepthShadow 自动亮暗切换 — 修复旧实现暗色模式仍用浅色阴影令牌的问题
+                .blyyDepthShadow(
                     elevation = AppElevation.Level1,
-                    shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-                    ambientColor = AppColors.Depth.AmbientLight,
-                    spotColor = AppColors.Depth.SpotLight
+                    shape = RoundedCornerShape(AppSpacing.Corner.Lg)
                 )
                 .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -362,11 +357,9 @@ fun BlyyPanel(
     if (!LocalUiStyle.current.isCommandCenter()) {
         Box(
             modifier = modifier
-                .shadow(
+                .blyyDepthShadow(
                     elevation = AppElevation.Level1,
-                    shape = RoundedCornerShape(AppSpacing.Corner.Lg),
-                    ambientColor = AppColors.Depth.AmbientLight,
-                    spotColor = AppColors.Depth.SpotLight
+                    shape = RoundedCornerShape(AppSpacing.Corner.Lg)
                 )
                 .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
                 .background(
@@ -390,8 +383,6 @@ fun BlyyPanel(
 
     val isDark = LocalIsDark.current
     val panelFill = if (isDark) AppColors.Panel.FillDark() else AppColors.Panel.FillLight()
-    val shadowAmbient = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight
-    val shadowSpot = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
     val shape = chamferedShape(chamfer)
     val cornerLenPx = with(LocalDensity.current) { 14.dp.toPx() }
     val strokePx = with(LocalDensity.current) { 1.5.dp.toPx() }
@@ -415,11 +406,9 @@ fun BlyyPanel(
 
     Box(
         modifier = modifier
-            .shadow(
+            .blyyDepthShadow(
                 elevation = AppElevation.Level1,
-                shape = shape,
-                ambientColor = shadowAmbient,
-                spotColor = shadowSpot
+                shape = shape
             )
             .clip(shape)
             .background(panelFill)
@@ -544,9 +533,10 @@ fun BlyyPrimaryButton(
     Box(
         modifier = modifier
             .scale(scale)
-            .shadow(
+            .blyyDepthShadow(
                 elevation = shadowElevation,
                 shape = BlyyShapes.Button,
+                // 环境光保持深海暗色 — 浅色模式下深色主按钮也需要厚重的落地阴影
                 ambientColor = AppColors.Depth.AmbientDark,
                 // 直射阴影带主色 — 按钮悬浮时的主色辉光
                 spotColor = primaryColor.copy(alpha = 0.45f)
@@ -653,19 +643,15 @@ fun BlyySecondaryButton(
     val isDark = LocalIsDark.current
     val isWatch = isWatchScreen()
     val panelFill = if (isDark) AppColors.Panel.FillDark() else AppColors.Panel.FillLight()
-    val shadowAmbient = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight
-    val shadowSpot = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
     // 禁用态文字/图标退为 onSurfaceVariant — 与 BlyyPrimaryButton 禁用态一致
     val contentColor = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(
         modifier = modifier
             .scale(scale)
-            .shadow(
+            .blyyDepthShadow(
                 elevation = if (enabled) AppElevation.Level1 else AppElevation.Level0,
-                shape = BlyyShapes.Button,
-                ambientColor = shadowAmbient,
-                spotColor = shadowSpot
+                shape = BlyyShapes.Button
             )
             .clip(BlyyShapes.Button)
             .background(panelFill)

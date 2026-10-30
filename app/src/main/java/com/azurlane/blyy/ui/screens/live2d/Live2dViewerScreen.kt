@@ -132,6 +132,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.ui.components.BlyyHaptic
 import com.azurlane.blyy.ui.components.rememberBlyyHaptics
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.AppSpacing
@@ -483,8 +484,8 @@ fun Live2dViewerScreen(
         AnimatedVisibility(
             visible = !state.companionEnabled || uiRevealed,
             modifier = Modifier.fillMaxWidth(),
-            enter = fadeIn(tween(220)),
-            exit = fadeOut(tween(300))
+            enter = fadeIn(tween(AppAnimation.Duration.Fast)),
+            exit = fadeOut(tween(AppAnimation.Duration.Smooth))
         ) {
             Row(
                 modifier = Modifier
@@ -550,10 +551,10 @@ fun Live2dViewerScreen(
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
                 .padding(top = 72.dp, start = AppSpacing.Md),
-            enter = fadeIn(tween(180)) +
-                scaleIn(initialScale = 0.85f, animationSpec = tween(180)) +
-                slideInVertically(initialOffsetY = { -it / 4 }, animationSpec = tween(180)),
-            exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.92f, animationSpec = tween(140))
+            enter = fadeIn(tween(AppAnimation.Duration.Fast)) +
+                scaleIn(initialScale = 0.85f, animationSpec = tween(AppAnimation.Duration.Fast)) +
+                slideInVertically(initialOffsetY = { -it / 4 }, animationSpec = tween(AppAnimation.Duration.Fast)),
+            exit = fadeOut(tween(AppAnimation.Duration.Quick)) + scaleOut(targetScale = 0.92f, animationSpec = tween(AppAnimation.Duration.Quick))
         ) {
             shownBubble.value?.let { bubble ->
                 VoiceBubbleCard(
@@ -796,8 +797,8 @@ fun Live2dViewerScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 40.dp),
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(450))
+            enter = fadeIn(tween(AppAnimation.Duration.Fast)),
+            exit = fadeOut(tween(AppAnimation.Duration.PageTransition))
         ) {
             Text(
                 "点击屏幕可恢复界面",
@@ -1043,7 +1044,7 @@ private fun ViewerControlPill(
     val pulseAlpha by pulse.animateFloat(
         initialValue = 1f,
         targetValue = 0.25f,
-        animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+        animationSpec = AppAnimation.Repeating.glow(duration = 600),
         label = "pulseAlpha"
     )
     Row(

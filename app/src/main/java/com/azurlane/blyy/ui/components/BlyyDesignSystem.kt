@@ -54,7 +54,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -74,6 +73,7 @@ import com.azurlane.blyy.ui.theme.BlyyShapes
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.ui.theme.LocalUiStyle
+import com.azurlane.blyy.ui.theme.blyyDepthShadow
 import com.azurlane.blyy.ui.theme.isCommandCenter
 
 enum class BlyyButtonVariant { Primary, Secondary, Tertiary, Text }
@@ -358,7 +358,8 @@ fun BlyyAnimatedEmptyState(
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = fadeIn(tween(350)) + scaleIn(initialScale = 0.92f, animationSpec = tween(350))
+        enter = fadeIn(tween(AppAnimation.Duration.Normal)) +
+            scaleIn(initialScale = 0.92f, animationSpec = tween(AppAnimation.Duration.Normal))
     ) {
         BlyyEmptyState(
             icon = icon,
@@ -380,7 +381,7 @@ fun BlyySuccessBanner(
     AnimatedVisibility(
         visible = visible,
         modifier = modifier,
-        enter = fadeIn(tween(280)) + scaleIn(initialScale = 0.96f)
+        enter = fadeIn(tween(AppAnimation.Duration.Smooth)) + scaleIn(initialScale = 0.96f)
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -554,17 +555,14 @@ fun <T> BlyySegmentedControl(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isDark = LocalIsDark.current
     val containerShape = RoundedCornerShape(AppSpacing.Corner.Lg)
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .shadow(
+            .blyyDepthShadow(
                 elevation = AppElevation.Level1,
-                shape = containerShape,
-                ambientColor = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
-                spotColor = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
+                shape = containerShape
             )
             .clip(containerShape)
             .background(
@@ -639,10 +637,9 @@ private fun BlyySegment(
     Row(
         modifier = modifier
             .scale(scale)
-            .shadow(
+            .blyyDepthShadow(
                 elevation = if (isSelected) AppElevation.Level1 else AppElevation.Level0,
                 shape = segmentShape,
-                ambientColor = if (LocalIsDark.current) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
                 // 直射阴影带主色 — 选中段的辉光投影
                 spotColor = primary.copy(alpha = if (isSelected) 0.45f else 0f)
             )

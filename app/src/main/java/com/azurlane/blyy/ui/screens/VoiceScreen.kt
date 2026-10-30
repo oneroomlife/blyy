@@ -37,7 +37,6 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ShaderBrush
@@ -431,11 +430,12 @@ private fun VoiceLanguageSwitch(
                 .then(
                     if (isSelected) {
                         Modifier
-                            .shadow(
+                            .blyyDepthShadow(
                                 elevation = AppSpacing.Elevation.Sm,
                                 shape = buttonShape,
-                                ambientColor = primary.copy(alpha = 0.18f),
-                                spotColor = primary.copy(alpha = 0.25f)
+                                // 选中态主色氛围光 — 环境光与直射光均染主色
+                                spotColor = primary.copy(alpha = 0.25f),
+                                ambientColor = primary.copy(alpha = 0.18f)
                             )
                             .background(
                                 brush = Brush.linearGradient(
@@ -962,7 +962,7 @@ private fun DraggableFigure(
     
     val alpha by animateFloatAsState(
         targetValue = if (isDragging) 0.7f else 1f,
-        animationSpec = tween(250),
+        animationSpec = tween(AppAnimation.Duration.Medium),
         label = "FigureAlpha"
     )
 

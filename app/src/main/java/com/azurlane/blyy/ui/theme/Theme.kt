@@ -206,6 +206,7 @@ fun BlyyTheme(
         MaterialTheme(
             colorScheme = colorScheme,
             typography = typography,
+            shapes = blyyMaterialShapes(uiStyle),
             content = content
         )
     }

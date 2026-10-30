@@ -50,7 +50,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -71,8 +70,8 @@ import com.azurlane.blyy.ui.theme.AppElevation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.DepthLayer
-import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.blyyDepth
+import com.azurlane.blyy.ui.theme.blyyDepthShadow
 import com.azurlane.blyy.viewmodel.GameScore
 import com.azurlane.blyy.viewmodel.HintItem
 
@@ -210,19 +209,14 @@ fun <T> GuessDifficultySelector(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isDark = LocalIsDark.current
-    val shadowAmbient = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight
-    val shadowSpot = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
     val containerShape = RoundedCornerShape(AppSpacing.Corner.Lg)
 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .shadow(
+            .blyyDepthShadow(
                 elevation = AppElevation.Level1,
-                shape = containerShape,
-                ambientColor = shadowAmbient,
-                spotColor = shadowSpot
+                shape = containerShape
             )
             .clip(containerShape)
             .background(
@@ -305,10 +299,9 @@ private fun GuessDifficultySegment(
     Row(
         modifier = modifier
             .scale(scale)
-            .shadow(
+            .blyyDepthShadow(
                 elevation = if (isSelected) AppElevation.Level1 else AppElevation.Level0,
                 shape = segmentShape,
-                ambientColor = if (LocalIsDark.current) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
                 // 直射阴影带主色 — 选中段的辉光投影
                 spotColor = primary.copy(alpha = if (isSelected) 0.45f else 0f)
             )

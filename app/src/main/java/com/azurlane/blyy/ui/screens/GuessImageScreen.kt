@@ -79,6 +79,7 @@ import com.azurlane.blyy.ui.screens.guess.GuessScoreBanner
 import com.azurlane.blyy.ui.screens.guess.GuessScoreChip
 import com.azurlane.blyy.ui.screens.guess.GuessSettlementDialog
 import com.azurlane.blyy.ui.screens.guess.GuessWrongCard
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.DepthLayer
@@ -298,8 +299,10 @@ private fun ModernGuessImageContent(
 
                 AnimatedVisibility(
                     visible = state.showAnswer && state.lastResult == GuessResult.SKIPPED,
-                    enter = fadeIn(animationSpec = tween(300)) + slideInHorizontally(animationSpec = tween(300)),
-                    exit = fadeOut(animationSpec = tween(200)) + slideOutHorizontally(animationSpec = tween(200))
+                    enter = fadeIn(animationSpec = tween(AppAnimation.Duration.Smooth)) +
+                        slideInHorizontally(animationSpec = tween(AppAnimation.Duration.Smooth)),
+                    exit = fadeOut(animationSpec = tween(AppAnimation.Duration.Fast)) +
+                        slideOutHorizontally(animationSpec = tween(AppAnimation.Duration.Fast))
                 ) {
                     GuessAnswerCard(shipName = state.currentShip?.name ?: "")
                 }

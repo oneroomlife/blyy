@@ -2,6 +2,8 @@ package com.azurlane.blyy.ui.theme
 
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Shapes
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
 
@@ -63,4 +65,35 @@ object BlyyShapes {
         bottomStart = AppSpacing.Corner.Md,
         bottomEnd = AppSpacing.Corner.Xs
     )
+}
+
+/**
+ * MaterialTheme.shapes 出口 — M3 默认组件（Button、TextField、Menu、Dialog、BottomSheet 等）
+ * 的形状由此统一继承设计语言，替代"各组件手工传 shape"的默认值缺口。
+ *
+ * 指挥中心风格：切角矩形家族；经典风格：圆角家族。
+ *
+ * 注：material3 1.4.0 的 Shapes 8 参主构造器被标记 internal（K2 遇不可见最具体候选直接报错），
+ * 这里走字节码层面 public 的 5 参次构造器（位置参数、CornerBasedShape 实参类型）。
+ */
+fun blyyMaterialShapes(uiStyle: UiStyle): Shapes {
+    val extraSmall: androidx.compose.foundation.shape.CornerBasedShape
+    val small: androidx.compose.foundation.shape.CornerBasedShape
+    val medium: androidx.compose.foundation.shape.CornerBasedShape
+    val large: androidx.compose.foundation.shape.CornerBasedShape
+    val extraLarge: androidx.compose.foundation.shape.CornerBasedShape
+    if (uiStyle.isCommandCenter()) {
+        extraSmall = chamferedShape(AppSpacing.Corner.Sm)
+        small = extraSmall
+        medium = chamferedShape(AppSpacing.Corner.Chamfer)
+        large = chamferedShape(AppSpacing.Corner.Md)
+        extraLarge = chamferedShape(AppSpacing.Corner.Xl)
+    } else {
+        extraSmall = RoundedCornerShape(AppSpacing.Corner.Sm)
+        small = RoundedCornerShape(AppSpacing.Corner.Md)
+        medium = RoundedCornerShape(AppSpacing.Corner.Lg)
+        large = RoundedCornerShape(AppSpacing.Corner.Xl)
+        extraLarge = RoundedCornerShape(AppSpacing.Corner.Dialog)
+    }
+    return Shapes(extraSmall, small, medium, large, extraLarge)
 }

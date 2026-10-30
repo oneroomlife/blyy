@@ -410,10 +410,10 @@ private fun ChibiFlipImage(
 
     LaunchedEffect(imageUrl) {
         if (imageUrl != currentUrl) {
-            rotation.animateTo(90f, animationSpec = tween(150, easing = LinearOutSlowInEasing))
+            rotation.animateTo(90f, animationSpec = tween(AppAnimation.Duration.Quick, easing = LinearOutSlowInEasing))
             currentUrl = imageUrl
             rotation.snapTo(-90f)
-            rotation.animateTo(0f, animationSpec = tween(150, easing = FastOutLinearInEasing))
+            rotation.animateTo(0f, animationSpec = tween(AppAnimation.Duration.Quick, easing = FastOutLinearInEasing))
         }
     }
 

@@ -26,12 +26,12 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
@@ -237,8 +237,9 @@ class SecretaryOverlayService : Service() {
 
                 setContent {
                     BlyyTheme {
-                        // 实时监听秘书舰状态变化
-                        val secretaryState by secretaryManager.state.collectAsState()
+                        // WithLifecycle — 悬浮窗生命周期恒为 RESUMED（FloatingWindowLifecycleOwner），
+                        // 行为与裸 collectAsState 等价，统一收集口径
+                        val secretaryState by secretaryManager.state.collectAsStateWithLifecycle()
 
                         // 拖动状态（Compose State，让 LaunchedEffect 感知变化）
                         var isDragging by remember { mutableStateOf(false) }

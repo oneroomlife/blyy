@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.util.WatermarkAssets
@@ -144,7 +145,7 @@ private fun WatermarkThumbCard(
     )
     val scale by animateFloatAsState(
         targetValue = if (isSelected) 1.08f else 1f,
-        animationSpec = tween(200),
+        animationSpec = tween(AppAnimation.Duration.Fast),
         label = "wmThumbScale"
     )
     val context = LocalContext.current

@@ -40,8 +40,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -88,7 +88,7 @@ fun ShipContextMenuSheet(
     val context = LocalContext.current
 
     // 自定义头像存在性：随 revision 即时刷新（应用/恢复后菜单标记同步）
-    val avatarRevision by CustomAvatarManager.revision.collectAsState()
+    val avatarRevision by CustomAvatarManager.revision.collectAsStateWithLifecycle()
     val hasCustomAvatar by produceState(false, ship.name, ship.archiveType, avatarRevision) {
         value = CustomAvatarManager.resolveFile(context, ship.name, ship.archiveType) != null
     }
@@ -198,7 +198,7 @@ fun ShipContextMenuSheet(
 @Composable
 private fun MenuHeader(ship: Ship, rarityColor: Color, hasCustomAvatar: Boolean) {
     val context = LocalContext.current
-    val avatarRevision by CustomAvatarManager.revision.collectAsState()
+    val avatarRevision by CustomAvatarManager.revision.collectAsStateWithLifecycle()
 
     val avatarModel = remember(ship.name, ship.avatarUrl, ship.archiveType, ship.isFavorite, avatarRevision) {
         CustomAvatarManager.resolveOrDefault(

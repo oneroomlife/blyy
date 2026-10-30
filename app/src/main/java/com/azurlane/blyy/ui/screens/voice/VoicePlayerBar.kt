@@ -403,7 +403,7 @@ internal fun ExpandedPlayerBar(
     val hasContent = playerState.currentMediaItem != null
     val animatedAlpha by animateFloatAsState(
         targetValue = if (hasContent) 1f else 0f,
-        animationSpec = tween(300, easing = AppAnimation.Easings.Standard),
+        animationSpec = tween(AppAnimation.Duration.Smooth, easing = AppAnimation.Easings.Standard),
         label = "ExpandedBarAlpha"
     )
 
@@ -607,7 +607,7 @@ private fun ModernPlayerSlider(
     
     val sliderAlpha by animateFloatAsState(
         targetValue = if (hasContent) 1f else 0f,
-        animationSpec = tween(300, easing = AppAnimation.Easings.Standard),
+        animationSpec = tween(AppAnimation.Duration.Smooth, easing = AppAnimation.Easings.Standard),
         label = "SliderAlpha"
     )
     

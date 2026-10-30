@@ -30,11 +30,43 @@ enum class DepthLayer(val elevation: Dp) {
 }
 
 /**
- * 统一深度阴影修饰符 — 双色有色阴影（ambient 环境光 + spot 直射光），
- * 颜色取自 [AppColors.Depth]（深海蓝黑，永不纯黑），亮暗模式自动切换。
+ * 统一深度阴影修饰符 — 任意海拔的双色有色阴影（ambient 环境光 + spot 直射光）。
+ * 颜色默认取自 [AppColors.Depth]（深海蓝黑，永不纯黑），亮暗模式自动切换。
  *
- * @param spotTint 稀有度等语境染色例外：仅染直射光（spot），环境光保持统一，
- * 保证卡片阵列不花（如 ShipCard 的稀有度染色阴影）。
+ * 是全 App 阴影的唯一来源：[blyyDepth] 提供四层语义封装；
+ * 需要动态海拔（按压缩放、选中态升降）或语境染色时直接使用本函数。
+ *
+ * @param spotColor 直射光整色（含透明度）——稀有度染色、主色辉光等语境染色例外，
+ * 环境光保持统一，保证卡片阵列不花（如 ShipCard 的稀有度染色阴影）。
+ * @param ambientColor 环境光整色——仅局部氛围光效使用（如 VoiceScreen 选中按钮），默认跟随亮暗。
+ * @param clip 是否同时按 shape 裁剪，透传给 [shadow]。
+ */
+@Composable
+fun Modifier.blyyDepthShadow(
+    elevation: Dp,
+    shape: Shape,
+    spotColor: Color? = null,
+    ambientColor: Color? = null,
+    clip: Boolean = true
+): Modifier {
+    val isDark = LocalIsDark.current
+    val ambient = ambientColor ?: if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight
+    val spot = spotColor ?: if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
+    return this.shadow(
+        elevation = elevation,
+        shape = shape,
+        clip = clip,
+        ambientColor = ambient,
+        spotColor = spot
+    )
+}
+
+/**
+ * 四层语义封装 — 组件归入 [DepthLayer] 后，全部光影即由该层规格决定，
+ * 禁止跨层混用（例如 L1 面板配 L3 阴影）。
+ *
+ * @param spotTint 稀有度等语境染色例外：仅染直射光（spot，强制 25% 透明度），
+ * 环境光保持统一，保证卡片阵列不花。
  */
 @Composable
 fun Modifier.blyyDepth(
@@ -43,14 +75,9 @@ fun Modifier.blyyDepth(
     spotTint: Color? = null
 ): Modifier {
     if (layer == DepthLayer.Sea) return this
-    val isDark = LocalIsDark.current
-    val ambient = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight
-    val spot = spotTint?.copy(alpha = 0.25f)
-        ?: if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight
-    return this.shadow(
+    return blyyDepthShadow(
         elevation = layer.elevation,
         shape = shape,
-        ambientColor = ambient,
-        spotColor = spot
+        spotColor = spotTint?.copy(alpha = 0.25f)
     )
 }

@@ -710,7 +710,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 1. 悬浮艺术装置（图标区）
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800)) + slideInVertically(tween(800, easing = AppAnimation.Easings.Standard)) { 100 }
+                enter = fadeIn(tween(AppAnimation.Duration.VerySlow)) +
+                    slideInVertically(tween(AppAnimation.Duration.VerySlow, easing = AppAnimation.Easings.Standard)) { 100 }
             ) {
                 PremiumFloatingArtwork()
             }
@@ -721,7 +722,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             val isDark = LocalIsDark.current
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 150)) + slideInVertically(tween(800, delayMillis = 150, easing = AppAnimation.Easings.Standard)) { 50 }
+                enter = fadeIn(tween(AppAnimation.Duration.VerySlow, delayMillis = 150)) +
+                    slideInVertically(tween(AppAnimation.Duration.VerySlow, delayMillis = 150, easing = AppAnimation.Easings.Standard)) { 50 }
             ) {
                 Text(
                     text = "后宅空荡荡的...",
@@ -736,7 +738,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 3. 描述文本
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 300)) + slideInVertically(tween(800, delayMillis = 300, easing = AppAnimation.Easings.Standard)) { 50 }
+                enter = fadeIn(tween(AppAnimation.Duration.VerySlow, delayMillis = 300)) +
+                    slideInVertically(tween(AppAnimation.Duration.VerySlow, delayMillis = 300, easing = AppAnimation.Easings.Standard)) { 50 }
             ) {
                 Text(
                     text = "在船坞中长按舰娘头像可以与其誓约\n构建属于你们的专属避风港",
@@ -752,7 +755,8 @@ fun EmptyFavoritesView(onNavigateToGallery: () -> Unit) {
             // 4. 高级交互按钮
             AnimatedVisibility(
                 visible = isVisible,
-                enter = fadeIn(tween(800, delayMillis = 450)) + slideInVertically(tween(800, delayMillis = 450, easing = AppAnimation.Easings.Standard)) { 50 }
+                enter = fadeIn(tween(AppAnimation.Duration.VerySlow, delayMillis = 450)) +
+                    slideInVertically(tween(AppAnimation.Duration.VerySlow, delayMillis = 450, easing = AppAnimation.Easings.Standard)) { 50 }
             ) {
                 PremiumInteractiveButton(
                     text = "去挑选舰娘",

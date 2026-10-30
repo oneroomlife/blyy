@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.ChatColors
@@ -303,7 +304,7 @@ fun SecretaryChibiOverlay(
         )
         val staticAlpha by animateFloatAsState(
             targetValue = if (isDragging) 0.7f else 1f,
-            animationSpec = tween(250),
+            animationSpec = tween(AppAnimation.Duration.Medium),
             label = "StaticFigureAlpha"
         )
 
@@ -493,7 +494,7 @@ fun SecretaryChibiOverlay(
     )
     val staticAlpha by animateFloatAsState(
         targetValue = if (isDragging) 0.7f else 1f,
-        animationSpec = tween(250),
+        animationSpec = tween(AppAnimation.Duration.Medium),
         label = "StaticFigureAlpha"
     )
 

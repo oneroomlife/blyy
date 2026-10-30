@@ -9,6 +9,7 @@ import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -20,8 +21,16 @@ import androidx.compose.ui.platform.LocalContext
 object AppAnimation {
     
     object Duration {
+        /** 微交互 — Tab 同级切换淡出、快速状态淡出 */
+        const val Micro = 90
         const val Instant = 100
+        /** 快速 — 按压缩放、小型状态切换、查看器轻量入场 */
+        const val Quick = 150
         const val Fast = 200
+        /** 中速 — 悬浮小人出入场、语音页轻反馈 */
+        const val Medium = 250
+        /** 平滑 — 通用状态过渡（介于 Fast 与 Normal 之间） */
+        const val Smooth = 300
         const val Normal = 350
         const val Slow = 500
         const val VerySlow = 800
@@ -118,6 +127,15 @@ object AppAnimation {
         val Snappy = spring<Float>(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMedium
+        )
+
+        /**
+         * 跨类型 spring 变体 — 与 [Gentle] 同参（dampingRatio=0.9, stiffness=MediumLow）。
+         * spring&lt;T&gt; 的类型在调用点推断，供 IntOffset/Int 等无法复用 Float 令牌的场景使用。
+         */
+        fun <T> gentle(): SpringSpec<T> = spring(
+            dampingRatio = 0.9f,
+            stiffness = Spring.StiffnessMediumLow
         )
     }
     

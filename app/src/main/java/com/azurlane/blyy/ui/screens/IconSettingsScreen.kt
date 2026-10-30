@@ -42,7 +42,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -59,10 +58,9 @@ import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyySecondaryButton
 import com.azurlane.blyy.ui.components.BlyyTopBar
-import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
-import com.azurlane.blyy.ui.theme.LocalIsDark
+import com.azurlane.blyy.ui.theme.blyyDepthShadow
 import com.azurlane.blyy.util.AppIconType
 import com.azurlane.blyy.viewmodel.SettingsViewModel
 import com.azurlane.blyy.viewmodel.SettingsViewModel.IconSwitchState
@@ -252,16 +250,13 @@ private fun IconPreviewCard(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            // 阴影层 — Depth 双色有色阴影（原实现走默认纯黑，暗色模式下与海床色打架）
-            val isDark = LocalIsDark.current
+            // 阴影层 — Depth 双色有色阴影（blyyDepthShadow 自动亮暗切换，永不纯黑）
             Box(
                 modifier = Modifier
                     .size(previewSize)
-                    .shadow(
+                    .blyyDepthShadow(
                         elevation = AppSpacing.Elevation.Lg,
                         shape = iconShape,
-                        ambientColor = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
-                        spotColor = if (isDark) AppColors.Depth.SpotDark else AppColors.Depth.SpotLight,
                         clip = false
                     )
                     .clip(iconShape)

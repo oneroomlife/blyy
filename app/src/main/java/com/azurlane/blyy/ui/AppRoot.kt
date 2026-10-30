@@ -33,7 +33,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -124,17 +123,25 @@ private const val TAG = "AppRoot"
 /** Material Motion — Fade Through，用于底部 Tab 同级切换 */
 private fun tabFadeThroughEnter(): EnterTransition =
     fadeIn(
-        animationSpec = tween(300, delayMillis = 90, easing = AppAnimation.Easings.EmphasizedDecelerate)
+        animationSpec = tween(
+            durationMillis = AppAnimation.Duration.Smooth,
+            delayMillis = AppAnimation.Duration.Micro,
+            easing = AppAnimation.Easings.EmphasizedDecelerate
+        )
     ) + scaleIn(
         initialScale = 0.96f,
-        animationSpec = tween(300, delayMillis = 90, easing = AppAnimation.Easings.EmphasizedDecelerate)
+        animationSpec = tween(
+            durationMillis = AppAnimation.Duration.Smooth,
+            delayMillis = AppAnimation.Duration.Micro,
+            easing = AppAnimation.Easings.EmphasizedDecelerate
+        )
     )
 
 private fun tabFadeThroughExit(): ExitTransition =
-    fadeOut(animationSpec = tween(90, easing = AppAnimation.Easings.EmphasizedAccelerate)) +
+    fadeOut(animationSpec = tween(AppAnimation.Duration.Micro, easing = AppAnimation.Easings.EmphasizedAccelerate)) +
         scaleOut(
             targetScale = 1.04f,
-            animationSpec = tween(90, easing = AppAnimation.Easings.EmphasizedAccelerate)
+            animationSpec = tween(AppAnimation.Duration.Micro, easing = AppAnimation.Easings.EmphasizedAccelerate)
         )
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -325,10 +332,8 @@ fun AppContent() {
                         // 故内联 spring 与 Gentle 同参（dampingRatio=0.9, stiffness=MediumLow）
                         slideInHorizontally(
                             initialOffsetX = { it / 3 },
-                            animationSpec = spring(
-                                dampingRatio = 0.9f,
-                                stiffness = Spring.StiffnessMediumLow
-                            )
+                            // Springs.gentle() 跨类型变体 — 与 Float 令牌 Gentle 同参，消除内联
+                            animationSpec = AppAnimation.Springs.gentle()
                         ) + fadeIn(
                             tween(
                                 durationMillis = AppAnimation.Duration.Normal,
@@ -354,10 +359,7 @@ fun AppContent() {
                     popEnterTransition = {
                         slideInHorizontally(
                             initialOffsetX = { -it / 5 },
-                            animationSpec = spring(
-                                dampingRatio = 0.9f,
-                                stiffness = Spring.StiffnessMediumLow
-                            )
+                            animationSpec = AppAnimation.Springs.gentle()
                         ) + fadeIn(
                             tween(
                                 durationMillis = AppAnimation.Duration.Normal,
@@ -784,8 +786,8 @@ fun AppContent() {
                         )
                     }
                     composable("secretary_settings") {
-                        // 使用 collectAsState 实现响应式状态更新
-                        val overlayEnabled by secretaryViewModel.overlayRunning.collectAsState()
+                        // WithLifecycle — 悬浮窗开关状态仅前台收集，后台不触发无谓重组
+                        val overlayEnabled by secretaryViewModel.overlayRunning.collectAsStateWithLifecycle()
 
                         SecretaryShipSettingsScreen(
                             secretaryState = secretaryState,
@@ -946,7 +948,7 @@ fun AppContent() {
                 // 今日秘书舰系列页（secretary_*）此前被整体遮蔽，导致"点击打开今日秘书舰
                 // 界面 SD 小人异常消失"，且秘书舰设置页的大小滑块因此失去实时预览——
                 // 小人正是这些页面的操作主体，应保持可见（2026-10-24 解除遮蔽）。
-                val overlayEnabledForChibi by secretaryViewModel.overlayRunning.collectAsState()
+                val overlayEnabledForChibi by secretaryViewModel.overlayRunning.collectAsStateWithLifecycle()
                 val hasChibiContent = secretaryState.figureUrl.isNotEmpty() ||
                     secretaryState.webChibiUrl.isNotEmpty() ||
                     secretaryState.sdResourceId.isNotEmpty() ||

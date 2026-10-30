@@ -27,7 +27,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -37,6 +36,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.azurlane.blyy.data.model.Ship
@@ -90,12 +90,11 @@ fun ShipCard(
     
     val borderAlpha by animateFloatAsState(
         targetValue = if (isPressed) 0.8f else 0.4f,
-        animationSpec = tween(150),
+        animationSpec = tween(AppAnimation.Duration.Quick),
         label = "BorderAlpha"
     )
 
     val cardShape = adaptiveCardShape()
-    val isDark = LocalIsDark.current
 
     Box(
         modifier = modifier
@@ -105,10 +104,9 @@ fun ShipCard(
             .scale(scale)
             // V2 有色阴影规范：环境光保持全阵列统一（Depth 双色），
             // 仅直射光（spot）允许染稀有度色（@25%）——彩色只染直射光，阵列才不花
-            .shadow(
+            .blyyDepthShadow(
                 elevation = elevation,
                 shape = cardShape,
-                ambientColor = if (isDark) AppColors.Depth.AmbientDark else AppColors.Depth.AmbientLight,
                 spotColor = rarityColor.copy(alpha = 0.25f)
             )
             .clip(cardShape)
@@ -400,7 +398,7 @@ private fun ShipImage(
     val context = LocalContext.current
     // 解析链：自定义头像（长按菜单设置）> 本地高清 assets（誓约状态优先 _h 婚皮）> 网络 URL。
     // revision 纳入 remember key：应用/移除自定义头像后所有卡片立即重组刷新
-    val avatarRevision by com.azurlane.blyy.util.CustomAvatarManager.revision.collectAsState()
+    val avatarRevision by com.azurlane.blyy.util.CustomAvatarManager.revision.collectAsStateWithLifecycle()
     val effectiveAvatar = remember(shipName, avatarUrl, archiveType, isOathed, avatarRevision) {
         com.azurlane.blyy.util.CustomAvatarManager.resolveOrDefault(
             context, shipName, archiveType,
