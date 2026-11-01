@@ -2,6 +2,7 @@ package com.azurlane.blyy.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -16,17 +17,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AssignmentTurnedIn
 import androidx.compose.material.icons.rounded.Build
-import androidx.compose.material.icons.rounded.Inventory2
-import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.FilterAlt
+import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -42,7 +42,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -52,6 +51,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.azurlane.blyy.data.model.BuildRecordData
 import com.azurlane.blyy.data.model.UserDetailData
+import com.azurlane.blyy.domain.BuildFilterResult
+import com.azurlane.blyy.domain.BuildFilterSelection
+import com.azurlane.blyy.domain.BuildRarityFilter
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyChip
 import com.azurlane.blyy.ui.components.BlyyErrorState
@@ -59,8 +61,16 @@ import com.azurlane.blyy.ui.components.BlyyLoadingState
 import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.components.BlyyPrimaryButton
 import com.azurlane.blyy.ui.components.BlyyEntrance
-import com.azurlane.blyy.ui.components.BlyySectionPanel
 import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.screens.assistant.AssistantProfileHeader
+import com.azurlane.blyy.ui.screens.assistant.AssistantProgressCard
+import com.azurlane.blyy.ui.screens.assistant.AssistantReadinessCard
+import com.azurlane.blyy.ui.screens.assistant.AssistantSectionBanner
+import com.azurlane.blyy.ui.screens.assistant.AssistantStatsGrid
+import com.azurlane.blyy.ui.screens.assistant.BuildFilterSheet
+import com.azurlane.blyy.ui.screens.assistant.StatItem
+import com.azurlane.blyy.ui.screens.assistant.formatAmount
+import com.azurlane.blyy.ui.screens.assistant.orDash
 import com.azurlane.blyy.ui.theme.AppColors
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
@@ -75,8 +85,8 @@ import com.azurlane.blyy.viewmodel.QueryMode
  * 碧蓝航线小助手页面
  *
  * 提供两种查询模式（对应 main.py 的两个指令）：
- * - 查玩家 (az) ：查询指挥官信息（仅显示 main.py L107-116 定义的字段）
- * - 查建造 (azb) ：查询建造记录（仅展示建造相关数据）
+ * - 查玩家 (az) ：查询指挥官信息，档案布局对齐设计稿（身份卡 + 数据格 + 进度追踪 + 战备速览）
+ * - 查建造 (azb) ：查询建造记录，支持「建造类型 / 稀有度」属性筛选
  *
  * UID 和服务器从设置页面自动读取，无需在本页面手动输入。
  */
@@ -92,6 +102,10 @@ fun AssistantScreen(
 
     // 建造数量输入
     var countInput by remember { mutableStateOf("10") }
+    // 建造记录「属性筛选」弹窗
+    var showFilterSheet by remember { mutableStateOf(false) }
+
+    val canQuery = defaultUid.isNotBlank() && defaultServer.isNotBlank()
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -110,7 +124,7 @@ fun AssistantScreen(
                 Spacer(modifier = Modifier.height(AppSpacing.Sm))
 
                 // ── UID/服务器未配置提示 ──
-                if (defaultUid.isBlank() || defaultServer.isBlank()) {
+                if (!canQuery) {
                     ConfigMissingHint(onNavigateToSettings = onNavigateToSettings)
                 }
 
@@ -137,11 +151,11 @@ fun AssistantScreen(
                         BlyyPrimaryButton(
                             text = if (state.isLoading) "查询中..." else "查询玩家信息",
                             onClick = {
-                                if (defaultUid.isNotBlank() && defaultServer.isNotBlank()) {
+                                if (canQuery) {
                                     viewModel.onIntent(AssistantIntent.QueryUserDetail(defaultUid, defaultServer))
                                 }
                             },
-                            enabled = !state.isLoading && defaultUid.isNotBlank() && defaultServer.isNotBlank(),
+                            enabled = !state.isLoading && canQuery,
                             icon = Icons.Rounded.Search,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -155,12 +169,12 @@ fun AssistantScreen(
                             BlyyPrimaryButton(
                                 text = if (state.isLoading) "查询中..." else "查询建造记录",
                                 onClick = {
-                                    if (defaultUid.isNotBlank() && defaultServer.isNotBlank()) {
+                                    if (canQuery) {
                                         val count = countInput.toIntOrNull() ?: 10
                                         viewModel.onIntent(AssistantIntent.QueryBuildRecord(defaultUid, defaultServer, count))
                                     }
                                 },
-                                enabled = !state.isLoading && defaultUid.isNotBlank() && defaultServer.isNotBlank(),
+                                enabled = !state.isLoading && canQuery,
                                 icon = Icons.Rounded.Search,
                                 modifier = Modifier.weight(1f)
                             )
@@ -171,6 +185,16 @@ fun AssistantScreen(
                             )
                         }
                     }
+                }
+
+                // ── 建造记录属性筛选入口 ──
+                if (state.queryMode == QueryMode.BUILD_RECORD && state.buildRecords != null) {
+                    BuildFilterBar(
+                        selection = state.buildSelection,
+                        matched = state.buildFilter.rows.size,
+                        total = state.buildFilter.total,
+                        onClick = { showFilterSheet = true }
+                    )
                 }
 
                 // ── 加载指示器 ──
@@ -189,12 +213,12 @@ fun AssistantScreen(
                         onRetry = {
                             when (state.queryMode) {
                                 QueryMode.USER_DETAIL -> {
-                                    if (defaultUid.isNotBlank() && defaultServer.isNotBlank()) {
+                                    if (canQuery) {
                                         viewModel.onIntent(AssistantIntent.QueryUserDetail(defaultUid, defaultServer))
                                     }
                                 }
                                 QueryMode.BUILD_RECORD -> {
-                                    if (defaultUid.isNotBlank() && defaultServer.isNotBlank()) {
+                                    if (canQuery) {
                                         val count = countInput.toIntOrNull() ?: 10
                                         viewModel.onIntent(AssistantIntent.QueryBuildRecord(defaultUid, defaultServer, count))
                                     }
@@ -214,12 +238,86 @@ fun AssistantScreen(
                             UserDetailResult(detail = detail)
                         }
                         QueryMode.BUILD_RECORD -> state.buildRecords?.let { records ->
-                            BuildRecordResult(records = records)
+                            BuildRecordResult(
+                                records = records,
+                                filter = state.buildFilter,
+                                hasRarityIndex = state.hasRarityIndex,
+                                rarityFilterActive = state.rarityFilter != BuildRarityFilter.ALL,
+                                onOpenFilter = { showFilterSheet = true }
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    if (showFilterSheet) {
+        BuildFilterSheet(
+            selection = state.buildSelection,
+            hasRarityIndex = state.hasRarityIndex,
+            unknownRarity = state.buildFilter.unknownRarity,
+            onDismiss = { showFilterSheet = false },
+            onReset = { viewModel.onIntent(AssistantIntent.ResetBuildFilter) },
+            onConfirm = { selection ->
+                viewModel.onIntent(AssistantIntent.ApplyBuildFilter(selection.pool, selection.rarity))
+            }
+        )
+    }
+}
+
+/**
+ * 属性筛选入口条 — 对齐设计稿图2的入口语义
+ *
+ * 展示当前筛选摘要与命中条数，点整条胶囊唤起筛选弹窗。
+ */
+@Composable
+private fun BuildFilterBar(
+    selection: BuildFilterSelection,
+    matched: Int,
+    total: Int,
+    onClick: () -> Unit
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    val shape = RoundedCornerShape(AppSpacing.Corner.Full)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(primary.copy(alpha = if (selection.isActive) 0.14f else 0.05f))
+            .border(
+                width = AppSpacing.Border.Thin,
+                color = primary.copy(alpha = if (selection.isActive) 0.75f else 0.35f),
+                shape = shape
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Padding.ChipVertical),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+    ) {
+        androidx.compose.material3.Icon(
+            imageVector = Icons.Rounded.FilterAlt,
+            contentDescription = null,
+            modifier = Modifier.size(AppSpacing.Icon.Sm),
+            tint = primary
+        )
+        Text(
+            text = "属性筛选",
+            style = AppTypography.LabelLargeBold,
+            color = primary
+        )
+        Text(
+            text = selection.summary(),
+            style = AppTypography.LabelMedium,
+            color = if (selection.isActive) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = "$matched/$total",
+            style = AppTypography.LabelSmallMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -285,17 +383,16 @@ private fun ConfigMissingHint(onNavigateToSettings: () -> Unit) {
 }
 
 /**
- * 玩家详情查询结果
+ * 玩家详情查询结果 —— 严格对齐设计稿（图1）
  *
- * 严格对应 main.py L107-116 的输出格式，仅显示以下信息：
- * - 指挥官名称和等级
- * - 服务器和 UID
- * - 收集率和进度
- * - 舰队
- * - 物资、石油
- * - 存粮、演习
- * - 委托进度
- * - 科研进度
+ * 自上而下：
+ * 1. 指挥官身份卡（头像 / 昵称 / Lv. / UID / 所属大舰队）
+ * 2. 6 个数据格（图鉴收集率、主线进度、宿舍互动、石油、物资、食量）
+ * 3. 「进度追踪 / PROGRESS TRACKING」分组带
+ * 4. 军事委托 / 军部研究室 两张进度卡
+ * 5. 「战备速览 / COMBAT READINESS」分组带 + 演习/副本待办
+ *
+ * 接口未返回的字段（宿舍互动）按设计稿显示 "--"，不做臆造。
  */
 @Composable
 private fun UserDetailResult(detail: UserDetailData) {
@@ -305,92 +402,92 @@ private fun UserDetailResult(detail: UserDetailData) {
     val c = detail.combat_overview
 
     Column(
-        modifier = Modifier.verticalScroll(rememberScrollState()),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = AppSpacing.Gap.Section),
         verticalArrangement = Arrangement.spacedBy(AppSpacing.Gap.Md)
     ) {
         BlyyEntrance(index = 0) {
-        // ── 指挥官信息 ──
-                BlyySectionPanel(
-                    title = "指挥官信息",
-                    icon = Icons.Rounded.Person,
-                    accentColor = MaterialTheme.colorScheme.primary
-                ) {
-                Column(
-                    modifier = Modifier.padding(AppSpacing.Md),
-                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
-                ) {
-                    ResultRow(label = "指挥官", value = "${u.nickname} (Lv.${u.level})")
-                    ResultRow(label = "服务器", value = "${u.server} (UID:${u.uid})")
-                    ResultRow(label = "收集率", value = "${s.collection_rate} | 进度: ${s.mainline_progress}")
-                    ResultRow(label = "舰队", value = u.guild_name ?: "无")
-                }
-            }
-            }
+            AssistantProfileHeader(
+                nickname = u.nickname,
+                level = u.level,
+                uid = u.uid,
+                server = u.server,
+                guildName = u.guild_name
+            )
+        }
 
         BlyyEntrance(index = 1) {
-        // ── 资源信息 ──
-                BlyySectionPanel(
-                    title = "资源信息",
-                    icon = Icons.Rounded.Inventory2,
-                    accentColor = AppColors.Accent.Gold
-                ) {
-                Column(
-                    modifier = Modifier.padding(AppSpacing.Md),
-                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
-                ) {
-                    IconBadgeRow(icon = Icons.Rounded.Inventory2, label = "物资", value = "${s.coins_current}", badgeColor = AppColors.Accent.Gold)
-                    IconBadgeRow(icon = Icons.Rounded.Person, label = "石油", value = "${s.oil_current}", badgeColor = AppColors.Accent.Cyan)
-                    ResultRow(label = "存粮", value = "${s.food_current}")
-                    ResultRow(label = "演习", value = "${c.exercise.today_remaining}/10")
-                }
-            }
-            }
+            AssistantStatsGrid(
+                stats = listOf(
+                    StatItem(label = "图鉴收集率", value = orDash(s.collection_rate)),
+                    StatItem(label = "主线进度", value = orDash(s.mainline_progress)),
+                    // 接口未提供宿舍互动数据，按设计稿占位
+                    StatItem(label = "宿舍互动", value = "--"),
+                    StatItem(label = "石油", value = formatAmount(s.oil_current)),
+                    StatItem(label = "物资", value = formatAmount(s.coins_current)),
+                    StatItem(label = "食量", value = formatAmount(s.food_current))
+                )
+            )
+        }
 
         BlyyEntrance(index = 2) {
-        // ── 进度信息 ──
-                BlyySectionPanel(
-                    title = "进度信息",
-                    icon = Icons.Rounded.TrendingUp,
-                    accentColor = MaterialTheme.colorScheme.tertiary
-                ) {
-                Column(
-                    modifier = Modifier.padding(AppSpacing.Md),
-                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
-                ) {
-                    ResultRow(
-                        label = "委托",
-                        value = "进行${p.commissions.in_progress} | 完成${p.commissions.completed} | 空闲${p.commissions.idle}"
-                    )
-                    ResultRow(
-                        label = "科研",
-                        value = "进行${p.research.in_progress} | 完成${p.research.completed} | 空闲${p.research.idle}"
-                    )
+            AssistantSectionBanner(title = "进度追踪", subtitle = "PROGRESS TRACKING")
+        }
 
-                    // 待办副本
-                    val todo = c.daily_challenges.filter { it.daily_challenge_remaining_attempts > 0 }
-                    if (todo.isNotEmpty()) {
-                        GradientDivider()
-                        ResultRow(
-                            label = "待办副本",
-                            value = todo.joinToString(", ") { it.daily_challenge_name }
-                        )
-                    } else {
-                        GradientDivider()
-                        ResultRow(label = "今日副本", value = "已全部完成")
-                    }
-                }
-            }
-            }
+        BlyyEntrance(index = 3) {
+            AssistantProgressCard(
+                icon = Icons.Rounded.AssignmentTurnedIn,
+                title = "军事委托",
+                inProgress = p.commissions.in_progress,
+                completed = p.commissions.completed,
+                idle = p.commissions.idle
+            )
+        }
+
+        BlyyEntrance(index = 4) {
+            AssistantProgressCard(
+                icon = Icons.Rounded.Science,
+                title = "军部研究室",
+                inProgress = p.research.in_progress,
+                completed = p.research.completed,
+                idle = p.research.idle
+            )
+        }
+
+        BlyyEntrance(index = 5) {
+            AssistantSectionBanner(title = "战备速览", subtitle = "COMBAT READINESS")
+        }
+
+        BlyyEntrance(index = 6) {
+            AssistantReadinessCard(
+                exerciseRemaining = c.exercise.today_remaining,
+                // 游戏每日演习次数上限为 10 次
+                exerciseTotal = 10,
+                challenges = c.daily_challenges
+            )
+        }
     }
 }
 
 /**
  * 建造记录查询结果
  *
- * 仅展示建造相关数据：玩家标识 + 建造记录列表
+ * 仅展示建造相关数据：玩家标识 + 属性筛选入口 + 过滤后的建造记录列表
+ *
+ * @param filter 已按当前筛选组合过滤的结果（含未知稀有度计数）
+ * @param hasRarityIndex 本地图鉴是否已收录舰船
+ * @param rarityFilterActive 当前是否启用了稀有度筛选
  */
 @Composable
-private fun BuildRecordResult(records: BuildRecordData) {
+private fun BuildRecordResult(
+    records: BuildRecordData,
+    filter: BuildFilterResult,
+    hasRarityIndex: Boolean,
+    rarityFilterActive: Boolean,
+    onOpenFilter: () -> Unit
+) {
     BlyyPanel(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(AppSpacing.Md),
@@ -407,41 +504,133 @@ private fun BuildRecordResult(records: BuildRecordData) {
                 )
             }
 
+            // 图鉴缺失时的稀有度筛选说明
+            if (rarityFilterActive && !hasRarityIndex) {
+                item {
+                    Text(
+                        text = "本地图鉴尚未收录舰船，稀有度筛选暂无命中，结果已按建造类型展示",
+                        style = AppTypography.CaptionSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = AppSpacing.Xxs)
+                    )
+                }
+            }
+
             // 分隔线
             item {
                 GradientDivider()
                 Spacer(modifier = Modifier.height(AppSpacing.Xs))
             }
 
-            // 建造记录列表 — 交替行背景
-            itemsIndexed(records.buildRecords.data, key = { index, record -> "${record.roleName}-${record.taskName}-$index" }) { index, record ->
-                val isEvenRow = index % 2 == 0
+            if (filter.rows.isEmpty()) {
+                item {
+                    Text(
+                        text = if (filter.isNarrowed) {
+                            "当前筛选条件下没有建造记录，可调整属性筛选后重试"
+                        } else {
+                            "暂无建造记录"
+                        },
+                        style = AppTypography.BodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = AppSpacing.Xl),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            // 建造记录列表 — 交替行背景，稀有度着色
+            itemsIndexed(
+                items = filter.rows,
+                key = { _, row -> "${row.sourceIndex}-${row.roleName}-${row.taskName}" }
+            ) { index, row ->
+                BuildRecordRowItem(
+                    roleName = row.roleName,
+                    taskName = row.taskName,
+                    rarity = row.rarity,
+                    isEvenRow = index % 2 == 0
+                )
+            }
+
+            // 尾部：筛选说明 + 再次打开筛选
+            item {
+                Spacer(modifier = Modifier.height(AppSpacing.Sm))
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(AppSpacing.Corner.Xs))
-                        .background(
-                            if (isEvenRow) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
-                            else Color.Transparent
-                        )
-                        .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xs),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = record.roleName,
-                        style = AppTypography.BodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = record.taskName,
-                        style = AppTypography.LabelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "共 ${filter.rows.size} 条 / 已拉取 ${filter.total} 条，点「属性筛选」调整条件",
+                        style = AppTypography.CaptionSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Xs))
+                            .clickable(onClick = onOpenFilter)
+                            .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xxs),
+                        textAlign = TextAlign.Center
                     )
                 }
             }
         }
+    }
+}
+
+/**
+ * 单条建造记录 — 舰名按稀有度着色，右侧标注建造池
+ */
+@Composable
+private fun BuildRecordRowItem(
+    roleName: String,
+    taskName: String,
+    rarity: String?,
+    isEvenRow: Boolean
+) {
+    val nameColor = if (rarity != null) {
+        AppColors.Rarity.getRarityColor(rarity)
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppSpacing.Corner.Xs))
+            .background(
+                if (isEvenRow) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                else Color.Transparent
+            )
+            .padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xs),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+        ) {
+            Text(
+                text = roleName,
+                style = AppTypography.BodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = nameColor,
+                maxLines = 1
+            )
+            if (rarity != null) {
+                Text(
+                    text = rarity,
+                    style = AppTypography.CaptionSmall,
+                    color = nameColor.copy(alpha = 0.75f),
+                    maxLines = 1
+                )
+            }
+        }
+        Text(
+            text = taskName,
+            style = AppTypography.LabelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1
+        )
     }
 }
 
@@ -517,7 +706,7 @@ private fun PlayerInfoCard(
             )
             Spacer(modifier = Modifier.height(AppSpacing.Xxs))
             Text(
-                text = "${serverName} | UID: ${uid}",
+                text = "$serverName | UID: $uid",
                 style = AppTypography.BodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -525,7 +714,7 @@ private fun PlayerInfoCard(
 
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                text = "${totalCount}",
+                text = "$totalCount",
                 style = AppTypography.TitleMedium,
                 fontWeight = FontWeight.Bold,
                 color = accentColor
@@ -541,87 +730,10 @@ private fun PlayerInfoCard(
     Spacer(modifier = Modifier.height(AppSpacing.Xs))
 
     Text(
-        text = "已拉取 ${fetchedCount} 条记录",
+        text = "已拉取 $fetchedCount 条记录",
         style = AppTypography.BodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
-}
-
-/** 结果行：标签 + 值 */
-@Composable
-private fun ResultRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            text = label,
-            style = AppTypography.LabelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            letterSpacing = 0.3.sp
-        )
-        Text(
-            text = value,
-            style = AppTypography.BodyMedium.copy(lineHeight = 20.sp),
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-    }
-}
-
-/** 带图标徽章的结果行 */
-@Composable
-private fun IconBadgeRow(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    badgeColor: Color
-) {
-    val isDark = LocalIsDark.current
-    // 暗色模式下将颜色向白色混合（提亮），确保在深色面板背景上对比度 ≥ 4.5:1（WCAG AA）
-    // 浅色模式下将颜色向黑色混合（加深），确保在浅色背景上可读
-    val valueColor = if (isDark) {
-        androidx.compose.ui.graphics.lerp(badgeColor, Color.White, 0.25f)
-    } else {
-        androidx.compose.ui.graphics.lerp(badgeColor, Color.Black, 0.15f)
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .background(
-                        badgeColor.copy(alpha = if (isDark) 0.25f else 0.15f),
-                        CircleShape
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                androidx.compose.material3.Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = valueColor
-                )
-            }
-            Spacer(modifier = Modifier.width(AppSpacing.Sm))
-            Text(
-                text = label,
-                style = AppTypography.LabelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            text = value,
-            style = AppTypography.BodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = valueColor
-        )
-    }
 }
 
 /** 渐变分隔线 */
