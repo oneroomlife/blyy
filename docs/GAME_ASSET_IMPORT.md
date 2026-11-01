@@ -430,8 +430,18 @@ Spine 二进制版本读取注意：字符串长度是 **`len + 1`** 编码（`0
   立绘副标题注明还原方式（「N 层合成」/「网格还原」）
   与成因——立绘不是一张图，而是图集 + 网格 + 图层布局拼出来的
 - Live2D 资源不经过这里（跳转原 Live2D 查看器，陪伴模式等能力保持不变）
-- 退出时主动 `onPause` + `visibility = GONE`：`ZOrderOnTop` 的 SurfaceView 若只靠
-  Compose 移除，会晚一步销毁导致上一屏残留模型
+- 退出走**两段式淡出**而不是直接 pop：查看器持有 `contentAlpha: Animatable`，
+  返回手势/返回键先触发 `requestExit()`，160ms 内把顶栏与图片（`graphicsLayer.alpha`）
+  和 Spine 模型（GL 侧 `skel.color.a`，见下）一起淡到 0，动画结束后才 `popBackStack()`。
+  GLSurfaceView 的 Surface 是 SurfaceFlinger 的独立图层，**不吃 Compose 的 alpha**，
+  所以模型必须靠 `SkeletonRenderer` 的顶点色（`alpha = skeletonColor.a * slotColor.a
+  * color.a`）淡出，并且在 `contentAlpha ≤ 0.004` 时直接跳过 draw call
+- `onDispose` 里**先 `visibility = GONE` 再 `onPause()`**：`GONE` 同步撤层不阻塞，
+  `onPause()` 会等 GL 线程收尾约一帧，放到后面就不会压在退场动画的最后一帧上
+- `gameimport/view` 路由单独覆盖转场（进入/返回进入只 fade 250ms，退出 90ms 淡出）：
+  不再套用全局 slide，避免 GL 图层与滑动位移不同步
+- 返回列表后 `SecretaryChibiOverlay` 的挂载推迟 380ms（`ChibiRemountDelayMillis`），
+  等 pop 转场结束再重建 EGL 上下文 + 上传纹理，转场窗口内不再出现掉帧
 
 导航要点：两个新路由（`gameimport`、`gameimport/view/{kind}/{assetId}`）已加入
 「全屏页隐藏底部导航 / 关闭抽屉手势 / 遮蔽悬浮秘书舰」三处判断，与 Live2D 查看器一致。
@@ -497,10 +507,10 @@ Spine 二进制版本读取注意：字符串长度是 **`len + 1`** 编码（`0
 | 3 | 查看器底部「随机动作」按钮被裁掉一半 | 缩放条 `weight(1f)` + 右侧按钮在 720dp 宽下超宽 | 去掉冗余按钮（顶栏已有随机动作入口），缩放条独占剩余宽度，倍率文字右对齐 |
 | 4 | `char`（SD 小人）导入失败：`GL 错误 0x501` | 该模拟器的 GLES 实现只支持 **ASTC 4x4**，`char` 包用的是 **ASTC 6x6**（Unity `TextureFormat=50`） | 保留 4x4/5x5/6x6…全量映射（真机 Adreno/Mali 支持），并补充「按块整数倍补齐尺寸」重试；仍失败时给出可读提示：当前 GPU 不支持该块尺寸、模拟器通常只有 4x4 |
 | 5 | 动态皮肤局部错位/撕裂（`rotate:180/270` 的区域跑到别的位置） | `.atlas` 的 `xy` 是**左下原点**，而解码后的位图是自上而下；翻转矩形直接用了 `y`，等于把区域上下镜像到页的另一侧 | 归一化时换算成图片坐标 `topY = pageHeight - (y + boxH)`；同时把图集页上限放宽到「≥256MB 堆即 4096」，常见皮肤不再缩放，消除取整误差 |
-| 6 | 退出查看器后模型残留在上一屏 | `setZOrderOnTop(true)` 的 SurfaceView 比 Compose 视图晚销毁 | `onDispose` 里先 `onPause()` 再 `visibility = GONE` |
+| 6 | 退出查看器后模型残留在上一屏，退场动画最后一帧掉帧 | ① `setZOrderOnTop(true)` 的 SurfaceView 是独立图层，不参与 Compose 的 alpha/位移，只靠 Compose 移除必然晚一步；② `onDispose` 在退场动画**结束后**才执行，且其中 `onPause()` 会阻塞一帧 | 两段式淡出（详见 §7）：`contentAlpha` 动画驱动 Compose 内容与 GL 顶点 alpha 同步淡出 → 再 `popBackStack()`；`onDispose` 改为先 `visibility = GONE` 再 `onPause()`；`gameimport/view` 路由改为纯 fade 转场 |
 | 7 | 只在 `com.bilibili.azurlane` 下找资源，渠道服/外服扫不到 | 包名写死 | 已知包名列表（国服/EN/JP/KR/TW）+ `Android/data/<包名>` 自动发现兜底 |
 | 8 | 动态皮肤「部件边缘发白、重影、撕裂」 | 图集页被降采样到 3072/2048，图集区域之间的窄 padding 在缩放后被线性过滤串色 | 默认 4096 原分辨率 + `largeHeap`；仍保留「按边界反推宽高」的精确缩放实现给极端设备 |
-| 9 | 离开查看器时模型残留在上一屏 | 见 #6 | 已实测退出后立即清理，无残留 |
+| 9 | 返回列表的瞬间卡顿一下 | 返回时 `SecretaryChibiOverlay` 立刻重建 GLSurfaceView（新 EGL 上下文 + Spine 纹理上传），压在 pop 转场的同一批帧里 | chibi 重新挂载推迟 `ChibiRemountDelayMillis = 380ms`，躲开转场帧预算；隐藏仍瞬时 |
 | 10 | 进入「游戏资源导入」长时间卡在「正在扫描游戏资源目录…」（实测约 4 分钟） | 附属包判定写成了「每个候选扫一遍全目录」：6382 个候选 × 10881 个文件名 ≈ 6900 万次 `split/lowercase/joinToString`。列举本身只占 0.7s（服务端 `buildListing` 10 881 项 561ms） | ① 附属包改为**一次遍历**建 `基础名→文件` / `主包→图层` 两张索引，候选 O(1) 查表（374→162ms）；② 四类目录**并发列举**，服务端快照改成多槽 LRU（单槽会被彼此顶掉、每次重建整棵目录）；③ 每行只 `split` 一次，候选判定与文件名索引同一循环。实测 **1082ms**（列举 594ms + 附属包 162ms + 其余 320ms） |
 | 11 | `2b_hx` 导入后只有背景、没有人物（`layers=1/4`，跳过 3 层） | 换装图层命名是**变体夹在中间**：`2b_rw_hx_tex`、`2b_bj1_hx_tex`，旧规则只认 `<主包>_` 前缀，全部漏掉 | 改为变体感知：拆名时把变体标记（`hx/n/doa/shophx/buildhx`）从任意位置摘出，图层包要求「基础名 = 主包基础名 + 图层关键字」且变体集合是主包子集；prefab 要求完全同名。实测同一资源从 `1 层（跳过 3）` 变为 **`4 层（跳过 0）`**，查看器显示「2048×1800 · 4 层合成」 |
 | 12 | **release 包「Shizuku 已连接却扫描不到任何资源」**（debug 包正常） | R8 把 `BlyyShellService::class.java.name` 折叠成字符串常量后，服务实现类变成「只被字符串引用」：类名保留、**构造器与全部 AIDL 方法被删**（`build/outputs/mapping/release/usage.txt` 里能直接看到）。Shizuku 在独立进程里反射 `newInstance(Context)` 失败 → 绑定回调永远不来 → `discoverRoots()` 吞掉异常返回空表，UI 只显示「未找到资源目录」 | ① `proguard-rules.pro` 增加 keep（服务类 + `<init>(Context)` + AIDL 包 + `rikka.shizuku` 入口）；② 绑定层加**真实 `ping()` 往返**校验与一次重绑重试；③ `discoverRoots()` 不再吞异常，失败原因上浮成可读文案。release APK 实测：`mapping.txt` 里服务类名与 `<init>` 保持原名，`classes.dex` 中 `listFilesPage` / `copyTo` 均在 |
@@ -511,6 +521,10 @@ Spine 二进制版本读取注意：字符串长度是 **`len + 1`** 编码（`0
 | 18 | **「今日秘书舰」的 SD 资源库里看不到刚从游戏导入的小人** | `SDResourceManager.buildIndex()` 在 `blhx_sd/` 不存在时直接返回空表 —— 新用户从来没有手工放过 SD 资源，游戏导入的 `game_assets/char/*` 根本没被扫描 | 见 §5.6.1 断点①：本地目录缺失不再早退，继续扫游戏导入资源；日志区分「本地/游戏导入」计数 |
 | 19 | 清掉 SD 选择（或从没设置过）后秘书舰小人整块不显示，皮肤选择器还提示「未找到 SD 资源」 | 显示门槛与皮肤列表只看 `figureUrl / webChibiUrl / sdResourceId`，绕过了「按舰名回退到游戏导入资源」；删除资源后 pin 还会悬空 | 见 §5.6.1 断点③：新增 `sdAvailable` 门槛 + 皮肤列表走统一 `resolve` + 监听资源修订号；并补悬空 pin 自愈 |
 | 17 | 贝奇默认立绘「少了上半身」 | 该客户端的 `painting/beiqi_tex` 图集本身只有下半身（1024×418），`beiqi-mesh` 只覆盖声明的 606×979 画布中的 754 高（77%） | 见 §5.5.4：新增覆盖率自检，写入 `painting.json.warning` 并在查看器副标题展示；对照组 `22_tex` / `beiqi_2_tex` 不误报 |
+| 20 | 库内 6000+ 资源时列表滑动发涩、批量导入进度刷新期间整页反复重组 | `GameImportViewModel.State` 的派生量（`filteredEntries` / `filteredAssets` / `importedCount` / `totalAssets` / `countOf(kind)` …）全是每次访问即全量重算的 getter：一次重组里被读十几次，等于对几千条 `entries` 扫十几遍；更关键的是 `filteredAssets` **每次访问都新建 List**，让 `LibraryTab` 的 `LaunchedEffect(assets)` 每帧重启（对 8k 条做 map+set） | 派生量改 `by lazy`（每次 `copy` 只算一遍、同一实例复用）；新增 `entriesRevision` / `libraryRevision`（Int，比较 O(1)）作为 `remember` 键，替代对几千条 List 做结构比较；`BundlesTab` 的 `pendingInScope`/`updatableInScope`、`tabLabels`、`displayNames`、`totalBytes` 全部 `remember` 化 |
+| 21 | 每张卡片每次重组都重新解析舰名，`requestSkinNames()` 在主线程对 8000+ id 逐个查表 | `Live2dNameResolver.baseShipName()` 一次调用最多遍历 700+ 条表三遍并分配若干临时 List；它被 `displayNameFor()`（每卡片每重组）与皮肤名预热（全部 id）反复调用，且预热跑在 `viewModelScope`（Main） | ① `baseShipName` 加 4096 条 LRU 记忆化（`LinkedHashMap(accessOrder=true)`），`pinyinMap` 更新时整体失效；② 皮肤名预热挪到 `Dispatchers.Default`，用 `warmedSkinNames` 去重 + `skinNameWarmupPending` 合并请求（不递归）；③ 卡片标题改由 `remember(entries, pinyinMap, skinNameSequences)` 一次算好的 `Map<path, String>` / `Map<kind/id, String>` 查表 |
+| 22 | 每次导入/删除/重命名都整库重扫，卡顿明显 | `refreshLibrary()` 走 `GameAssetLibrary.scanAll()`：四类目录**串行**扫描；每个资产目录一次 `meta.json` 读 + JSON 反序列化（6000+ 立绘），再加一次 `walkTopDown()` 全树 stat 算占用 | ① `scanAll()` / `scanAllIds()` 改 `coroutineScope { async { … } }` 并发；② `AssetMetaStore` 加 8192 条 LRU（按 `lastModified + length` 命中，写入时按路径失效）；③ `measure(dir)` 同样加 8192 条 LRU，`delete`/`rename` 主动失效对应目录 |
+| 23 | 资源包搜索框在几千条数据下每敲一个字符都全量过滤 | `filteredEntries` 的 `remember` 键包含 `searchQuery`，且过滤里对每项调 `displayNameOfEntry` | 搜索输入防抖 120ms（≥500 条时生效，输入框回显仍是本地 state 零延迟）；过滤键改用 `entriesRevision` |
 
 
 已验证可用（模拟器实测）：

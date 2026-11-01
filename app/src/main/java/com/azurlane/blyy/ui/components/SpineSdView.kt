@@ -2,8 +2,10 @@ package com.azurlane.blyy.ui.components
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.graphics.Matrix
 import android.graphics.PixelFormat
 import android.graphics.RectF
+import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.os.Handler
 import android.os.Looper
@@ -119,6 +121,17 @@ fun SpineSdView(
     /** 复位信号：数值变化时把平移/缩放恢复到初始状态（Compose 友好，不持有 View 引用） */
     resetSignal: Int = 0,
     /**
+     * 内容不透明度（0..1）。
+     *
+     * **必须走 GL 而不是 Compose alpha**：本组件内部是 `setZOrderOnTop(true)` 的
+     * GLSurfaceView，它的 Surface 是 SurfaceFlinger 里的独立图层，父级 Compose 的
+     * `alpha` / `translationX` 不会作用到它上面（这也是过去「退出时资源慢一步消失」的根因）。
+     * 这里把值交给 GL 线程（每帧读取，因此传的是取值函数而不是快照值：退场期间 alpha
+     * 每帧都在变，用快照会逼宿主组件逐帧重组），逐帧乘进 `Skeleton.color.a`，由
+     * SkeletonRenderer 写进顶点色 alpha，实现与页面退场动画同步的真实淡出。
+     */
+    contentAlpha: () -> Float = { 1f },
+    /**
      * 内容宽高比回调（w/h，基于「可见内容」而非骨骼 AABB）。
      *
      * 资源加载完成后在 UI 线程回调一次（皮肤切换/热重载后再次回调）。
@@ -150,12 +163,15 @@ fun SpineSdView(
                 onDrag = onDrag,
                 onDragEnd = onDragEnd,
                 panZoomEnabled = panZoomEnabled,
+                contentAlpha = contentAlpha,
                 onContentAspect = onContentAspect
             ).also { viewRef.value = it }
         },
         update = { view ->
             // 实时更新缩放倍率（无需重建 GLSurfaceView）
             view.scaleMultiplier = scaleMultiplier
+            // 退场淡出：GL 侧内容 alpha（Surface 图层不受 Compose alpha 影响）
+            view.contentAlpha = contentAlpha
             // 实时更新触摸开关（应用内触摸穿透模式切换）
             view.touchEnabled = touchEnabled
             // 回调引用可能随重组变化（lambda 捕获了外部状态），保持最新
@@ -183,11 +199,15 @@ fun SpineSdView(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            // ZOrderOnTop 的 SurfaceView 比 Compose 视图晚一步销毁：不主动隐藏的话，
-            // 页面已经切走、模型还留在屏幕上（「退出后残留」）
+            // ZOrderOnTop 的 SurfaceView 是独立图层，比 Compose 视图晚一步销毁：不主动隐藏的话
+            // 页面已经切走、模型还留在屏幕上（「退出后残留」）。
+            //
+            // 顺序很关键：先 visibility=GONE 让 SurfaceFlinger 立刻撤掉这一层（同步、不阻塞），
+            // 再 onPause()（内部要等 GL 线程停到安全点，会阻塞主线程约一帧）。
+            // 反过来先 onPause 的话，那次阻塞正好压在退场动画的最后一帧上，就是肉眼可见的顿挫。
             viewRef.value?.let { view ->
-                view.onPause()
                 view.visibility = View.GONE
+                view.onPause()
             }
         }
     }
@@ -214,6 +234,8 @@ private class SpineSdGlSurfaceView(
     private val onDragEnd: (() -> Unit)?,
     /** 查看器模式：拖动平移 + 双指缩放 + 双击复位 */
     private val panZoomEnabled: Boolean = false,
+    /** 内容不透明度（0..1）：GL 侧顶点 alpha，用于退场淡出；每帧取值，故用函数而非快照 */
+    contentAlpha: () -> Float = { 1f },
     /** 可见内容宽高比回调（GL 线程 → post 到 UI 线程） */
     onContentAspect: ((Float) -> Unit)? = null
 ) : GLSurfaceView(ctx) {
@@ -240,6 +262,15 @@ private class SpineSdGlSurfaceView(
      * 两者由 SecretaryOverlayService 同步设置。
      */
     @Volatile var touchEnabled: Boolean = touchEnabled
+
+    /**
+     * 内容不透明度取值函数（0..1），由 [SpineSdView] 的 `contentAlpha` 驱动。
+     *
+     * 每帧由 [SpineRenderer] 调用并写入 `Skeleton.color.a`。之所以不用 `View.alpha`：
+     * GLSurfaceView 的 Surface 是独立图层，`View.alpha` 在低版本不生效且会干扰
+     * SurfaceControl 合成，只有 GL 侧顶点 alpha 才是跨版本可靠的真淡出。
+     */
+    @Volatile var contentAlpha: () -> Float = contentAlpha
 
     /**
      * GLSurfaceView 最新尺寸缓存（px），由 [onSizeChanged] 在 UI 线程更新，
@@ -269,6 +300,7 @@ private class SpineSdGlSurfaceView(
         viewSizeProvider = { liveWidth to liveHeight },
         zoomProvider = { zoom },
         panProvider = { panX to panY },
+        alphaProvider = { contentAlpha() },
         contentAspectListener = { aspect ->
             // GL 线程 → UI 线程：Compose 状态只能在主线程写
             post { onContentAspect?.invoke(aspect) }
@@ -413,7 +445,10 @@ private class SpineSdGlSurfaceView(
             // 触摸穿透模式：直接返回 false，所有触摸事件穿透到下层 UI。
             // 桌面悬浮窗（窗口级 FLAG_NOT_TOUCHABLE）与应用内共用同一个开关，
             // 窗口级 flags 因系统原因未生效时这里仍是有效兜底。
-            if (!touchEnabled) return@setOnTouchListener false
+            // 注意：必须写 this.touchEnabled。构造参数与之同名会遮蔽属性——
+            // 直接写 touchEnabled 读到的是「创建时」的构造参数，运行时切换开关不生效
+            // （历史 bug：应用内穿透无效、悬浮窗穿透偶发失效）。
+            if (!this@SpineSdGlSurfaceView.touchEnabled) return@setOnTouchListener false
 
             if (panZoomEnabled) {
                 scaleDetector.onTouchEvent(event)
@@ -579,6 +614,14 @@ private class SpineRenderer(
     private val zoomProvider: () -> Float = { 1f },
     /** 查看器平移量（GL 坐标，单位像素） */
     private val panProvider: () -> Pair<Float, Float> = { 0f to 0f },
+    /**
+     * 内容不透明度提供者（0..1，每帧读取）。
+     *
+     * 写入 `Skeleton.color.a`：SkeletonRenderer 会把 skeleton color 乘进每个顶点的
+     * alpha（`alpha = skeletonColor.a * slotColor.a * regionColor.a * 255`），
+     * 因此这是整只小人一起淡出的正确入口，且不需要改 draw call。
+     */
+    private val alphaProvider: () -> Float = { 1f },
     /**
      * 可见内容宽高比回调（w/h）。
      *
@@ -1232,13 +1275,20 @@ private class SpineRenderer(
         val skel = skeleton ?: return true
         val scale = skel.scaleX
         if (!scale.isFinite() || scale <= 0f) return true
-        val skelX = (viewX - bounds.left) / scale + baseBoundsOffsetX
-        val skelY = (bounds.bottom - viewY) / scale + baseBoundsOffsetY
+        // 【坐标系】[SpineHitTest] 内部用 computeWorldVertices 取顶点，得到的是
+        // 「世界坐标」：已经包含 skel.scaleX/Y 与 skel.x/y 平移，原点在左下（GL 投影空间）。
+        // 因此必须把 view 坐标（原点左上、y 向下）换算到同一空间再比较。
+        // 历史 bug：这里曾把 view 点反算成「骨骼局部坐标」再传进去，两套坐标系混用，
+        // 命中恒为 false → ACTION_DOWN 永远不被消费 → 悬浮窗内既点不中也拖不动。
+        val vh = viewHeight.takeIf { it > 0 } ?: viewSizeProvider().second
+        val worldX = viewX
+        val worldY = vh - viewY
         val alphaOf: (String?, String?) -> RegionAlpha = { name, path ->
             regionAlpha[name] ?: regionAlpha[path] ?: RegionAlpha.FULL
         }
-        return SpineHitTest.hit(skel, skelX, skelY, alphaOf)
+        return SpineHitTest.hit(skel, worldX, worldY, alphaOf)
     }
+
 
     /**
      * 热重载 Spine 资源（切换皮肤时调用，在 GL 线程执行）。
@@ -1385,9 +1435,18 @@ private class SpineRenderer(
             boundsTop + renderedBoundsH
         )
 
+        // 内容不透明度（退场淡出）：写进 Skeleton.color.a，由 SkeletonRenderer 乘进每个顶点的
+        // alpha。每帧重设，避免被 AnimationState.apply 或实例复用的其他路径残留旧值。
+        val contentAlpha = alphaProvider().coerceIn(0f, 1f)
+        skel.color.a = contentAlpha
+
         // 清屏 + 绘制
         Gdx.gl.glClearColor(0f, 0f, 0f, 0f)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+
+        // 已完全透明：不再提交 draw call。退场动画最后一段的 GPU 开销归零，
+        // 同时 Surface 保持「清空后的全透明」，不会残留上一帧模型。
+        if (contentAlpha <= 0.004f) return
 
         b.begin()
         rend.draw(b, skel)

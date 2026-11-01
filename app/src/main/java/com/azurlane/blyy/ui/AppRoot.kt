@@ -110,6 +110,7 @@ import com.azurlane.blyy.viewmodel.StudentGalleryViewModel
 import com.azurlane.blyy.viewmodel.UpdateCheckViewModel
 import com.azurlane.blyy.viewmodel.VoiceIntent
 import com.azurlane.blyy.viewmodel.VoiceViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val label: String, val icon: ImageVector) {
@@ -119,6 +120,15 @@ sealed class Screen(val route: String, val label: String, val icon: ImageVector)
 }
 
 private const val TAG = "AppRoot"
+
+/**
+ * 从全屏查看器（live2d / gameimport/view）返回后，秘书舰小人的重新挂载延迟（ms）。
+ *
+ * 小人内部是 GLSurfaceView：重新挂载要建 EGL 上下文、上传 Spine 图集纹理，是几十毫秒级的
+ * 主线程 + GPU 尖峰。以前这个开销正好落在 pop 转场动画的帧预算里，表现为「退出卡顿」。
+ * 延迟到转场收尾之后再挂载，动画期间就不做重活了（略大于 popExit 的 350ms）。
+ */
+private const val ChibiRemountDelayMillis = 380L
 
 /** Material Motion — Fade Through，用于底部 Tab 同级切换 */
 private fun tabFadeThroughEnter(): EnterTransition =
@@ -890,7 +900,31 @@ fun AppContent() {
                                 type = NavType.StringType
                                 defaultValue = ""
                             }
-                        )
+                        ),
+                        // 查看器内部是 setZOrderOnTop 的 GLSurfaceView（SurfaceFlinger 独立图层），
+                        // 不参与 Compose 转场：滑动它不跟、alpha 也不吃，只会在 onDispose 被动撤掉。
+                        // 所以「看得见的」淡入淡出全部交给页面自己（内容与 GL 顶点 alpha 走同一条
+                        // 时间线，归零后才 pop）；路由这里只做极短的兜底，避免与页内动画叠成两层
+                        // 半透明（两层 alpha 相乘会让内容看起来发灰、变慢）。
+                        enterTransition = {
+                            fadeIn(tween(durationMillis = AppAnimation.Duration.Micro))
+                        },
+                        exitTransition = {
+                            fadeOut(tween(durationMillis = AppAnimation.Duration.Micro))
+                        },
+                        // 返回：查看器此时已被页内动画淡到全透明，路由层直接用最短时长收尾，
+                        // 让列表页尽快开始淡入 —— 用户按返回后感知到的第一帧就是列表。
+                        popEnterTransition = {
+                            fadeIn(
+                                tween(
+                                    durationMillis = AppAnimation.Duration.Quick,
+                                    easing = AppAnimation.Easings.EmphasizedDecelerate
+                                )
+                            )
+                        },
+                        popExitTransition = {
+                            fadeOut(tween(durationMillis = AppAnimation.Duration.Instant))
+                        }
                     ) {
                         GameAssetViewerScreen(onBack = { navController.popBackStack() })
                     }
@@ -957,7 +991,21 @@ fun AppContent() {
                 val currentRoute = currentDestination?.route
                 val routeAllowsChibi = currentRoute?.startsWith("live2d") != true &&
                     currentRoute?.startsWith("gameimport/view") != true
-                if (hasChibiContent && !overlayEnabledForChibi && routeAllowsChibi) {
+
+                // 【退场降载】隐藏要瞬时（否则小人会盖在全屏查看器上），但「重新显示」推迟到
+                // pop 转场结束之后：小人是 GLSurfaceView，重新挂载 = 新建 EGL 上下文 + Spine
+                // 纹理上传，压在退场动画的帧预算里就是那段顿挫。首次组合时保持 true，
+                // 不拖慢冷启动后小人的出现。
+                var chibiRevealReady by remember { mutableStateOf(true) }
+                LaunchedEffect(routeAllowsChibi) {
+                    if (!routeAllowsChibi) {
+                        chibiRevealReady = false
+                    } else if (!chibiRevealReady) {
+                        delay(ChibiRemountDelayMillis)
+                        chibiRevealReady = true
+                    }
+                }
+                if (hasChibiContent && !overlayEnabledForChibi && routeAllowsChibi && chibiRevealReady) {
                     SecretaryChibiOverlay(
                         figureUrl = secretaryState.figureUrl,
                         shipName = secretaryState.shipName,
@@ -975,7 +1023,6 @@ fun AppContent() {
                         // 触摸穿透不再只对桌面悬浮窗生效：应用内小人同样响应这个开关。
                         // 开启后 Spine 视图 touchEnabled=false、静态图不挂手势，
                         // 触摸直接落到下层页面（历史实现硬编码可交互，开关只在桌面悬浮窗有用）。
-                        touchPassthrough = secretaryState.overlayTouchPassthrough
                     )
                 }
 

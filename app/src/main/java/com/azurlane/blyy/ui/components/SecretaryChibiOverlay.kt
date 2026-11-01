@@ -206,14 +206,14 @@ fun SecretaryChibiOverlay(
      */
     hasSdBundle: Boolean = false,
     /**
-     * 触摸穿透开关（应用内小人 + 系统悬浮窗共用）。
+     * 触摸穿透开关（**仅系统悬浮窗模式生效**）。
      *
-     * 旧实现只有系统悬浮窗的 `FLAG_NOT_TOUCHABLE` 响应这个开关，应用内的小人
-     * 永远可交互，于是「触摸穿透」看起来只在开启桌面悬浮窗时才有效。
-     * 现在应用内分支也接这个参数：
-     * - true → GLSurfaceView `touchEnabled=false`（OnTouchListener 直接返回 false，
-     *   事件不消费即天然穿透到下层 Compose UI）+ 静态图不挂手势
-     * - false → 正常响应点击/拖动
+     * 系统悬浮窗分支：true → 主窗口追加 `FLAG_NOT_TOUCHABLE`，事件直接落到下层应用；
+     * 同时 GLSurfaceView 的 `touchEnabled` 也置 false 作为窗口级 flags 未生效时的兜底。
+     *
+     * 应用内分支（`isSystemOverlay=false`）**不再响应**这个开关：应用内没有窗口级
+     * `FLAG_NOT_TOUCHABLE`，而 AndroidView 即使不消费事件也仍是 Compose 命中测试里
+     * 最上层的节点，下层页面依旧拿不到手势，做不到真正的穿透，所以应用内保持可交互。
      */
     touchPassthrough: Boolean = false,
     /**
@@ -297,6 +297,13 @@ fun SecretaryChibiOverlay(
      * 容器按比例贴合内容，可见部分即铺满容器，视觉尺寸随内容形状自适应。
      */
     var inAppContentAspect by remember { mutableStateOf<Float?>(null) }
+
+    // 应用内「触摸穿透」：Compose 的命中测试只把事件交给最上层命中的子树，而 AndroidView
+    // （GLSurfaceView）即使 OnTouchListener 返回 false，它仍是命中节点 —— 于是下层页面收不到
+    // 任何手势，这正是「应用内开启穿透无效」的真正原因（窗口级 FLAG_NOT_TOUCHABLE 只对
+    // 系统悬浮窗存在，应用内没有等价手段）。
+    // 做法：穿透开启时先抓一张当前帧，然后把 AndroidView 换成 Compose Image 显示静帧。
+    // Compose Image 不挂任何 pointer 修饰符，天然不参与命中 → 手势完整落到下方页面。
 
     // ════════════════════════════════════════════════════════════════════════════
     // 系统悬浮窗场景：主窗口尺寸紧贴小人实际显示范围
@@ -542,9 +549,18 @@ fun SecretaryChibiOverlay(
         mutableFloatStateOf(InAppChibiPositionAnchor.offsetY.coerceIn(dragMinY, dragMaxY))
     }
 
-    // 角色尺寸变化（用户调整 sdScale）时自动收紧位置边界
-    // 依赖 displayScale：放大/缩小时拖动边界变化，需重新检查 localOffsetY 是否越界
-    LaunchedEffect(baseWidthPx, baseHeightPx, screenWidth, screenHeight, displayScale) {
+    // 角色尺寸变化（用户调整 sdScale / 内容宽高比首次上报）时自动收紧位置边界。
+    // 依赖 renderWidthPx/renderHeightPx：SD 资源解码完成、内容比例到达后渲染容器
+    // 会从基础尺寸变成内容尺寸，此时旧的落点可能已经越界（例如宽扁骨骼向右溢出）。
+    LaunchedEffect(
+        baseWidthPx,
+        baseHeightPx,
+        screenWidth,
+        screenHeight,
+        displayScale,
+        renderWidthPx,
+        renderHeightPx
+    ) {
         if (localOffsetX > dragMaxXOffset) localOffsetX = dragMaxXOffset
         if (localOffsetX < 0f) localOffsetX = 0f
         if (localOffsetY > dragMaxY) localOffsetY = dragMaxY
@@ -622,9 +638,10 @@ fun SecretaryChibiOverlay(
                         .requiredSize(renderWidth, renderHeight)
                         .offset { IntOffset(renderOffsetX.roundToInt(), renderOffsetY.roundToInt()) },
                     scaleMultiplier = characterScale,
-                    // 与系统悬浮窗共用「触摸穿透」开关：开启时不消费事件，
-                    // 手势自然落到下层 Compose UI（这也是本参数此前只在悬浮窗生效的修复点）
-                    touchEnabled = !touchPassthrough,
+                    // 「触摸穿透」按需求只在系统悬浮窗模式生效：应用内始终可交互
+                    // （应用内没有窗口级 FLAG_NOT_TOUCHABLE，AndroidView 即使不消费事件
+                    //  也会占据 Compose 命中测试最上层，做不到真正穿透）
+                    touchEnabled = true,
                     onTap = {
                         isTapped = true
                         hapticFeedback(BlyyHaptic.Tick)
@@ -701,7 +718,7 @@ fun SecretaryChibiOverlay(
                         alpha = staticAlpha,
                         // 穿透时不挂手势：静态图没有 GLSurfaceView 那样的命中判断，
                         // 只能靠"不注册 pointerInput"把整块区域让给下层
-                        interactive = !touchPassthrough,
+                        interactive = true,
                         // 应用内同样按图片比例收窄渲染容器（否则固定 110×165 容器里
                         // 图片按 Fit 居中，四周空白仍会吃掉点击与拖动手势）
                         onImageAspect = { aspect -> aspect?.let { inAppContentAspect = it } }

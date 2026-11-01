@@ -1,5 +1,9 @@
 package com.azurlane.blyy.ui.screens.gameimport
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,10 +26,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -43,6 +50,24 @@ import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.viewmodel.GameAssetViewerViewModel
 import android.widget.Toast
+import kotlinx.coroutines.launch
+
+/**
+ * 查看器退场时长（ms）。
+ *
+ * 只淡出不位移：Compose 内容与 GL 顶点 alpha 同步从 1 到 0，播完才 pop，pop 本身只剩一次
+ * 极短淡出。取值略短于 [com.azurlane.blyy.ui.theme.AppAnimation.Duration.Fast]，
+ * 让「返回」在观感上跟手，不像原来的 350ms 位移那样拖沓。
+ */
+private const val ViewerExitMillis = 160
+
+/**
+ * 进场淡入时长。
+ *
+ * 路由转场只淡入 Compose 内容；GL 图层不参与转场，会瞬间整块出现。
+ * 用同一套 alpha 补一段淡入，两边观感才一致。
+ */
+private const val ViewerEnterMillis = 150
 
 /**
  * 游戏资源查看器：Spine 小人 / 动态皮肤（GL 实时渲染）与静态立绘（可缩放图片）。
@@ -71,6 +96,43 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
         }
     }
 
+    // ── 退场编排 ────────────────────────────────────────────────────────────────
+    // 本页内容里有 setZOrderOnTop(true) 的 GLSurfaceView：它的 Surface 是 SurfaceFlinger 里的
+    // 独立图层，既不吃 Compose 的 alpha/transform，也不跟随 NavHost 的转场动画移动，只能在
+    // onDispose 里被动撤掉 —— 于是页面已经滑走、模型还留在屏幕上（「资源慢一步退出」）。
+    //
+    // 所以退场改由本页驱动：先把 Compose 内容（顶栏 / 图片）淡出，同时把同一个进度作为
+    // 顶点 alpha 喂给 GL 内容，两条渲染路径一起归零后再 pop；pop 时路由侧只保留一次极短
+    // 淡出（见 AppRoot 的 viewerExitTransition），不再做位移动画，彻底避免双重动画。
+    val contentAlpha = remember { Animatable(0f) }
+    val exitScope = rememberCoroutineScope()
+    var closing by remember { mutableStateOf(false) }
+
+    // 进场淡入：GL/content 两条渲染路径都从 0 起，避免模型在转场里「啪」地出现
+    LaunchedEffect(Unit) {
+        contentAlpha.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(ViewerEnterMillis, easing = FastOutLinearInEasing)
+        )
+    }
+
+    val requestExit: () -> Unit = {
+        if (!closing) {
+            closing = true
+            exitScope.launch {
+                contentAlpha.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(ViewerExitMillis, easing = FastOutLinearInEasing)
+                )
+                onBack()
+            }
+        }
+    }
+
+    // 系统返回键与顶栏返回按钮走同一条退场路径（此前没有 BackHandler：返回键直接 pop，
+    // 完全没有淡出，GL 图层只能等 onDispose 才消失）
+    BackHandler { requestExit() }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -78,8 +140,9 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
     ) {
         BlyyTopBar(
             title = asset?.let { viewModel.displayName(it) } ?: "游戏资源",
+            modifier = Modifier.graphicsLayer { alpha = contentAlpha.value },
             subtitle = asset?.let { subtitleOf(it) } ?: state.error,
-            onBackClick = onBack,
+            onBackClick = requestExit,
             actions = {
                 // 图片型资源（静态立绘 / 过场图）：导出到 Downloads/BLYY
                 if (asset?.isImage == true) {
@@ -150,7 +213,11 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
                         ZoomableImage(
                             model = preview,
                             contentDescription = viewModel.displayName(asset),
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // 图片是窗口内绘制的，可以直接用图层 alpha 参与退场淡出；
+                                // 注意不能把 alpha 加在 AndroidView 的祖先上（会破坏 Surface 合成）
+                                .graphicsLayer { alpha = contentAlpha.value },
                             contentScale = ContentScale.Fit
                         )
                     } else {
@@ -170,7 +237,9 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
                             assetName = skeleton,
                             modifier = Modifier.fillMaxSize(),
                             panZoomEnabled = true,
-                            resetSignal = resetSignal
+                            resetSignal = resetSignal,
+                            // GL 内容不参与 Compose 图层：只能靠 Skeleton.color.a 淡出
+                            contentAlpha = { contentAlpha.value }
                         )
                     } else {
                         Text(

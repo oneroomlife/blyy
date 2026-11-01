@@ -203,9 +203,9 @@ fun SecretaryShipSettingsScreen(
                         icon = Icons.Rounded.TouchApp,
                         title = "触摸穿透",
                         description = if (secretaryState.overlayTouchPassthrough) {
-                            "已开启：触摸事件穿透到下层应用或页面，SD 小人不可交互"
+                            "已开启：触摸事件穿透到下层应用，SD 小人不可交互（仅桌面悬浮窗生效）"
                         } else {
-                            "关闭：SD 小人正常响应点击、拖动等交互（桌面悬浮窗与应用内均生效）"
+                            "关闭：SD 小人正常响应点击、拖动等交互（桌面悬浮窗生效；应用内始终可交互）"
                         },
                         checked = secretaryState.overlayTouchPassthrough,
                         onCheckedChange = onToggleOverlayTouchPassthrough
