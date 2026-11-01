@@ -43,18 +43,38 @@ import com.esotericsoftware.spine.AnimationState
 import com.esotericsoftware.spine.AnimationStateData
 import com.esotericsoftware.spine.Skeleton
 import com.esotericsoftware.spine.SkeletonBinary
+import com.esotericsoftware.spine.SkeletonData
 import com.esotericsoftware.spine.SkeletonRenderer
 import com.esotericsoftware.spine.attachments.AtlasAttachmentLoader
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.min
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
 private const val TAG = "SpineSdView"
 
 /** 查看器缩放范围 */
 private const val MIN_ZOOM = 0.4f
 private const val MAX_ZOOM = 4f
+
+/**
+ * 「可见内容」铺满视口的比例。
+ *
+ * 取 1.0（贴边铺满）而不是 0.95：内容盒子现在已经是收紧后的可见范围
+ * （[ContentBox]，不含透明占位与隐藏层），再留 5% 白边只会让原本就小的
+ * SD 小人更小。留白交给调用方的窗口尺寸控制。
+ */
+private const val CONTENT_FIT_FILL = 1.0f
+
+/**
+ * 内容盒跨度不得小于 setup pose 骨骼跨度的该比例。
+ *
+ * 低于该比例说明采样到的待机动画隐藏了大部分身体（只留表情/局部特效），
+ * 此时按内容盒铺满会把模型放大成"只剩一张脸"，故判定为度量失败并回退骨骼 AABB。
+ */
+private const val MIN_CONTENT_SPAN_RATIO = 0.25f
 
 /**
  * Spine SD 小人 Compose 渲染组件。
@@ -97,7 +117,14 @@ fun SpineSdView(
     /** 查看器模式：单指拖动平移、双指缩放、双击复位；不触发随机动作与拖拽动画 */
     panZoomEnabled: Boolean = false,
     /** 复位信号：数值变化时把平移/缩放恢复到初始状态（Compose 友好，不持有 View 引用） */
-    resetSignal: Int = 0
+    resetSignal: Int = 0,
+    /**
+     * 内容宽高比回调（w/h，基于「可见内容」而非骨骼 AABB）。
+     *
+     * 资源加载完成后在 UI 线程回调一次（皮肤切换/热重载后再次回调）。
+     * 悬浮窗据此把窗口尺寸收缩到小人真实显示范围，避免透明边距吞掉触摸。
+     */
+    onContentAspect: ((Float) -> Unit)? = null
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -122,7 +149,8 @@ fun SpineSdView(
                 onDragStart = onDragStart,
                 onDrag = onDrag,
                 onDragEnd = onDragEnd,
-                panZoomEnabled = panZoomEnabled
+                panZoomEnabled = panZoomEnabled,
+                onContentAspect = onContentAspect
             ).also { viewRef.value = it }
         },
         update = { view ->
@@ -130,6 +158,8 @@ fun SpineSdView(
             view.scaleMultiplier = scaleMultiplier
             // 实时更新触摸开关（应用内触摸穿透模式切换）
             view.touchEnabled = touchEnabled
+            // 回调引用可能随重组变化（lambda 捕获了外部状态），保持最新
+            view.onContentAspect = onContentAspect
             // 检测 Spine 资源路径变化（切换皮肤）：热重载，不重建 GLSurfaceView
             if (dirPath != lastDirPath || assetName != lastAssetName) {
                 lastDirPath = dirPath
@@ -183,8 +213,17 @@ private class SpineSdGlSurfaceView(
     private val onDrag: ((Float, Float) -> Unit)?,
     private val onDragEnd: (() -> Unit)?,
     /** 查看器模式：拖动平移 + 双指缩放 + 双击复位 */
-    private val panZoomEnabled: Boolean = false
+    private val panZoomEnabled: Boolean = false,
+    /** 可见内容宽高比回调（GL 线程 → post 到 UI 线程） */
+    onContentAspect: ((Float) -> Unit)? = null
 ) : GLSurfaceView(ctx) {
+
+    /**
+     * 可见内容宽高比回调（可随时更新，随重组变化）。
+     *
+     * GL 线程加载完资源后通过 [post] 切回 UI 线程调用，避免在 GL 线程触碰 Compose 状态。
+     */
+    @Volatile var onContentAspect: ((Float) -> Unit)? = onContentAspect
 
     /** 缩放倍率，可实时更新（由 AndroidView update 回调设置），每帧由 SpineRenderer 读取 */
     @Volatile var scaleMultiplier: Float = scaleMultiplier
@@ -192,11 +231,13 @@ private class SpineSdGlSurfaceView(
     /**
      * 触摸交互开关（由 AndroidView update 回调设置）。
      *
-     * - true（默认）：正常处理点击/拖动/长按，骨骼 bounds 外透明区域事件穿透
-     * - false：OnTouchListener 直接返回 false，所有触摸事件穿透到下层（应用内触摸穿透模式）
+     * - true：正常处理点击/拖动/长按，且只在「可见内容」几何范围内命中
+     *   （[SpineHitTest] 逐部件判定，透明留白处的事件穿透到下层）
+     * - false：OnTouchListener 直接返回 false，所有触摸事件穿透到下层
+     *   （触摸穿透模式：桌面悬浮窗与应用内共用同一个开关）
      *
-     * 系统悬浮窗场景下触摸穿透由 WindowManager FLAG_NOT_TOUCHABLE 控制，
-     * 此字段保持 true（GLSurfaceView 本身仍可交互，但窗口不接收触摸）。
+     * 系统悬浮窗场景下除本字段外还有窗口级 FLAG_NOT_TOUCHABLE 双保险，
+     * 两者由 SecretaryOverlayService 同步设置。
      */
     @Volatile var touchEnabled: Boolean = touchEnabled
 
@@ -227,7 +268,11 @@ private class SpineSdGlSurfaceView(
         scaleProvider = { scaleMultiplier },
         viewSizeProvider = { liveWidth to liveHeight },
         zoomProvider = { zoom },
-        panProvider = { panX to panY }
+        panProvider = { panX to panY },
+        contentAspectListener = { aspect ->
+            // GL 线程 → UI 线程：Compose 状态只能在主线程写
+            post { onContentAspect?.invoke(aspect) }
+        }
     )
 
     /** 查看器交互：平移（GL 坐标系，y 轴向上）与缩放倍率 */
@@ -365,8 +410,9 @@ private class SpineSdGlSurfaceView(
         )
 
         setOnTouchListener { v, event ->
-            // 触摸穿透模式（应用内场景）：直接返回 false，所有触摸事件穿透到下层 UI
-            // 系统悬浮窗场景下 touchEnabled 保持 true，触摸穿透由 FLAG_NOT_TOUCHABLE 控制
+            // 触摸穿透模式：直接返回 false，所有触摸事件穿透到下层 UI。
+            // 桌面悬浮窗（窗口级 FLAG_NOT_TOUCHABLE）与应用内共用同一个开关，
+            // 窗口级 flags 因系统原因未生效时这里仍是有效兜底。
             if (!touchEnabled) return@setOnTouchListener false
 
             if (panZoomEnabled) {
@@ -406,33 +452,21 @@ private class SpineSdGlSurfaceView(
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    // 触摸穿透：仅当触摸点落在骨骼实际边界框内时才消费事件，
-                    // 透明区域返回 false 让事件穿透到下层 App（系统悬浮窗场景）或父容器（内嵌场景）。
+                    // 触摸穿透：仅当触摸点真正落在「小人画出来的地方」时才消费事件。
                     //
-                    // 【优化前】用 touchAreaRatio 限制为中心矩形比例，粗糙且仍含大量透明区域；
-                    // 且 OnTouchListener 末尾固定返回 true 消费整个序列，透明区域拦截下层触摸。
+                    // 【演进】
+                    // 1) 最初用 touchAreaRatio 中心矩形，粗糙且仍含大量透明区域；
+                    // 2) 改为骨骼 AABB（getBounds）矩形判断——矩形把小人的空隙
+                    //    （两腿之间、举手下方、腋下）也算成可交互区域，且 AABB 往往远大于
+                    //    可见形体，导致「窗口透明处照样吞触摸」；
+                    // 3) 现在改为 [SpineRenderer.isContentTouch]：逐 slot 用真实的四边形 /
+                    //    三角网做命中测试（并跳过 alpha≈0 的隐藏层与纯透明占位贴图），
+                    //    交互区域与显示区域一致，窗口内空隙不再拦截下层触摸。
                     //
-                    // 【优化后】用 SpineRenderer 每帧更新的骨骼边界框（idle 动画 bounds × scale）
-                    // 精确判断触摸点是否在角色实际范围内：
-                    // - 在 bounds 内 → 消费事件，正常处理点击/拖动
-                    // - 在 bounds 外 → 返回 false，事件穿透到下层 App
-                    //
-                    // 骨骼边界框居中在 view 中心（SpineRenderer 的 skel.x/skel.y 计算保证），
-                    // 透明区域 = view 矩形 - 骨骼 bounds 矩形，这部分事件全部穿透。
-                    //
-                    // bounds 未就绪（首次渲染前）不消费事件：
-                    // 此前默认消费整窗，窗口出现后的最初几帧内，整块未渲染的透明区域
-                    // 都会拦截下层触摸，违背"只和小人显示区域交互"的目标。
-                    val bounds = spineRenderer.boundsInViewport
-                    if (bounds == null || width <= 0 || height <= 0) {
-                        return@setOnTouchListener false
-                    }
-                    val touchX = event.x  // 相对 view 的坐标
-                    val touchY = event.y
-                    if (touchX < bounds.left || touchX > bounds.right ||
-                        touchY < bounds.top || touchY > bounds.bottom
-                    ) {
-                        // 触摸点在骨骼边界框外（透明区域），不消费事件，让下层 App 处理
+                    // 未渲染就绪（bounds 未生成）时同样不消费，避免窗口刚出现的几帧
+                    // 整块透明区域拦截下层触摸。
+                    if (width <= 0 || height <= 0) return@setOnTouchListener false
+                    if (!spineRenderer.isContentTouch(event.x, event.y)) {
                         return@setOnTouchListener false
                     }
                     // 阻止父容器拦截后续 MOVE/UP 事件，确保拖动序列完整送达 GLSurfaceView
@@ -544,7 +578,14 @@ private class SpineRenderer(
     /** 查看器缩放倍率（叠加在自适应缩放上） */
     private val zoomProvider: () -> Float = { 1f },
     /** 查看器平移量（GL 坐标，单位像素） */
-    private val panProvider: () -> Pair<Float, Float> = { 0f to 0f }
+    private val panProvider: () -> Pair<Float, Float> = { 0f to 0f },
+    /**
+     * 可见内容宽高比回调（w/h）。
+     *
+     * 资源加载完成、[baseBoundsW]/[baseBoundsH] 由「可见内容测量」刷新后调用一次；
+     * 悬浮窗据此把窗口收缩到小人真实显示范围（窗口尺寸 = 内容尺寸 × 显示倍率）。
+     */
+    private val contentAspectListener: (Float) -> Unit = {}
 ) : GLSurfaceView.Renderer {
 
     /** 当前 Spine 资源目录路径（@Volatile 支持 GL 线程热重载时读取最新值） */
@@ -606,11 +647,38 @@ private class SpineRenderer(
     /** 可用的 drag 动画名列表（与实际资源交集） */
     private var availableDragNames: List<String> = emptyList()
 
-    /** setup pose 的实际边界（scale=1 时），用于自适应缩放 */
+    /**
+     * 「可见内容」包围盒（setup/idle pose 采样 + 贴图不透明像素收紧），scale=1 时。
+     *
+     * 【为什么不是 `Skeleton.getBounds()`】
+     * getBounds 返回的是所有 attachment 顶点的 AABB，它会：
+     * - 忽略贴图里的透明像素（大量占位 region 整块是空的，四边形却很大）
+     * - 忽略 slot 颜色 alpha=0 的隐藏层
+     * - 把离体武器/特效/装饰层算进包围盒
+     * 于是「自适应缩放 = min(视口/包围盒)」把真正可见的躯体压得很小，
+     * 表现为「部分 SD 小人即使放到最大仍然很小」。
+     *
+     * 现在由 [SpineContentProbe] + [ContentBoxTrimmer] 测量真实可见范围
+     * （详见 SpineContentMetrics.kt），窗口与取景都按这个盒子计算。
+     */
     private var baseBoundsW = 0f
     private var baseBoundsH = 0f
     private var baseBoundsOffsetX = 0f
     private var baseBoundsOffsetY = 0f
+
+    /** 图集 region 名称 → 可见信息（不透明占比 + 不透明子矩形），命中测试与度量共用 */
+    @Volatile private var regionAlpha: Map<String, RegionAlpha> = emptyMap()
+
+    /** 上次上报的内容宽高比（避免重复回调触发窗口 resize 抖动） */
+    private var lastReportedAspect = 0f
+
+    /**
+     * 逐部件命中测试是否可信。
+     *
+     * 内容度量成功（[applyContentBox]）才置 true；贴图解码失败回退 AABB 时为 false，
+     * 此时 [isContentTouch] 只做包围盒判断，避免「整个小人都点不动」。
+     */
+    @Volatile private var hitTestReliable = false
 
     private var lastTimeNs = 0L
     private var viewWidth = 0
@@ -818,24 +886,17 @@ private class SpineRenderer(
                 )
             }
 
-            // 计算 idle 动画边界：采样待机动画的关键帧作为缩放基准。
-            //    仅用 idle 动画（stand/normal 等）的边界而非全局所有动画，
-            //    因为 attack/dance 等动作动画肢体伸展范围远大于待机，
-            //    用全局最大边界会导致 idle 时小人缩得太小。
-            //    action 动画可能临时略微超出视口，这是自然表现，可接受。
+            // 计算「可见内容」边界：采样待机动画关键帧，逐部件测量真实可见范围。
             //
-            //    【边界优化】使用每个动画的"代表性边界"（采样关键帧的中位数边界），
-            //    而非所有关键帧的最大并集边界。避免个别极端关键帧（如待机中偶发的肢体伸展）
-            //    导致边界过大、缩放过小的问题。
-            val offset = Vector2()
-            val size = Vector2()
-            val temp = FloatArray()
-            val sampler = Skeleton(skeletonData)  // 独立 sampler 实例避免污染主 skeleton
-
-            // 先确定实际可用的 idle 动画名。
-            // 动态皮肤的真实待机往往是 `normal`（时长十几秒），占位动画 `1..N` 时长为 0；
-            // 采样边界必须用真实动画，否则 0 秒动画只采到 setup pose 的一帧，
-            // 缩放基准会偏小、模型被放大到出框。
+            // 【为什么不用 Skeleton.getBounds】
+            // 它返回所有 attachment 顶点的 AABB，会忽略贴图透明像素、alpha=0 的隐藏层，
+            // 并把离体武器/特效算进包围盒；SD 资源里大量 region 是透明占位块，
+            // AABB 因此远大于可见形体，「自适应缩放 = min(视口/AABB)」把小人压得很小
+            // （部分导入资源即使放大到最大仍然很小）。
+            // 这里改用 SpineContentProbe + ContentBoxTrimmer 测量可见内容（见 baseBoundsW 注释）。
+            //
+            // 仍然只采样 idle 动画：attack/dance 等动作肢体伸展远大于待机，
+            // 用它们做基准会让待机时的小人缩得更小。
             val idleAnimNames = idleAnimationNames.filter { name ->
                 skeletonData.animations.any { it.name == name }
             }.ifEmpty {
@@ -843,68 +904,21 @@ private class SpineRenderer(
                     ?: skeletonData.animations.take(1).map { it.name }
             }
 
-            // 收集每个 idle 动画的代表性边界（采样关键帧后取中位数）
-            data class AnimBounds(val minX: Float, val minY: Float, val maxX: Float, val maxY: Float)
-            val animBoundsList = mutableListOf<AnimBounds>()
+            // 图集不透明像素扫描只做一次：命中测试与内容度量共用同一份结果
+            regionAlpha = runCatching { SpineAtlasAlpha.read(newAtlas) }
+                .onFailure { Log.w(TAG, "图集 alpha 扫描失败，回退为整块可见", it) }
+                .getOrDefault(emptyMap())
 
-            for (anim in skeletonData.animations) {
-                if (anim.name !in idleAnimNames) continue  // 仅采样 idle 动画
-                val duration = anim.duration
-                val sampleCount = if (duration > 0) 10 else 1
-                // 收集该动画所有采样帧的边界
-                // 注意：使用 kotlin.FloatArray 而非 com.badlogic.gdx.utils.FloatArray
-                val frameBounds: MutableList<kotlin.FloatArray> = mutableListOf()  // [minX, minY, maxX, maxY]
-                for (i in 0 until sampleCount) {
-                    val t = if (duration > 0) duration * i / sampleCount else 0f
-                    sampler.setToSetupPose()
-                    anim.apply(sampler, 0f, t, false, null, 1f,
-                        Animation.MixBlend.first, Animation.MixDirection.`in`)
-                    sampler.updateWorldTransform()
-                    sampler.getBounds(offset, size, temp)
-                    if (size.x > 0 && size.y > 0) {
-                        frameBounds.add(kotlin.floatArrayOf(
-                            offset.x, offset.y,
-                            offset.x + size.x, offset.y + size.y
-                        ))
-                    }
-                }
-                if (frameBounds.isNotEmpty()) {
-                    // 取该动画所有帧的中位数边界（按面积排序取中位数帧）
-                    // 中位数比最大值更鲁棒，避免极端关键帧导致边界过大
-                    val sortedByArea = frameBounds.sortedBy { (it[2] - it[0]) * (it[3] - it[1]) }
-                    val medianFrame = sortedByArea[sortedByArea.size / 2]
-                    animBoundsList.add(AnimBounds(medianFrame[0], medianFrame[1], medianFrame[2], medianFrame[3]))
-                }
+            val idleContent = measureContentBox(skeletonData, idleAnimNames)
+            if (idleContent != null) {
+                applyContentBox(idleContent)
+                Log.i(TAG, "Idle content bounds (sampled from $idleAnimNames): " +
+                    "offset=($baseBoundsOffsetX, $baseBoundsOffsetY), " +
+                    "size=($baseBoundsW, $baseBoundsH), regions=${regionAlpha.size}")
+            } else {
+                // 度量失败（空骨骼/贴图无法解码）→ 退回骨骼 AABB，保证至少能显示
+                fallbackToSkeletonBounds(skeletonData, idleAnimNames)
             }
-
-            // 取所有 idle 动画代表性边界的并集作为最终边界
-            var minX = Float.MAX_VALUE
-            var minY = Float.MAX_VALUE
-            var maxX = Float.MIN_VALUE
-            var maxY = Float.MIN_VALUE
-            for (b in animBoundsList) {
-                if (b.minX < minX) minX = b.minX
-                if (b.minY < minY) minY = b.minY
-                if (b.maxX > maxX) maxX = b.maxX
-                if (b.maxY > maxY) maxY = b.maxY
-            }
-
-            // 退化保护：若采样失败（空骨骼），用 setup pose 兜底
-            if (minX == Float.MAX_VALUE || maxX == Float.MIN_VALUE) {
-                skeleton!!.setToSetupPose()
-                skeleton!!.updateWorldTransform()
-                skeleton!!.getBounds(offset, size, temp)
-                minX = offset.x; minY = offset.y
-                maxX = offset.x + size.x; maxY = offset.y + size.y
-            }
-
-            baseBoundsOffsetX = minX
-            baseBoundsOffsetY = minY
-            baseBoundsW = (maxX - minX).coerceAtLeast(50f)
-            baseBoundsH = (maxY - minY).coerceAtLeast(75f)
-            Log.i(TAG, "Idle bounds (sampled from $idleAnimNames): " +
-                "offset=($baseBoundsOffsetX, $baseBoundsOffsetY), " +
-                "size=($baseBoundsW, $baseBoundsH)")
 
             // 分类动画
             allAnimationNames = skeletonData.animations.map { it.name }
@@ -972,41 +986,18 @@ private class SpineRenderer(
                     .thenByDescending { durationOf[it] ?: 0f }
             )
             // 【取景精修】上面先用「所有 idle 名的并集」当缩略边界，`sit`/`sleep` 这类姿态
-            // 会把包围盒撑得很大：实测 2B 的并集高 829，而 `stand` 只有 ~600，
-            // 结果模型被缩到屏幕一小块、还因为并集重心偏下而整体偏右下。
-            // 真正会循环播放的是 idleCoverageOrder.first()，用它的边界重新收一次。
+            // 会把包围盒撑得很大（实测 2B 并集高 829，而 `stand` 只有 ~600），
+            // 结果模型被缩到很小、还因为并集重心偏下而整体偏右下。
+            // 真正会循环播放的是 idleCoverageOrder.first()，用它重新测一次可见内容边界。
             run {
                 val chosen = idleCoverageOrder.firstOrNull() ?: return@run
-                val anim = skeletonData.animations.firstOrNull { it.name == chosen } ?: return@run
-                val frames = ArrayList<kotlin.FloatArray>()
-                val samples = if (anim.duration > 0f) 12 else 1
-                for (i in 0 until samples) {
-                    val t = if (anim.duration > 0f) anim.duration * i / samples else 0f
-                    sampler.setToSetupPose()
-                    anim.apply(
-                        sampler, 0f, t, false, null, 1f,
-                        Animation.MixBlend.first, Animation.MixDirection.`in`
-                    )
-                    sampler.updateWorldTransform()
-                    sampler.getBounds(offset, size, temp)
-                    if (size.x > 0f && size.y > 0f) {
-                        frames += kotlin.floatArrayOf(
-                            offset.x, offset.y, offset.x + size.x, offset.y + size.y
-                        )
-                    }
-                }
-                if (frames.isNotEmpty()) {
-                    val minX2 = frames.minOf { it[0] }
-                    val minY2 = frames.minOf { it[1] }
-                    val maxX2 = frames.maxOf { it[2] }
-                    val maxY2 = frames.maxOf { it[3] }
-                    baseBoundsOffsetX = minX2
-                    baseBoundsOffsetY = minY2
-                    baseBoundsW = (maxX2 - minX2).coerceAtLeast(50f)
-                    baseBoundsH = (maxY2 - minY2).coerceAtLeast(75f)
+                val refined = measureContentBox(skeletonData, listOf(chosen), sampleCount = 12)
+                if (refined != null) {
+                    applyContentBox(refined)
                     Log.i(
                         TAG,
-                        "取景边界改用待机动画 $chosen：offset=($minX2, $minY2)，" +
+                        "取景边界改用待机动画 $chosen：offset=(" +
+                            "${baseBoundsOffsetX}, ${baseBoundsOffsetY})，" +
                             "size=($baseBoundsW, $baseBoundsH)"
                     )
                 }
@@ -1071,6 +1062,182 @@ private class SpineRenderer(
             loadFailed = true
             Log.e(TAG, "Failed to load Spine asset=$currentAssetName", e)
         }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // 可见内容度量（替代 Skeleton.getBounds 的 AABB）
+    // ───────────────────────────────────────────────────────────────────────────
+
+    /** 把测量结果写入取景基准，并把内容宽高比上报给悬浮窗尺寸计算 */
+    private fun applyContentBox(box: ContentBox) {
+        baseBoundsOffsetX = box.left
+        baseBoundsOffsetY = box.bottom
+        baseBoundsW = box.width.coerceAtLeast(50f)
+        baseBoundsH = box.height.coerceAtLeast(75f)
+        hitTestReliable = true
+        reportContentAspect()
+    }
+
+    /**
+     * 采样一组动画，测量「可见内容」包围盒。
+     *
+     * 每个采样帧逐 slot 取真实几何（见 [SpineContentProbe]），同一 slot 跨帧取并集
+     * （运动包络），最后按可见权重剪掉离群碎屑（[ContentBoxTrimmer]）。
+     *
+     * @return null 表示没有任何可测量部件（调用方回退到骨骼 AABB）
+     */
+    private fun measureContentBox(
+        skeletonData: SkeletonData,
+        animNames: List<String>,
+        sampleCount: Int = 10
+    ): ContentBox? {
+        val sampler = Skeleton(skeletonData)
+        val alphaOf: (String?, String?) -> RegionAlpha = { name, path ->
+            regionAlpha[name] ?: regionAlpha[path] ?: RegionAlpha.FULL
+        }
+        val slotBoxes = LinkedHashMap<Int, ContentBox>()
+        val slotWeights = HashMap<Int, Float>()
+
+        animNames.forEach { name ->
+            val anim = skeletonData.animations.firstOrNull { it.name == name } ?: return@forEach
+            val duration = anim.duration
+            val frames = if (duration > 0f) sampleCount else 1
+            for (i in 0 until frames) {
+                val t = if (duration > 0f) duration * i / frames else 0f
+                sampler.setToSetupPose()
+                anim.apply(
+                    sampler, 0f, t, false, null, 1f,
+                    Animation.MixBlend.first, Animation.MixDirection.`in`
+                )
+                sampler.updateWorldTransform()
+                SpineContentProbe.frameParts(sampler, alphaOf).forEach { part ->
+                    val previous = slotBoxes[part.slot]
+                    slotBoxes[part.slot] = previous?.union(part.box) ?: part.box
+                    val weight = slotWeights[part.slot] ?: 0f
+                    if (part.weight > weight) slotWeights[part.slot] = part.weight
+                }
+            }
+        }
+        if (slotBoxes.isEmpty()) return null
+        val parts = slotBoxes.map { (slot, box) ->
+            WeightedPart(box = box, weight = slotWeights[slot] ?: 1f, slot = slot)
+        }
+        val trimmed = ContentBoxTrimmer.trim(parts) ?: return null
+        // 合理性兜底：某些待机动画会把身体大部分 slot 隐藏（只留表情/局部特效），
+        // 这时测出的内容盒会远小于骨骼本身，若直接采用会把模型放大到异常尺寸。
+        val skeletonSpan = setupPoseSpan(skeletonData, sampler)
+        val contentSpan = maxOf(trimmed.width, trimmed.height)
+        if (skeletonSpan > 0f && contentSpan < skeletonSpan * MIN_CONTENT_SPAN_RATIO) {
+            Log.w(
+                TAG,
+                "内容盒异常偏小（content=$contentSpan，skeleton=$skeletonSpan），回退骨骼 AABB"
+            )
+            return null
+        }
+        return trimmed
+    }
+
+    /** setup pose 的骨骼 AABB 跨度（用于判断内容盒是否合理，只取较大边） */
+    private fun setupPoseSpan(skeletonData: SkeletonData, sampler: Skeleton): Float {
+        return runCatching {
+            val offset = Vector2()
+            val size = Vector2()
+            val temp = FloatArray()
+            sampler.setToSetupPose()
+            sampler.updateWorldTransform()
+            sampler.getBounds(offset, size, temp)
+            maxOf(size.x, size.y)
+        }.getOrDefault(0f)
+    }
+
+    /** 度量失败时回退到骨骼 AABB（旧行为），保证任何资源至少能渲染出来 */
+    private fun fallbackToSkeletonBounds(skeletonData: SkeletonData, animNames: List<String>) {
+        hitTestReliable = false
+        val offset = Vector2()
+        val size = Vector2()
+        val temp = FloatArray()
+        val sampler = Skeleton(skeletonData)
+        var minX = Float.MAX_VALUE
+        var minY = Float.MAX_VALUE
+        var maxX = -Float.MAX_VALUE
+        var maxY = -Float.MAX_VALUE
+        animNames.forEach { name ->
+            val anim = skeletonData.animations.firstOrNull { it.name == name } ?: return@forEach
+            val duration = anim.duration
+            val frames = if (duration > 0f) 10 else 1
+            for (i in 0 until frames) {
+                val t = if (duration > 0f) duration * i / frames else 0f
+                sampler.setToSetupPose()
+                anim.apply(
+                    sampler, 0f, t, false, null, 1f,
+                    Animation.MixBlend.first, Animation.MixDirection.`in`
+                )
+                sampler.updateWorldTransform()
+                sampler.getBounds(offset, size, temp)
+                if (size.x > 0f && size.y > 0f) {
+                    if (offset.x < minX) minX = offset.x
+                    if (offset.y < minY) minY = offset.y
+                    if (offset.x + size.x > maxX) maxX = offset.x + size.x
+                    if (offset.y + size.y > maxY) maxY = offset.y + size.y
+                }
+            }
+        }
+        if (minX > maxX || minY > maxY) {
+            // 连 setup pose 都量不出来：给一个安全的最小盒，避免除零
+            baseBoundsOffsetX = 0f
+            baseBoundsOffsetY = 0f
+            baseBoundsW = 50f
+            baseBoundsH = 75f
+        } else {
+            baseBoundsOffsetX = minX
+            baseBoundsOffsetY = minY
+            baseBoundsW = (maxX - minX).coerceAtLeast(50f)
+            baseBoundsH = (maxY - minY).coerceAtLeast(75f)
+        }
+        Log.w(
+            TAG,
+            "可见内容度量不可用，回退骨骼 AABB：offset=($baseBoundsOffsetX, $baseBoundsOffsetY)，" +
+                "size=($baseBoundsW, $baseBoundsH)"
+        )
+        reportContentAspect()
+    }
+
+    /** 内容宽高比有实质变化时才上报，避免窗口反复 resize */
+    private fun reportContentAspect() {
+        if (baseBoundsW <= 0f || baseBoundsH <= 0f) return
+        val aspect = baseBoundsW / baseBoundsH
+        if (!aspect.isFinite() || aspect <= 0f) return
+        if (lastReportedAspect > 0f && abs(aspect - lastReportedAspect) < 0.005f) return
+        lastReportedAspect = aspect
+        contentAspectListener(aspect)
+    }
+
+    /**
+     * 触摸命中：view 坐标（左上原点，y 向下）→ 骨骼坐标，再用真实部件几何判断。
+     *
+     * 与窗口内透明区域的穿透配合：命中 false 时 OnTouchListener 返回 false，
+     * 事件不会被 GLSurfaceView 消费。
+     */
+    fun isContentTouch(viewX: Float, viewY: Float): Boolean {
+        val bounds = _boundsInViewport ?: return false
+        if (baseBoundsW <= 0f || baseBoundsH <= 0f) return false
+        // 包围盒粗筛（先排除绝大多数明显在外的点，避免每次构造顶点数组）
+        if (viewX < bounds.left || viewX > bounds.right ||
+            viewY < bounds.top || viewY > bounds.bottom
+        ) {
+            return false
+        }
+        // 度量不可用（贴图解码失败）时只做包围盒判断，保证小人仍然可点击
+        if (!hitTestReliable) return true
+        val skel = skeleton ?: return true
+        val scale = skel.scaleX
+        if (!scale.isFinite() || scale <= 0f) return true
+        val skelX = (viewX - bounds.left) / scale + baseBoundsOffsetX
+        val skelY = (bounds.bottom - viewY) / scale + baseBoundsOffsetY
+        val alphaOf: (String?, String?) -> RegionAlpha = { name, path ->
+            regionAlpha[name] ?: regionAlpha[path] ?: RegionAlpha.FULL
+        }
+        return SpineHitTest.hit(skel, skelX, skelY, alphaOf)
     }
 
     /**
@@ -1173,11 +1340,12 @@ private class SpineRenderer(
         state.apply(skel)
         skel.updateWorldTransform()
 
-        // 自适应缩放：基于 idle 动画边界缩放到视口 95%，再叠加用户倍率与查看器缩放
-        val userScale = scaleProvider().coerceIn(0.3f, 2.0f)
+        // 自适应缩放：把「可见内容」贴边铺满视口（CONTENT_FIT_FILL），再叠加用户倍率与查看器缩放
+        val userScale = scaleProvider().coerceIn(SECRETARY_SD_SCALE_MIN, SECRETARY_SD_SCALE_MAX)
         val viewerZoom = zoomProvider().coerceIn(MIN_ZOOM, MAX_ZOOM)
         val (panX, panY) = panProvider()
-        val scale = (min(vw / baseBoundsW, vh / baseBoundsH) * 0.95f) * userScale * viewerZoom
+        val scale = (min(vw / baseBoundsW, vh / baseBoundsH) * CONTENT_FIT_FILL) *
+            userScale * viewerZoom
 
         // 投影矩阵：左下(0,0) - 右上，Y 轴朝上
         b.projectionMatrix.setToOrtho2D(0f, 0f, vw.toFloat(), vh.toFloat())
@@ -1203,8 +1371,9 @@ private class SpineRenderer(
         //   top  = (vh - baseBoundsH * scale) / 2
         // baseBoundsOffsetX/Y 在居中计算中被消去，只剩 baseBoundsW/H × scale。
         //
-        // 注意：baseBounds 是 idle 动画采样边界，action 动画时肢体可能略超出此范围，
-        // 但触摸判断只在 ACTION_DOWN（idle 状态）执行，所以用 idle bounds 是精确的。
+        // 注意：baseBounds 是 idle 动画的可见内容边界，action 动画时肢体可能略超出此范围，
+        // 但触摸判断只在 ACTION_DOWN（idle 状态）执行，所以用 idle bounds 是精确的；
+        // 真正决定命中与否的是 [isContentTouch] 里的逐部件几何判定，这里只是粗筛。
         val renderedBoundsW = baseBoundsW * scale
         val renderedBoundsH = baseBoundsH * scale
         val boundsLeft = (vw - renderedBoundsW) / 2f + panX

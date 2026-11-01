@@ -189,4 +189,83 @@ class OverlayGeometryTest {
         assertEquals(0, x)  // maxX = 1080-2000 < 0 → 0
         assertEquals(0, y)  // maxY = 1920-3000 < 0 → 0；500.coerceIn(-100, 0) 夹到上界 0
     }
+
+    // ── computeContentWindowSize：悬浮窗尺寸贴合内容比例 ──
+
+    @Test
+    fun `无内容比例时退化为基础尺寸乘倍率`() {
+        val (w, h) = OverlayGeometry.computeContentWindowSize(
+            contentAspect = null,
+            baseWidth = 110, baseHeight = 165,
+            displayScale = 1.5f
+        )
+        assertEquals(165, w)   // 110 * 1.5
+        assertEquals(248, h)   // 165 * 1.5 = 247.5 → roundToInt 半入 → 248
+    }
+
+    @Test
+    fun `高瘦内容按高度铺满并收窄宽度`() {
+        // 内容 0.5（宽/高）< 基础 110/165≈0.667 → 以高度为基准，宽度 = 高 * 0.5
+        val (w, h) = OverlayGeometry.computeContentWindowSize(
+            contentAspect = 0.5f,
+            baseWidth = 110, baseHeight = 165,
+            displayScale = 1f
+        )
+        assertEquals(165, h)
+        assertEquals(83, w) // 165 * 0.5 = 82.5 → roundToInt 半入 → 83
+    }
+
+    @Test
+    fun `宽扁内容按宽度铺满并压矮高度`() {
+        val (w, h) = OverlayGeometry.computeContentWindowSize(
+            contentAspect = 2f,
+            baseWidth = 110, baseHeight = 165,
+            displayScale = 1f
+        )
+        assertEquals(110, w)
+        assertEquals(55, h)
+    }
+
+    @Test
+    fun `短边下限按比例整体放大而不是拉长单轴`() {
+        // 内容 0.1 → 宽 16.5 太小；放大到短边 48 时高度也同步放大
+        val (w, h) = OverlayGeometry.computeContentWindowSize(
+            contentAspect = 0.1f,
+            baseWidth = 110, baseHeight = 165,
+            displayScale = 1f,
+            minSide = 48
+        )
+        assertEquals(48, w)
+        assertEquals(480, h)
+        // 比例保持
+        assertEquals(0.1f, w.toFloat() / h.toFloat(), 0.01f)
+    }
+
+    @Test
+    fun `超出屏幕上限时等比缩小`() {
+        val (w, h) = OverlayGeometry.computeContentWindowSize(
+            contentAspect = 0.5f,
+            baseWidth = 110, baseHeight = 165,
+            displayScale = 3f,
+            maxWidth = 400, maxHeight = 1000
+        )
+        // 原始 248x495（82.5*3 / 165*3），未超 400x1000 → 保持
+        assertEquals(248, w)
+        assertEquals(495, h)
+        // 比例保持
+        assertEquals(0.5f, w.toFloat() / h.toFloat(), 0.01f)
+    }
+
+    @Test
+    fun `非法内容比例退化为基础尺寸`() {
+        for (aspect in listOf(0f, -1f, Float.NaN, Float.POSITIVE_INFINITY)) {
+            val (w, h) = OverlayGeometry.computeContentWindowSize(
+                contentAspect = aspect,
+                baseWidth = 110, baseHeight = 165,
+                displayScale = 1f
+            )
+            assertEquals(110, w)
+            assertEquals(165, h)
+        }
+    }
 }

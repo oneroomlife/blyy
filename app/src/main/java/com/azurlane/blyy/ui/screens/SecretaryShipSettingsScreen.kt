@@ -98,6 +98,8 @@ import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.OrganizePhase
 import com.azurlane.blyy.util.OrganizeProgress
 import com.azurlane.blyy.util.OrganizeResult
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_SLIDER_MIN
 import com.azurlane.blyy.util.SDResourceManager
 import com.azurlane.blyy.util.SdResourceOrganizer
 import com.azurlane.blyy.util.StoragePermissionHelper
@@ -201,9 +203,9 @@ fun SecretaryShipSettingsScreen(
                         icon = Icons.Rounded.TouchApp,
                         title = "触摸穿透",
                         description = if (secretaryState.overlayTouchPassthrough) {
-                            "已开启：触摸事件穿透到下层应用，SD 小人不可交互"
+                            "已开启：触摸事件穿透到下层应用或页面，SD 小人不可交互"
                         } else {
-                            "关闭：SD 小人正常响应点击、拖动等交互(需在桌面悬浮窗开启时使用)"
+                            "关闭：SD 小人正常响应点击、拖动等交互（桌面悬浮窗与应用内均生效）"
                         },
                         checked = secretaryState.overlayTouchPassthrough,
                         onCheckedChange = onToggleOverlayTouchPassthrough
@@ -318,10 +320,11 @@ private fun SdScaleSlider(
             )
         }
         Slider(
-            value = sdScale.coerceIn(0.5f, 2.0f),
+            value = sdScale.coerceIn(SECRETARY_SD_SCALE_SLIDER_MIN, SECRETARY_SD_SCALE_MAX),
             onValueChange = { onSetSdScale(it) },
-            valueRange = 0.5f..2.0f,
-            steps = 14,
+            valueRange = SECRETARY_SD_SCALE_SLIDER_MIN..SECRETARY_SD_SCALE_MAX,
+            // 0.5%..300% 每 10% 一档（25 段）
+            steps = 24,
             colors = SliderDefaults.colors(
                 thumbColor = MaterialTheme.colorScheme.primary,
                 activeTrackColor = MaterialTheme.colorScheme.primary

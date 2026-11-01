@@ -57,6 +57,15 @@ class OverlayGestureHandler(
     /** Spine 分支激活标志：true 时本处理器放行所有事件（Spine 自己消费） */
     @Volatile var spineActive: Boolean = false
 
+    /**
+     * 触摸穿透开关（与窗口级 [android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE] 同级）。
+     *
+     * 正常情况下穿透由窗口 flags 完成，View 层根本收不到事件；这里再判一次是
+     * **双保险**：部分 ROM / 部分场景（窗口刚 updateViewLayout、切后台再回前台）
+     * 会出现 flags 尚未生效但事件已经下发的竞态，历史上表现为"穿透偶发失效"。
+     */
+    @Volatile var passthrough: Boolean = false
+
     private val longPressHandler = Handler(Looper.getMainLooper())
     private var longPressRunnable: Runnable? = null
 
@@ -70,6 +79,7 @@ class OverlayGestureHandler(
     private var dragging = false
 
     override fun onTouch(v: View, event: MotionEvent): Boolean {
+        if (passthrough) return false
         if (spineActive) return false
 
         when (event.actionMasked) {

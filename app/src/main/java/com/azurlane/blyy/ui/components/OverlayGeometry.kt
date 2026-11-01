@@ -12,6 +12,77 @@ import kotlin.math.roundToInt
 object OverlayGeometry {
 
     /**
+     * 内容宽高比 → 悬浮窗尺寸（px）。
+     *
+     * SD 小人的可见内容比例因皮肤/资源差异极大（细长、宽扁、带大武器），
+     * 旧实现把窗口固定成 110×165dp 再乘倍率，导致：
+     * - 宽扁模型在窗口里只占中间一条，四周全是透明区域
+     * - 透明区域仍然拦触摸（窗口内返回 false 不会下传到下层 App）
+     * 这里让窗口尺寸贴合内容比例：模型铺满窗口，触摸范围自然等于可见范围。
+     *
+     * @param contentAspect 可见内容宽高比（宽/高）；null/非法时退回基准尺寸
+     * @param baseWidth/baseHeight 基准窗口尺寸（dp 转 px）
+     * @param displayScale 用户显示倍率
+     * @param minSide 最小边（px），防止极端比例（躺着/细长）导致无法点击
+     * @param maxWidth/maxHeight 屏幕可用尺寸上限（px）
+     */
+    fun computeContentWindowSize(
+        contentAspect: Float?,
+        baseWidth: Int,
+        baseHeight: Int,
+        displayScale: Float,
+        minSide: Int = 0,
+        maxWidth: Int = Int.MAX_VALUE,
+        maxHeight: Int = Int.MAX_VALUE
+    ): Pair<Int, Int> {
+        if (baseWidth <= 0 || baseHeight <= 0) return 0 to 0
+        val scale = if (!displayScale.isFinite() || displayScale <= 0f) 1f else displayScale
+        var width: Float
+        var height: Float
+        if (contentAspect == null || !contentAspect.isFinite() || contentAspect <= 0f) {
+            width = baseWidth.toFloat()
+            height = baseHeight.toFloat()
+        } else {
+            val boxAspect = baseWidth.toFloat() / baseHeight.toFloat()
+            if (contentAspect >= boxAspect) {
+                width = baseWidth.toFloat()
+                height = width / contentAspect
+            } else {
+                height = baseHeight.toFloat()
+                width = height * contentAspect
+            }
+        }
+        width *= scale
+        height *= scale
+        // 短边可点性：按比例整体放大，而不是单独拉长某个轴。
+        // 单独拉长会破坏宽高比 → 渲染层按 Fit 留白 → 窗口里又出现透明触摸区，
+        // 正是要修复的问题。
+        if (minSide > 0 && minSide != Int.MAX_VALUE) {
+            val shortSide = minOf(width, height)
+            if (shortSide > 0f && shortSide < minSide) {
+                val boost = minSide / shortSide
+                width *= boost
+                height *= boost
+            }
+        }
+        // 超屏时等比缩小，同样保持比例（宁可整只小人变小，也不要留白条）
+        if (width > 0f && height > 0f) {
+            var limit = 1f
+            if (maxWidth in 1 until Int.MAX_VALUE) {
+                limit = minOf(limit, maxWidth.toFloat() / width)
+            }
+            if (maxHeight in 1 until Int.MAX_VALUE) {
+                limit = minOf(limit, maxHeight.toFloat() / height)
+            }
+            if (limit < 1f) {
+                width *= limit
+                height *= limit
+            }
+        }
+        return width.roundToInt().coerceAtLeast(1) to height.roundToInt().coerceAtLeast(1)
+    }
+
+    /**
      * 从多个候选位置中选出"clamp 后窗口中心相对旧中心偏移最小"的一个（px）。
      *
      * 缩放窗口时不同锚定方案（左/右/顶/底缘、中心保持）经边界 clamp 后的小人中心

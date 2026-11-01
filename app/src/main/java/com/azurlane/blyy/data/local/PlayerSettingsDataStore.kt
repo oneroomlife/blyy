@@ -33,6 +33,8 @@ import kotlinx.serialization.json.Json
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
 /** 容错 JSON 实例：忽略未知字段，避免模型升级后反序列化崩溃导致数据"静默消失" */
 private val lenientJson = Json {
@@ -464,7 +466,7 @@ class PlayerSettingsDataStore @Inject constructor(
 
     suspend fun setSecretarySdScale(scale: Float) {
         context.dataStore.edit { prefs ->
-            prefs[SECRETARY_SD_SCALE_KEY] = scale.coerceIn(0.3f, 2.0f)
+            prefs[SECRETARY_SD_SCALE_KEY] = scale.coerceIn(SECRETARY_SD_SCALE_MIN, SECRETARY_SD_SCALE_MAX)
         }
     }
 

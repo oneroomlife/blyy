@@ -55,6 +55,8 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
 /**
  * 秘书舰悬浮窗服务（双窗口架构）。
@@ -99,6 +101,23 @@ class SecretaryOverlayService : Service() {
     private val spineActiveState = mutableStateOf(false)
 
     /**
+     * 主窗口「触摸穿透」状态（唯一真值）。
+     *
+     * 所有会写 `lp.flags` 的路径（首次 addView / 缩放 updateViewLayout /
+     * 转屏重建 / 僵尸窗口 re-add）都必须经 [applyWindowFlags] 用这个字段重算，
+     * 保证穿透开关不会因为某条路径"忘了重放 flags"而偶发失效。
+     */
+    @Volatile private var touchPassthrough = false
+
+    /**
+     * 当前 SD 小人的可见内容宽高比（宽/高），由 [SecretaryChibiOverlay] 首个
+     * 渲染帧上报。用于把主窗口尺寸收紧到"内容形状"，从而同时解决：
+     * - 窗口比小人形体大得多（触摸面积虚高、随放大进一步虚高）
+     * - 小人被固定宽高比窗口压小
+     */
+    private val contentAspectState = mutableStateOf<Float?>(null)
+
+    /**
      * 主窗口是否因内容为空被临时移除（僵尸窗口修复）。
      *
      * true = ComposeView 已从 WindowManager removeView，但 view/params/生命周期宿主
@@ -135,6 +154,24 @@ class SecretaryOverlayService : Service() {
         /** 未保存过位置时的默认落点（px） */
         private const val DEFAULT_POS_X = 100
         private const val DEFAULT_POS_Y = 300
+
+        /**
+         * 悬浮窗短边下限（dp）。
+         *
+         * 窗口尺寸改为贴合内容形状后，极瘦/极扁的 SD 骨骼会算出很小的短边，
+         * 导致「能看见但点不到」。48dp 是 Android 推荐的最小可触控尺寸，
+         * 短边不足时由 [OverlayGeometry.computeContentWindowSize] 抬到该值——
+         * 此时窗口比内容略大，但仍在形体周围，不会形成大面积死区。
+         */
+        private const val MIN_TOUCH_SIDE_DP = 48f
+
+        /**
+         * 窗口宽/高相对屏幕尺寸的上限比例。
+         *
+         * 放大到 3 倍时窗口可能超过屏幕，必须夹取到可用区域内，
+         * 否则 WindowManager 会把窗口裁掉或顶到屏幕外。
+         */
+        private const val MAX_WINDOW_SCREEN_RATIO = 0.98f
 
         private val isRunning = AtomicBoolean(false)
         fun isServiceRunning(): Boolean = isRunning.get()
@@ -178,6 +215,82 @@ class SecretaryOverlayService : Service() {
         }
     }
 
+    // ───────────────────────────────────────────────────────────────────────────
+    // 主窗口尺寸与 flags 的唯一计算入口
+    // ───────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 主窗口基础 flags（不含穿透位）：
+     * - FLAG_NOT_FOCUSABLE：不抢占输入焦点
+     * - FLAG_LAYOUT_IN_SCREEN：允许覆盖状态栏区域
+     * - FLAG_NOT_TOUCH_MODAL：窗口**外**事件穿透到下层 App
+     * - FLAG_LAYOUT_NO_LIMITS：允许 y 为负（小人可拖到屏幕上方）
+     */
+    private fun baseWindowFlags(): Int =
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+
+    /** 按穿透状态算出完整 flags（幂等纯函数） */
+    private fun windowFlagsFor(passthrough: Boolean): Int =
+        if (passthrough) {
+            baseWindowFlags() or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            baseWindowFlags()
+        }
+
+    /**
+     * 把当前穿透状态重放到 `lp.flags` 并同步到窗口。
+     *
+     * 幂等且可重复调用：addView 之前、updateViewLayout 之后、转屏重建、
+     * re-add 前都可以安全调用；`lp.flags` 已正确时不触发多余布局。
+     *
+     * 这是修复「触摸穿透偶发失效」的关键——旧实现只在
+     * `LaunchedEffect(overlayTouchPassthrough)` 一处写 flags，
+     * 窗口被移除后重新 addView（僵尸窗口修复）、转屏、缩放重建时
+     * 都会回到不带 FLAG_NOT_TOUCHABLE 的默认状态。
+     */
+    private fun applyWindowFlags(forceUpdate: Boolean = false) {
+        val lp = overlayLayoutParams ?: return
+        val desired = windowFlagsFor(touchPassthrough)
+        if (!forceUpdate && lp.flags == desired) return
+        lp.flags = desired
+        val view = composeView ?: return
+        if (mainWindowDetached) return
+        runCatching { windowManager?.updateViewLayout(view, lp) }
+            .onFailure { Log.w(TAG, "applyWindowFlags: updateViewLayout 失败（穿透=$touchPassthrough）", it) }
+    }
+
+    /**
+     * 计算主窗口像素尺寸：以「可见内容宽高比」为准，而不是固定 110×165dp。
+     *
+     * 旧实现把窗口固定成 CHIBI_BASE_WIDTH/HEIGHT × displayScale：
+     * - 宽扁型骨骼（横躺/带大翅膀/武器）在窗口内只占很小一块，
+     *   视觉上"怎么放大都很小"；窗口透明部分却全额占用触摸面积，
+     *   且随 displayScale 一起放大。
+     * - 高瘦型骨骼则被宽度挤压。
+     *
+     * 现在窗口高度仍以 [CHIBI_BASE_HEIGHT] × displayScale 为基准，
+     * 宽度按内容宽高比推导；短边有下限保证可点，长边不超过屏幕。
+     */
+    private fun computeWindowSize(displayScale: Float): Pair<Int, Int> {
+        val density = resources.displayMetrics.density
+        val dm = resources.displayMetrics
+        val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
+        val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
+        val minSidePx = (MIN_TOUCH_SIDE_DP * density).toInt()
+        return OverlayGeometry.computeContentWindowSize(
+            contentAspect = contentAspectState.value,
+            baseWidth = baseWidthPx,
+            baseHeight = baseHeightPx,
+            displayScale = displayScale,
+            minSide = minSidePx,
+            maxWidth = (dm.widthPixels * MAX_WINDOW_SCREEN_RATIO).toInt(),
+            maxHeight = (dm.heightPixels * MAX_WINDOW_SCREEN_RATIO).toInt()
+        )
+    }
+
     @Suppress("DEPRECATION")
     private suspend fun showOverlay() {
         Log.d(TAG, "showOverlay: 开始显示悬浮窗（双窗口架构）")
@@ -185,18 +298,20 @@ class SecretaryOverlayService : Service() {
         try {
             windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-            val density = resources.displayMetrics.density
-            // 基础尺寸与 SecretaryChibiOverlay 共用同一常量，保证双端渲染/交互范围一致
-            val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
-            val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
             // 【重启偏移修复】主窗口初始尺寸必须与持久化的 sdScale 一致。
             // 旧实现固定按 baseSize（sdScale=1.0）建窗：用户上次放大后保存的位置是
             // 大窗口左上角，先按小窗恢复、再由 updateMainWindowSize 以"小窗中心"为基准
             // 缩放，最终小人中心整体向左上偏移 (新尺寸-旧尺寸)/2，表现为放大后
             // 重启/重开悬浮窗时位置异常偏移。
-            val savedScale = playerSettings.secretarySdScale.first().coerceIn(0.3f, 2.0f)
-            val overlayWidthPx = (baseWidthPx * savedScale).toInt()
-            val overlayHeightPx = (baseHeightPx * savedScale).toInt()
+            val savedScale = playerSettings.secretarySdScale.first()
+                .coerceIn(SECRETARY_SD_SCALE_MIN, SECRETARY_SD_SCALE_MAX)
+            // 【穿透真值先行】首次建窗就要按持久化开关决定 flags，
+            // 否则服务重启后第一帧到 LaunchedEffect 生效之间会漏一段时间（穿透过早/过晚）。
+            touchPassthrough = runCatching {
+                playerSettings.secretaryOverlayTouchPassthrough.first()
+            }.getOrDefault(false)
+            // 尺寸按「可见内容宽高比」推导（contentAspect 未知时退化为基础尺寸）
+            val (overlayWidthPx, overlayHeightPx) = computeWindowSize(savedScale)
 
             // 主窗口 LayoutParams：
             // - FLAG_NOT_FOCUSABLE：不抢占输入焦点
@@ -207,6 +322,8 @@ class SecretaryOverlayService : Service() {
             //   安全性保障：SpineSdView 的 OnTouchListener 使用 event.rawX/rawY
             //   （屏幕绝对坐标）计算拖动偏移，不依赖 view 自身位置，因此窗口超出
             //   屏幕边界不会导致触摸坐标异常或拖动卡死。
+            //   穿透位由 [windowFlagsFor] 统一决定（读持久化的用户开关），
+            //   避免"服务重启后要等 LaunchedEffect 才生效"的空窗期。
             val params = WindowManager.LayoutParams(
                 overlayWidthPx,
                 overlayHeightPx,
@@ -215,10 +332,7 @@ class SecretaryOverlayService : Service() {
                 } else {
                     WindowManager.LayoutParams.TYPE_PHONE
                 },
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                windowFlagsFor(touchPassthrough),
                 PixelFormat.TRANSLUCENT
             )
             params.gravity = Gravity.TOP or Gravity.START
@@ -249,6 +363,14 @@ class SecretaryOverlayService : Service() {
 
                         // 监听 sdScale 变化：动态调整主窗口尺寸，保持小人中心位置不变
                         LaunchedEffect(secretaryState.sdScale) {
+                            updateMainWindowSize(secretaryState.sdScale)
+                        }
+
+                        // 监听可见内容宽高比变化：Spine 首次解码完成 / 切换皮肤后
+                        // 内容形状可能改变，窗口尺寸要跟着重算（旧实现窗口尺寸与
+                        // 模型无关，宽扁骨骼会留下大片透明触摸区）
+                        val reportedContentAspect by contentAspectState
+                        LaunchedEffect(reportedContentAspect) {
                             updateMainWindowSize(secretaryState.sdScale)
                         }
 
@@ -324,6 +446,11 @@ class SecretaryOverlayService : Service() {
                                 sdResourceId = secretaryState.sdResourceId,
                                 webChibiUrl = secretaryState.webChibiUrl,
                                 hasSdBundle = secretaryState.sdAvailable,
+                                // 触摸穿透：Composable 内部把它接到 touchEnabled，
+                                // 与窗口级 FLAG_NOT_TOUCHABLE 双保险
+                                touchPassthrough = secretaryState.overlayTouchPassthrough,
+                                // 可见内容宽高比上报：Service 据此收紧窗口尺寸
+                                onContentAspect = { aspect -> contentAspectState.value = aspect },
                                 // 静态图分支交互上报：可交互矩形（窗口本地坐标）与分支模式。
                                 // Service 层 OverlayGestureHandler 据此做屏幕空间命中判断——
                                 // Compose 层 pointerInput 已摘除（修复自参考系拖拽漂移）
@@ -385,6 +512,8 @@ class SecretaryOverlayService : Service() {
             // 状态上报接线：Composable 写 mutableState → 同步到处理器 @Volatile 字段
             // （setContent 中不直接持 handler 引用，用 Service 级状态中转）
             gestureHandler = handler
+            // 建窗时同步穿透真值：避免"窗口已 addView 但 flags 尚未生效"的窗口期消费事件
+            handler.passthrough = touchPassthrough
             composeView?.setOnTouchListener(handler)
 
             windowManager?.addView(composeView, params)
@@ -409,14 +538,16 @@ class SecretaryOverlayService : Service() {
     private fun updateMainWindowSize(sdScale: Float) {
         val lp = overlayLayoutParams ?: return
         val view = composeView ?: return
-        val density = resources.displayMetrics.density
-        val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
-        val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
-        val displayScale = sdScale.coerceIn(0.3f, 2.0f)
-        val newWidth = (baseWidthPx * displayScale).toInt()
-        val newHeight = (baseHeightPx * displayScale).toInt()
+        val displayScale = sdScale.coerceIn(SECRETARY_SD_SCALE_MIN, SECRETARY_SD_SCALE_MAX)
+        // 窗口尺寸 = 可见内容形状 × 显示倍率（contentAspect 未知时退化为基础尺寸），
+        // 不再固定 110×165dp——否则宽扁骨骼视觉过小、且留下大片透明触摸区
+        val (newWidth, newHeight) = computeWindowSize(displayScale)
 
-        if (lp.width == newWidth && lp.height == newHeight) return
+        if (lp.width == newWidth && lp.height == newHeight) {
+            // 尺寸没变也要保证 flags 与当前穿透开关一致（防止某条路径漏重放）
+            applyWindowFlags()
+            return
+        }
 
         val dm = resources.displayMetrics
         val oldWidth = lp.width
@@ -458,6 +589,9 @@ class SecretaryOverlayService : Service() {
             newSize = newHeight
         )
 
+        // 尺寸变化时一并重放 flags：updateViewLayout 以 lp 为准，
+        // 若 lp.flags 曾在别处被改回基础值，这里会立刻纠正
+        lp.flags = windowFlagsFor(touchPassthrough)
         try {
             windowManager?.updateViewLayout(view, lp)
             Log.d(TAG, "updateMainWindowSize: sdScale=$sdScale → ${newWidth}x${newHeight}px, pos=(${lp.x},${lp.y})")
@@ -485,46 +619,29 @@ class SecretaryOverlayService : Service() {
     ): Int = OverlayGeometry.pickMinShiftAnchor(candidates, minBound, maxBound, oldCenter, newSize)
 
     /**
-     * 动态切换主窗口触摸穿透模式（[overlayTouchPassthrough] 变化时调用）。
+     * 动态切换主窗口触摸穿透模式（`overlayTouchPassthrough` 变化时调用）。
      *
      * - touchPassthrough=true：追加 [WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE]，
-     *   主窗口所有触摸事件直接穿透到下层 App，SD 小人变为纯展示模式（不可点击/拖动/缩放）。
-     *   显示层、语音播放、动画运行不受影响。
+     *   主窗口所有触摸事件直接穿透到下层 App，SD 小人变为纯展示模式
+     *   （不可点击/拖动/缩放）。显示层、语音播放、动画运行不受影响。
      * - touchPassthrough=false：移除 FLAG_NOT_TOUCHABLE，恢复正常交互。
-     *   透明区域触摸穿透由 [SpineSdGlSurfaceView] 内部骨骼 bounds 判断处理。
+     *   形体外的空白区域触摸穿透由 [SpineSdGlSurfaceView] 的逐部件几何命中处理。
      *
-     * 通过 [WindowManager.updateViewLayout] 实时更新 flags，无需重建窗口，无需重启 App。
+     * 状态写入 [touchPassthrough] 后统一由 [applyWindowFlags] 落盘，
+     * 保证后续任何一次 addView / updateViewLayout 都沿用同一真值。
      */
     private fun updateMainWindowTouchMode(touchPassthrough: Boolean) {
-        val lp = overlayLayoutParams ?: return
-        val view = composeView ?: return
-
-        // 基础 flags（始终需要）：
-        // - FLAG_NOT_FOCUSABLE：不抢占输入焦点
-        // - FLAG_LAYOUT_IN_SCREEN：允许窗口覆盖状态栏区域
-        // - FLAG_NOT_TOUCH_MODAL：窗口外事件穿透到下层 App
-        // - FLAG_LAYOUT_NO_LIMITS：允许窗口位置超出屏幕边界（y 可为负），
-        //   使小人可拖动到屏幕上方区域
-        val baseFlags = (
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        )
-
-        // 触摸穿透模式追加 FLAG_NOT_TOUCHABLE：窗口完全不接收触摸事件
-        lp.flags = if (touchPassthrough) {
-            baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if (this.touchPassthrough == touchPassthrough) {
+            // 值没变也强制重放一次：窗口可能刚被移除/重建，flags 已回到默认值
+            applyWindowFlags(forceUpdate = true)
         } else {
-            baseFlags
+            this.touchPassthrough = touchPassthrough
+            applyWindowFlags(forceUpdate = true)
         }
-
-        try {
-            windowManager?.updateViewLayout(view, lp)
-            Log.d(TAG, "updateMainWindowTouchMode: touchPassthrough=$touchPassthrough, flags=${lp.flags}")
-        } catch (e: Exception) {
-            Log.e(TAG, "updateMainWindowTouchMode: updateViewLayout failed", e)
-        }
+        // 视图层双保险：即使窗口级 FLAG_NOT_TOUCHABLE 因系统原因未生效，
+        // 手势处理器也不会消费事件（修复"偶发失效"）
+        gestureHandler?.passthrough = touchPassthrough
+        Log.d(TAG, "updateMainWindowTouchMode: touchPassthrough=$touchPassthrough, flags=${overlayLayoutParams?.flags}")
     }
 
     /**
@@ -575,9 +692,12 @@ class SecretaryOverlayService : Service() {
         if (lp.width <= 0 || lp.height <= 0) {
             rebuildLayoutParamsFromPersisted(lp)
         }
+        // re-add 前重放 flags：窗口被移除期间穿透开关可能改过，
+        // 若沿用旧 lp.flags，re-add 后穿透会"失效"（历史 bug）
+        lp.flags = windowFlagsFor(touchPassthrough)
         try {
             windowManager?.addView(view, lp)
-            Log.d(TAG, "ensureMainWindowAttached: 主窗口重新挂载 pos=(${lp.x},${lp.y})")
+            Log.d(TAG, "ensureMainWindowAttached: 主窗口重新挂载 pos=(${lp.x},${lp.y}) passthrough=$touchPassthrough")
         } catch (e: Exception) {
             Log.e(TAG, "ensureMainWindowAttached: addView failed", e)
             mainWindowDetached = true
@@ -599,12 +719,12 @@ class SecretaryOverlayService : Service() {
 
     /** 按持久化 sdScale/位置重建 LayoutParams 尺寸与落点（尺寸合法后仍需 clamp） */
     private suspend fun rebuildLayoutParamsFromPersisted(lp: WindowManager.LayoutParams) {
-        val density = resources.displayMetrics.density
-        val baseWidthPx = (CHIBI_BASE_WIDTH.value * density).toInt()
-        val baseHeightPx = (CHIBI_BASE_HEIGHT.value * density).toInt()
-        val savedScale = playerSettings.secretarySdScale.first().coerceIn(0.3f, 2.0f)
-        lp.width = (baseWidthPx * savedScale).toInt()
-        lp.height = (baseHeightPx * savedScale).toInt()
+        val savedScale = playerSettings.secretarySdScale.first()
+            .coerceIn(SECRETARY_SD_SCALE_MIN, SECRETARY_SD_SCALE_MAX)
+        val (width, height) = computeWindowSize(savedScale)
+        lp.width = width
+        lp.height = height
+        lp.flags = windowFlagsFor(touchPassthrough)
         val (posX, posY) = resolveWindowPosition(lp.width, lp.height)
         lp.x = posX
         lp.y = posY
@@ -787,6 +907,9 @@ class SecretaryOverlayService : Service() {
         val lp = overlayLayoutParams ?: return
         val view = composeView ?: return
         if (mainWindowDetached) return
+        // 转屏/分屏后重放 flags：部分 ROM 在 configuration change 后会按默认值
+        // 重建窗口属性，若不重放，触摸穿透会"突然失效"（历史 bug）
+        applyWindowFlags(forceUpdate = true)
         val dm = resources.displayMetrics
         val maxX = (dm.widthPixels - lp.width).coerceAtLeast(0)
         val minY = -(lp.height * CHIBI_DRAG_MARGIN_RATIO).toInt()

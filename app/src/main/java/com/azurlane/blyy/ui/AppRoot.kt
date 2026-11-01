@@ -971,7 +971,11 @@ fun AppContent() {
                         sdScale = secretaryState.sdScale,
                         sdResourceId = secretaryState.sdResourceId,
                         webChibiUrl = secretaryState.webChibiUrl,
-                        hasSdBundle = secretaryState.sdAvailable
+                        hasSdBundle = secretaryState.sdAvailable,
+                        // 触摸穿透不再只对桌面悬浮窗生效：应用内小人同样响应这个开关。
+                        // 开启后 Spine 视图 touchEnabled=false、静态图不挂手势，
+                        // 触摸直接落到下层页面（历史实现硬编码可交互，开关只在桌面悬浮窗有用）。
+                        touchPassthrough = secretaryState.overlayTouchPassthrough
                     )
                 }
 

@@ -15,6 +15,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -52,6 +53,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,21 +72,25 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
+import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
-/**
- * SpineRenderer 自适应缩放时的视口利用率（见 SpineSdView.kt `* 0.95f`）。
+/*
+ * 【渲染取景现状（供气泡定位与拖动边界参考）】
  *
- * 边界会缩放到视口的 95%（留 5% 边距），剩余 5% 上下平分各 2.5%。
+ * SpineRenderer 现在按「可见内容包围盒」铺满视口：
+ *   scale = min(viewW / contentW, viewH / contentH) * CONTENT_FIT_FILL
+ * 其中 `CONTENT_FIT_FILL = 1.0`（不再留 5% 边距，因为 contentW/H 已经是收紧后的
+ * 可见范围，不再包含透明留白、隐藏部件与离体特效）。见 SpineSdView.kt。
  *
- * 【气泡定位基准】SpineRenderer scale = min(viewW/boundsW, viewH/boundsH) * 0.95，
- * 骨骼渲染高度 = boundsH * scale：
- * - 高瘦型骨骼（height 为限制维度）：骨骼渲染高度 = viewH * 0.95（占视口 95%）
- * - 矮胖型骨骼（width 为限制维度）：骨骼渲染高度 < viewH * 0.95
+ * 由此得到两条性质，UI 侧依赖它们：
+ * - 高瘦型骨骼（height 为限制维度）：渲染高度 = 视口高度
+ * - 矮胖型骨骼（width 为限制维度）：渲染高度 < 视口高度，且上下居中
  *
- * 因此骨骼渲染高度占视口比例最大为 [CHIBI_VIEWPORT_USAGE]（0.95），
- * 气泡定位用此值作为保守估计：高瘦型精确贴合头顶，矮胖型气泡稍高但不会遮挡头部。
+ * 旧实现里的 `CHIBI_VIEWPORT_USAGE = 0.95f` 是"渲染占视口 95%"的保守估计，
+ * 现已由渲染器真实铺满 + 内容宽高比回调（SecretaryChibiOverlay.onContentAspect /
+ * OverlayGeometry.computeContentWindowSize）替代，故删除。
  */
-internal const val CHIBI_VIEWPORT_USAGE = 0.95f
 
 /**
  * 拖动边界余量比例：允许小人头顶超出容器顶部此比例的距离，使头顶可达屏幕顶端。
@@ -198,7 +204,26 @@ fun SecretaryChibiOverlay(
      * 没有它时「只有游戏导入的 SD、没有 pin、也没有网络立绘」会被开头的
      * 早退判空挡掉，小人完全不显示。
      */
-    hasSdBundle: Boolean = false
+    hasSdBundle: Boolean = false,
+    /**
+     * 触摸穿透开关（应用内小人 + 系统悬浮窗共用）。
+     *
+     * 旧实现只有系统悬浮窗的 `FLAG_NOT_TOUCHABLE` 响应这个开关，应用内的小人
+     * 永远可交互，于是「触摸穿透」看起来只在开启桌面悬浮窗时才有效。
+     * 现在应用内分支也接这个参数：
+     * - true → GLSurfaceView `touchEnabled=false`（OnTouchListener 直接返回 false，
+     *   事件不消费即天然穿透到下层 Compose UI）+ 静态图不挂手势
+     * - false → 正常响应点击/拖动
+     */
+    touchPassthrough: Boolean = false,
+    /**
+     * 可见内容宽高比（宽/高）回调。
+     *
+     * SpineSdView 在资源加载完成后按「真实可见范围」算出一个宽高比（见
+     * SpineSdView 的 baseBounds 说明）。Service 层据此把悬浮窗尺寸贴合成内容比例，
+     * 消除窗口内的大片透明区域——透明区域既会拦触摸，也让小人看起来很小。
+     */
+    onContentAspect: ((Float) -> Unit)? = null
 ) {
     // 同时检查 figureUrl / webChibiUrl / sdResourceId：
     // - 三者都空 → 无任何可渲染内容，提前返回
@@ -260,9 +285,18 @@ fun SecretaryChibiOverlay(
     val screenWidth = with(density) { configuration.screenWidthDp.dp.toPx() }
     val screenHeight = with(density) { configuration.screenHeightDp.dp.toPx() }
 
-    val displayScale = sdScale.coerceIn(0.3f, 2.0f)
+    val displayScale = sdScale.coerceIn(SECRETARY_SD_SCALE_MIN, SECRETARY_SD_SCALE_MAX)
     val baseWidthPx = with(density) { CHIBI_BASE_WIDTH.toPx() }
     val baseHeightPx = with(density) { CHIBI_BASE_HEIGHT.toPx() }
+
+    /**
+     * 应用内场景的可见内容宽高比（宽/高），由 SpineSdView 首帧上报。
+     *
+     * 内嵌分支的渲染容器原本固定 110×165dp：宽扁型骨骼（横躺/大翅膀/大武器）
+     * 在容器内被宽度限制，用户"调到最大仍然很小"。拿到真实内容比例后，
+     * 容器按比例贴合内容，可见部分即铺满容器，视觉尺寸随内容形状自适应。
+     */
+    var inAppContentAspect by remember { mutableStateOf<Float?>(null) }
 
     // ════════════════════════════════════════════════════════════════════════════
     // 系统悬浮窗场景：主窗口尺寸紧贴小人实际显示范围
@@ -279,13 +313,10 @@ fun SecretaryChibiOverlay(
     //   气泡和拖动提示由 Service 层独立辅助窗口处理（紧贴主窗口上方）。
     //
     // SpineSdView scaleMultiplier = 1.0：
-    //   视口尺寸已反映 displayScale（窗口=baseSize×displayScale），
-    //   SpineRenderer 自适应缩放 min(vw/boundsW, vh/boundsH)*0.95 已正确，
-    //   无需额外 userScale。小人渲染高度 = baseHeightPx × displayScale × 0.95（高瘦型）。
+    //   窗口尺寸已由 Service 按「可见内容宽高比 × displayScale」算好（
+    //   OverlayGeometry.computeContentWindowSize），视口 = 内容尺寸，
+    //   SpineRenderer 把可见内容铺满视口即可，无需额外 userScale。
     if (isSystemOverlay) {
-        val overlayWidth = CHIBI_BASE_WIDTH * displayScale
-        val overlayHeight = CHIBI_BASE_HEIGHT * displayScale
-
         var isDragging by remember { mutableStateOf(false) }
         var isTapped by remember { mutableStateOf(false) }
 
@@ -313,7 +344,13 @@ fun SecretaryChibiOverlay(
         // - 静态图分支：Service 层 OverlayGestureHandler → onDragStateChanged 回调
         //   （isDragging 由 Service setContent 中的状态写入，见 SecretaryOverlayService）
 
-        Box(modifier = modifier.size(overlayWidth, overlayHeight)) {
+        // 窗口尺寸由 Service 按「可见内容宽高比 × 显示倍率」决定（见
+        // OverlayGeometry.computeContentWindowSize），所以这里必须撑满窗口：
+        // 撑满后小人铺满窗口，触摸面积 == 可见面积。
+        // 用 BoxWithConstraints 拿到窗口真实尺寸，静态图分支才能按窗口做 Fit。
+        BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+            val windowWidthPx = with(density) { maxWidth.toPx() }
+            val windowHeightPx = with(density) { maxHeight.toPx() }
             if (asset != null && asset.isSpine) {
                 // ── SD 小人（Spine 动画）──
                 // 直接 fillMaxSize：窗口尺寸 = 渲染尺寸，无需 requiredSize + offset 补偿。
@@ -325,6 +362,10 @@ fun SecretaryChibiOverlay(
                     assetName = asset.assetName,
                     modifier = Modifier.fillMaxSize(),
                     scaleMultiplier = 1.0f,
+                    // 穿透时 GLSurfaceView 不消费事件；窗口级 FLAG_NOT_TOUCHABLE
+                    // 由 Service 施加，这里做双保险（flag 未及时重放时也不会误吞触摸）
+                    touchEnabled = !touchPassthrough,
+                    onContentAspect = onContentAspect,
                     onTap = {
                         isTapped = true
                         hapticFeedback(BlyyHaptic.Tick)
@@ -361,8 +402,8 @@ fun SecretaryChibiOverlay(
                 // 图源降级链：wiki 小人/本地静态图加载失败时回退完整立绘 figureUrl
                 val fallbackModel = figureUrl.takeIf { it.isNotEmpty() && it != imageModel }
                 InteractiveStaticFigure(
-                    containerWidthPx = with(density) { overlayWidth.toPx() },
-                    containerHeightPx = with(density) { overlayHeight.toPx() },
+                    containerWidthPx = windowWidthPx,
+                    containerHeightPx = windowHeightPx,
                     imageModel = imageModel,
                     fallbackModel = fallbackModel,
                     contentDescription = "秘书舰 $shipName",
@@ -384,7 +425,11 @@ fun SecretaryChibiOverlay(
                     scale = staticScale,
                     alpha = staticAlpha,
                     interactive = false,
-                    onHitRectChanged = onHitRectChanged
+                    onHitRectChanged = onHitRectChanged,
+                    // 静态立绘同样上报比例：窗口尺寸随之贴合图片，消除上下/左右透明触摸区
+                    onImageAspect = onContentAspect?.let { callback: (Float) -> Unit ->
+                        { aspect: Float? -> if (aspect != null) callback(aspect) }
+                    }
                 )
             }
         }
@@ -418,8 +463,34 @@ fun SecretaryChibiOverlay(
     val characterScale = displayScale / containerScale  // 放大时=1.0，缩小时=sdScale
 
     // 渲染容器尺寸：放大时跟随放大，保证 Spine 骨骼渲染完整不裁剪
-    val renderWidth = CHIBI_BASE_WIDTH * containerScale
-    val renderHeight = CHIBI_BASE_HEIGHT * containerScale
+    // 【内容形状自适应】已知可见内容宽高比时，容器按内容比例贴合——
+    // 宽扁骨骼不再被 110dp 宽度限制（此前"调到最大仍很小"的主因之一），
+    // 高瘦骨骼保持原高度基准。宽/高仍受屏幕尺寸约束。
+    val renderWidth: Dp
+    val renderHeight: Dp
+    run {
+        val baseRenderWidth = CHIBI_BASE_WIDTH * containerScale
+        val baseRenderHeight = CHIBI_BASE_HEIGHT * containerScale
+        val aspect = inAppContentAspect
+        if (aspect == null || !aspect.isFinite() || aspect <= 0f) {
+            renderWidth = baseRenderWidth
+            renderHeight = baseRenderHeight
+        } else {
+            val boxAspect = baseRenderWidth.value / baseRenderHeight.value
+            if (aspect >= boxAspect) {
+                // 比基础容器更宽：宽度取屏幕可用宽度，高度按比例
+                val maxWRender = (screenWidth / density.density) * 0.98f
+                val targetW = baseRenderWidth.value.coerceAtLeast(
+                    minOf(baseRenderHeight.value * aspect, maxWRender)
+                )
+                renderWidth = targetW.dp
+                renderHeight = (targetW / aspect).dp
+            } else {
+                renderHeight = baseRenderHeight
+                renderWidth = (baseRenderHeight.value * aspect).dp
+            }
+        }
+    }
 
     // GLSurfaceView 相对外层 Box 的 offset（居中放置，放大时向外扩展）
     // renderOffset = (baseSize - renderSize) / 2，放大时为负值（向左上方扩展）
@@ -429,25 +500,30 @@ fun SecretaryChibiOverlay(
     val renderOffsetY = (baseHeightPx - with(density) { renderHeight.toPx() }) / 2f
 
     // 小人头顶相对外层 Box 顶部的 Y 坐标（放大时为负值，表示头顶溢出容器顶部）
-    // SpineRenderer 把骨骼边界框中心垂直居中到 GLSurfaceView 中心（skel.y 计算保证），
-    // 骨骼渲染高度 = baseHeightPx * CHIBI_VIEWPORT_USAGE * displayScale（高瘦型精确等于此值），
-    // 因此头顶 Y = baseHeightPx/2 - 骨骼渲染高度/2 = baseHeightPx * (1 - 0.95*displayScale) / 2
+    // SpineRenderer 把可见内容铺满 GLSurfaceView（CONTENT_FIT_FILL=1.0，
+    // 且窗口/容器宽高比已按内容比例收紧），因此内容顶边 ≈ 渲染容器顶边：
+    //   头顶 Y = 渲染容器顶边 = (baseHeightPx - renderHeightPx) / 2
     // 复用于气泡定位和拖动边界计算，确保三者位置一致
-    val chibiHeadTopY = baseHeightPx * (1f - CHIBI_VIEWPORT_USAGE * displayScale) / 2f
+    val renderHeightPx = with(density) { renderHeight.toPx() }
+    val renderWidthPx = with(density) { renderWidth.toPx() }
+    val chibiHeadTopY = (baseHeightPx - renderHeightPx) / 2f
+
+    // 水平拖动边界按「实际渲染宽度」算，而不是基础宽度：
+    // 内容变宽（宽扁骨骼/横图立绘）时渲染容器会溢出基础容器，
+    // 仍用 baseWidthPx 会让小人能被拖到屏幕外一大截。
+    val effectiveWidthPx = maxOf(baseWidthPx, renderWidthPx)
+    val dragMaxXOffset = (screenWidth - effectiveWidthPx).coerceAtLeast(0f)
 
     // 拖动边界：基于小人实际顶部/底部位置计算，保证放大时小人不会过度超出屏幕
     // 允许小人顶部/底部最多超出屏幕 CHIBI_DRAG_MARGIN_RATIO * baseHeightPx（让头顶可达屏幕顶端）
     //
-    // 【隐藏问题修复】旧实现 dragMinY = -baseHeightPx * 0.15 是固定值，不考虑 displayScale，
-    // 放大时小人会溢出基础容器（头顶/脚底超出 baseHeightPx 范围），若仍用固定 dragMinY 会导致：
-    //   displayScale=2.0 时 dragMinY=-baseHeightPx*0.15，但小人顶部 = localOffsetY + chibiHeadTopY
-    //   = -baseHeightPx*0.15 + (-baseHeightPx*0.45) = -baseHeightPx*0.6，小人头部超出屏幕 60% 被裁剪
-    // 修复后 dragMinY 考虑 chibiHeadTopY，保证小人顶部最多超出屏幕 margin（15% baseHeightPx）
+    // 【隐藏问题修复】旧实现 dragMinY 是固定值、不考虑缩放，放大时小人溢出基础容器
+    // （头顶/脚底超出 baseHeightPx 范围）会被裁剪；现在按渲染容器顶边 + 边距计算。
         val dragMinY = -chibiHeadTopY - baseHeightPx * CHIBI_DRAG_MARGIN_RATIO
-        // coerceAtLeast(dragMinY)：小屏 + displayScale 接近 2.0 时原始值可能小于
+        // coerceAtLeast(dragMinY)：小屏 + displayScale 接近上限时原始值可能小于
         // dragMinY（下界反转，拖动范围整个越界），夹取保证 maxY ≥ minY 至少合法
-        val dragMaxY = (screenHeight - chibiHeadTopY -
-            baseHeightPx * (CHIBI_VIEWPORT_USAGE * displayScale - CHIBI_DRAG_MARGIN_RATIO))
+        val dragMaxY = (screenHeight - chibiHeadTopY - renderHeightPx +
+            baseHeightPx * CHIBI_DRAG_MARGIN_RATIO)
             .coerceAtLeast(dragMinY)
 
     // 首次组合以默认落点初始化进程级锚点；此后组合重建从锚点恢复拖拽位置
@@ -458,7 +534,7 @@ fun SecretaryChibiOverlay(
         InAppChibiPositionAnchor.offsetY = screenHeight * 0.5f - baseHeightPx / 2
         InAppChibiPositionAnchor.initialized = true
     }
-    val restoreMaxX = (screenWidth - baseWidthPx).coerceAtLeast(0f)
+    val restoreMaxX = dragMaxXOffset
     var localOffsetX by remember {
         mutableFloatStateOf(InAppChibiPositionAnchor.offsetX.coerceIn(0f, restoreMaxX))
     }
@@ -469,8 +545,7 @@ fun SecretaryChibiOverlay(
     // 角色尺寸变化（用户调整 sdScale）时自动收紧位置边界
     // 依赖 displayScale：放大/缩小时拖动边界变化，需重新检查 localOffsetY 是否越界
     LaunchedEffect(baseWidthPx, baseHeightPx, screenWidth, screenHeight, displayScale) {
-        val maxX = (screenWidth - baseWidthPx).coerceAtLeast(0f)
-        if (localOffsetX > maxX) localOffsetX = maxX
+        if (localOffsetX > dragMaxXOffset) localOffsetX = dragMaxXOffset
         if (localOffsetX < 0f) localOffsetX = 0f
         if (localOffsetY > dragMaxY) localOffsetY = dragMaxY
         if (localOffsetY < dragMinY) localOffsetY = dragMinY
@@ -547,9 +622,9 @@ fun SecretaryChibiOverlay(
                         .requiredSize(renderWidth, renderHeight)
                         .offset { IntOffset(renderOffsetX.roundToInt(), renderOffsetY.roundToInt()) },
                     scaleMultiplier = characterScale,
-                    // 应用内场景始终可交互：触摸穿透仅用于系统悬浮窗（FLAG_NOT_TOUCHABLE），
-                    // 应用内 SD 小人是 App UI 的一部分，应始终响应点击/拖动
-                    touchEnabled = true,
+                    // 与系统悬浮窗共用「触摸穿透」开关：开启时不消费事件，
+                    // 手势自然落到下层 Compose UI（这也是本参数此前只在悬浮窗生效的修复点）
+                    touchEnabled = !touchPassthrough,
                     onTap = {
                         isTapped = true
                         hapticFeedback(BlyyHaptic.Tick)
@@ -567,7 +642,9 @@ fun SecretaryChibiOverlay(
                         isDragging = false
                         InAppChibiPositionAnchor.offsetX = localOffsetX
                         InAppChibiPositionAnchor.offsetY = localOffsetY
-                    }
+                    },
+                    // 应用内同样按可见内容形状收敛渲染容器（不依赖 Service 的窗口尺寸）
+                    onContentAspect = { aspect -> inAppContentAspect = aspect }
                 )
             } else {
                 // ── 静态图片资源 / 网页 Q版小人 / 网络立绘回退 ──
@@ -617,11 +694,17 @@ fun SecretaryChibiOverlay(
                             InAppChibiPositionAnchor.offsetY = localOffsetY
                         },
                         onDrag = { dx, dy ->
-                            localOffsetX = (localOffsetX + dx).coerceIn(0f, (screenWidth - baseWidthPx).coerceAtLeast(0f))
+                            localOffsetX = (localOffsetX + dx).coerceIn(0f, dragMaxXOffset)
                             localOffsetY = (localOffsetY + dy).coerceIn(dragMinY, dragMaxY)
                         },
                         scale = staticScale,
-                        alpha = staticAlpha
+                        alpha = staticAlpha,
+                        // 穿透时不挂手势：静态图没有 GLSurfaceView 那样的命中判断，
+                        // 只能靠"不注册 pointerInput"把整块区域让给下层
+                        interactive = !touchPassthrough,
+                        // 应用内同样按图片比例收窄渲染容器（否则固定 110×165 容器里
+                        // 图片按 Fit 居中，四周空白仍会吃掉点击与拖动手势）
+                        onImageAspect = { aspect -> aspect?.let { inAppContentAspect = it } }
                     )
                 }
             }
@@ -785,7 +868,15 @@ private fun InteractiveStaticFigure(
     /** 交互开关：true=应用内（本层处理手势），false=悬浮窗（Service 层处理，仅上报矩形） */
     interactive: Boolean = true,
     /** 悬浮窗场景：图片 Fit 矩形（窗口本地坐标 px）变化时上报；null = 无可交互内容 */
-    onHitRectChanged: ((RectF?) -> Unit)? = null
+    onHitRectChanged: ((RectF?) -> Unit)? = null,
+    /**
+     * 图片宽高比（宽/高）变化时上报；null = 当前无图或尚未加载完成。
+     *
+     * 与 Spine 分支的 `onContentAspect` 同语义：调用方（悬浮窗 Service /
+     * 应用内容器）据此把窗口或容器尺寸贴合内容比例，避免固定 110×165dp
+     * 窗口留下大片透明触摸区。
+     */
+    onImageAspect: ((Float?) -> Unit)? = null
 ) {
     // 图片宽高比：由 Coil 加载成功回调写入；模型变化时重置（切舰娘/皮肤后重新测量）
     var imageAspect by remember { mutableStateOf<Float?>(null) }
@@ -800,6 +891,11 @@ private fun InteractiveStaticFigure(
     // 悬浮窗场景：把 Fit 矩形上报给 Service 层手势处理器做命中判断
     if (onHitRectChanged != null) {
         LaunchedEffect(fitRect) { onHitRectChanged(fitRect) }
+    }
+
+    // 内容宽高比上报：调用方据此把窗口/容器尺寸贴合图片比例
+    if (onImageAspect != null) {
+        LaunchedEffect(imageAspect) { onImageAspect(imageAspect) }
     }
 
     // 无图可加载：不组合任何内容（悬浮窗场景同时上报 null 矩形，不拦截触摸）
