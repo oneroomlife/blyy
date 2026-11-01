@@ -86,32 +86,70 @@ object AssetMetaStore {
         prettyPrint = true
     }
 
+    /** 缓存条目：文件指纹（mtime + 长度）+ 解析结果 */
+    private data class CachedMeta(val modified: Long, val length: Long, val value: Any?)
+
+    /**
+     * 侧车解析结果缓存（LRU）。
+     *
+     * 真实库规模下 [GameAssetLibrary.scanAll] 要过 6000+ 个资产目录，每个目录至少一次
+     * 文件读 + JSON 反序列化；而侧车只在导入时写一次，属于「读极多、写极少」。
+     * 按 (路径, mtime, 长度) 做键后，导入/删除/重命名触发的重复刷新退化成一次 stat + 命中。
+     *
+     * 文件被重写（重新导入）时 mtime/长度变化 → 自然失效；[writeSpine]/[writePainting]
+     * 另外主动剔除，避免文件系统 mtime 精度不足导致读到旧值。
+     */
+    private val metaCache = object : LinkedHashMap<String, CachedMeta>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CachedMeta>?): Boolean =
+            size > MetaCacheCapacity
+    }
+
+    /** 命中缓存则直接返回；否则读取 + 解析并写回缓存 */
+    private fun <T> cached(file: File, decode: (File) -> T?): T? {
+        if (!file.isFile) return null
+        val modified = file.lastModified()
+        val length = file.length()
+        synchronized(metaCache) {
+            metaCache[file.path]?.let { hit ->
+                if (hit.modified == modified && hit.length == length) {
+                    @Suppress("UNCHECKED_CAST")
+                    return hit.value as T?
+                }
+            }
+        }
+        val value = decode(file)
+        synchronized(metaCache) { metaCache[file.path] = CachedMeta(modified, length, value) }
+        return value
+    }
+
     fun readSpine(dir: File): SpineAssetMeta? =
-        runCatching {
-            val file = File(dir, AssetFiles.SPINE_META)
-            if (!file.isFile) return null
-            json.decodeFromString<SpineAssetMeta>(file.readText())
-        }.getOrNull()
+        cached(File(dir, AssetFiles.SPINE_META)) { file ->
+            runCatching { json.decodeFromString<SpineAssetMeta>(file.readText()) }.getOrNull()
+        }
 
     fun writeSpine(dir: File, meta: SpineAssetMeta) {
+        val file = File(dir, AssetFiles.SPINE_META)
         runCatching {
-            File(dir, AssetFiles.SPINE_META).writeText(json.encodeToString(SpineAssetMeta.serializer(), meta))
+            file.writeText(json.encodeToString(SpineAssetMeta.serializer(), meta))
         }
+        synchronized(metaCache) { metaCache.remove(file.path) }
     }
 
     fun readPainting(dir: File): PaintingAssetMeta? =
-        runCatching {
-            val file = File(dir, AssetFiles.PAINTING_META)
-            if (!file.isFile) return null
-            json.decodeFromString<PaintingAssetMeta>(file.readText())
-        }.getOrNull()
+        cached(File(dir, AssetFiles.PAINTING_META)) { file ->
+            runCatching { json.decodeFromString<PaintingAssetMeta>(file.readText()) }.getOrNull()
+        }
 
     fun writePainting(dir: File, meta: PaintingAssetMeta) {
+        val file = File(dir, AssetFiles.PAINTING_META)
         runCatching {
-            File(dir, AssetFiles.PAINTING_META)
-                .writeText(json.encodeToString(PaintingAssetMeta.serializer(), meta))
+            file.writeText(json.encodeToString(PaintingAssetMeta.serializer(), meta))
         }
+        synchronized(metaCache) { metaCache.remove(file.path) }
     }
+
+    /** [metaCache] 容量上限（资产目录数量级的上界，覆盖常见库规模） */
+    private const val MetaCacheCapacity = 8192
 }
 
 /**

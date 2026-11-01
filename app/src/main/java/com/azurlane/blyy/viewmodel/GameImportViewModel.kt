@@ -139,7 +139,22 @@ class GameImportViewModel @Inject constructor(
          * 过场图与 SD 小人的贴图是 ASTC 6x6，设备不支持时导入必然失败，
          * 提前说明比让用户对着「导入失败」猜要好。
          */
-        val deviceWarning: String? = null
+        val deviceWarning: String? = null,
+        /**
+         * 资源库内容的版本号（只在 [assets] 真正变化时自增）。
+         *
+         * UI 侧用它（而不是 [assets] 本身）当 remember / LaunchedEffect 的 key：
+         * 导入进度每秒会刷新好几次 State，但资源库内容没变——按 Map 做结构比较
+         * 对几千条资源来说太贵，按 Int 比较则是 O(1)。
+         */
+        val libraryRevision: Int = 0,
+        /**
+         * 资源包条目列表的版本号（只在 [entries] 变化时自增）。
+         *
+         * 与 [libraryRevision] 同理：列表页要按它做 remember，
+         * 否则每次重组都要在几千条条目上做一次结构比较。
+         */
+        val entriesRevision: Int = 0
     ) {
         val busy: Boolean get() = scanning || progress != null
 
@@ -154,8 +169,17 @@ class GameImportViewModel @Inject constructor(
                 shellState == ShellState.NO_PERMISSION ||
                 shellState == ShellState.SERVICE_UNREACHABLE
 
-        val filteredEntries: List<GameBundleEntry>
-            get() = kindFilter?.let { kind -> entries.filter { it.kind == kind } } ?: entries
+        // ── 派生量（全部 lazy 缓存）─────────────────────────────────────────────
+        // 这些量原来是纯 getter：每次访问都在 entries / assets 上重跑一遍全表扫描，有的还
+        // 新建 List。而单次重组里它们会被读很多次（顶栏统计、Tab 标题、countSuffix、筛选项
+        // chips、卡片…），在 8000 条 entries 的规模下等于成百上千次多余的 O(N)；其中
+        // filteredAssets 每次返回新实例，还会让 LibraryTab 的 LaunchedEffect(assets) 反复重启。
+        // State 是 data class + copy 的不可变快照，缓存随实例走、替换即失效，不需要手动清理。
+
+        /** 当前类型筛选后的资源包列表 */
+        val filteredEntries: List<GameBundleEntry> by lazy {
+            kindFilter?.let { kind -> entries.filter { it.kind == kind } } ?: entries
+        }
 
         fun assetsOf(kind: GameAssetKind?): List<GameAssetInfo> =
             if (kind == null) {
@@ -164,31 +188,37 @@ class GameImportViewModel @Inject constructor(
                 assets[kind].orEmpty()
             }
 
-        val filteredAssets: List<GameAssetInfo>
-            get() = assetsOf(kindFilter)
+        /** 当前类型筛选后的已导入资源（同一实例返回，稳定引用） */
+        val filteredAssets: List<GameAssetInfo> by lazy { assetsOf(kindFilter) }
 
         /** 已导入（含可更新）的条目数 */
-        val importedCount: Int
-            get() = entries.count {
+        val importedCount: Int by lazy {
+            entries.count {
                 it.state == GameBundleEntry.State.IMPORTED || it.state == GameBundleEntry.State.CHANGED
             }
+        }
 
         /** 待导入：从未导入过 + 上次失败。CHANGED 不算（已导入，只是可更新） */
-        val pendingCount: Int
-            get() = entries.count {
+        val pendingCount: Int by lazy {
+            entries.count {
                 it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
             }
-
+        }
 
         /** 可更新（已导入但源包/管线变化） */
-        val updatableCount: Int
-            get() = entries.count { it.state == GameBundleEntry.State.CHANGED }
+        val updatableCount: Int by lazy { entries.count { it.state == GameBundleEntry.State.CHANGED } }
 
-        val failedCount: Int get() = entries.count { it.state == GameBundleEntry.State.FAILED }
-        val totalAssets: Int get() = assets.values.sumOf { it.size }
+        val failedCount: Int by lazy { entries.count { it.state == GameBundleEntry.State.FAILED } }
+
+        val totalAssets: Int by lazy { assets.values.sumOf { it.size } }
+
+        /** 资源包按类型的条目数（一次分组，供筛选 chip 复用） */
+        private val entryCountByKind: Map<GameAssetKind, Int> by lazy {
+            entries.groupingBy { it.kind }.eachCount()
+        }
 
         fun countOf(kind: GameAssetKind?): Int =
-            if (kind == null) entries.size else entries.count { it.kind == kind }
+            if (kind == null) entries.size else entryCountByKind[kind] ?: 0
 
         fun importedCountOf(kind: GameAssetKind?): Int =
             if (kind == null) totalAssets else assets[kind].orEmpty().size
@@ -199,6 +229,16 @@ class GameImportViewModel @Inject constructor(
 
     private var importJob: Job? = null
     private var cancelRequested = false
+
+    /** 皮肤名预热任务（合并并发触发用） */
+    private var skinNameWarmupJob: Job? = null
+
+    /** 已预热过的 baseName：重复触发只处理增量（受 [skinNameWarmupLock] 保护） */
+    private val warmedSkinNames = HashSet<String>(256)
+    private val skinNameWarmupLock = Any()
+
+    /** 预热任务运行期间又有新请求时置位，结束后补跑一次 */
+    private var skinNameWarmupPending = false
 
     private val permissionListener: (Int, Int) -> Unit = { _, grantResult ->
         viewModelScope.launch {
@@ -293,19 +333,53 @@ class GameImportViewModel @Inject constructor(
     fun displayNameOfEntry(entry: GameBundleEntry): String = nameResolver.displayNameFor(entry.assetId)
 
     /**
-     * 为当前列表里出现的舰名拉取真实换装名（wiki 台词表）。
+     * 为当前列表里出现的舰名拉取真实换装名（wiki 台词表），并预热皮肤名。
      *
      * 注册表内部按舰名去重、失败允许重试，重复调用零网络成本；
      * 就绪后经 [Live2dNameResolver.skinNameProvider] 自动把「换装N」升级为真实皮肤名。
+     *
+     * 资源规模可达 8000+ 个 id，原实现直接在 viewModelScope（Main）里同步跑完整个循环：
+     * 建 8000 元素的 set + 8000 次 [Live2dNameResolver.baseShipName] 反查，
+     * 全部压在提交线程上，正是「扫描结束的那一帧卡一下」的来源。
+     *
+     * 现在做了三件事：
+     * 1. 挪到 [Dispatchers.Default]（反查是纯 CPU，不占 IO 线程也不占主线程）；
+     * 2. 记住已预热的 baseName，重复触发（拼音表刷新 / 每次 refreshLibrary）只处理增量；
+     * 3. 合并并发触发：进度更新期间连续调用不会叠出多条同样的任务。
      */
     private fun requestSkinNames() {
+        if (skinNameWarmupJob?.isActive == true) {
+            // 已有任务在跑：记一笔，等它跑完补齐新 id（不重复排队、也不丢请求）
+            skinNameWarmupPending = true
+            return
+        }
+        if (allAssetIds().isEmpty()) return
+        skinNameWarmupJob = viewModelScope.launch(Dispatchers.Default) {
+            // 首轮 + 「期间又来了新请求」的补跑；用 while 而不是递归调用，避免
+            // isActive 判定把自己当成「已有任务」再次推迟
+            warmSkinNames(allAssetIds())
+            while (skinNameWarmupPending) {
+                skinNameWarmupPending = false
+                warmSkinNames(allAssetIds())
+            }
+        }
+    }
+
+    /** entries + assets 里出现过的全部资源 id 快照 */
+    private fun allAssetIds(): Set<String> {
         val current = _state.value
-        val ids = buildSet {
+        return buildSet {
             current.entries.forEach { add(it.assetId) }
             current.assets.values.forEach { list -> list.forEach { add(it.id) } }
         }
+    }
+
+    /** 对一批 id 反查 baseName 并请求 wiki 换装名；已预热过的 baseName 直接跳过 */
+    private fun warmSkinNames(ids: Set<String>) {
         ids.forEach { id ->
-            nameResolver.baseShipName(id)?.let(skinNameRegistry::request)
+            val base = nameResolver.baseShipName(id) ?: return@forEach
+            val fresh = synchronized(skinNameWarmupLock) { warmedSkinNames.add(base) }
+            if (fresh) skinNameRegistry.request(base)
         }
     }
 
@@ -430,6 +504,7 @@ class GameImportViewModel @Inject constructor(
                         scanning = false,
                         scanStatus = null,
                         entries = entries,
+                        entriesRevision = it.entriesRevision + 1,
                         roots = roots,
                         lastScanAt = System.currentTimeMillis()
                     )
@@ -458,7 +533,7 @@ class GameImportViewModel @Inject constructor(
     fun refreshLibrary() {
         viewModelScope.launch {
             val assets = library.scanAll()
-            _state.update { it.copy(assets = assets) }
+            _state.update { it.copy(assets = assets, libraryRevision = it.libraryRevision + 1) }
             requestSkinNames()
         }
     }
@@ -512,7 +587,8 @@ class GameImportViewModel @Inject constructor(
                             } else {
                                 current.copy(
                                     assets = current.assets +
-                                        (imported.kind to (list + imported).sortedBy { it.id })
+                                        (imported.kind to (list + imported).sortedBy { it.id }),
+                                    libraryRevision = current.libraryRevision + 1
                                 )
                             }
                         }
@@ -567,6 +643,7 @@ class GameImportViewModel @Inject constructor(
     ) {
         _state.update { current ->
             current.copy(
+                entriesRevision = current.entriesRevision + 1,
                 entries = current.entries.map {
                     if (it.path == path) {
                         it.copy(state = state, error = error, assetId = assetId ?: it.assetId)
@@ -593,7 +670,8 @@ class GameImportViewModel @Inject constructor(
                         }
                     } else {
                         it.assets
-                    }
+                    },
+                    libraryRevision = if (ok) it.libraryRevision + 1 else it.libraryRevision
                 )
             }
             index.removeByAsset(kind, id)

@@ -6,6 +6,9 @@ import com.azurlane.blyy.util.AvatarAssetIndex
 import com.azurlane.blyy.util.Live2dLibrary
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
@@ -31,6 +34,9 @@ class GameAssetLibrary @Inject constructor(
         private const val TAG = "GameAssetLibrary"
         private const val ROOT_NAME = "game_assets"
         private const val STAGING_NAME = ".game_assets_staging"
+
+        /** [measureCache] 容量上限：覆盖常见库规模（几千个资源目录） */
+        private const val MeasureCacheCapacity = 8192
     }
 
     private fun baseDir(): File = context.getExternalFilesDir(null) ?: context.filesDir
@@ -54,11 +60,24 @@ class GameAssetLibrary @Inject constructor(
     /** 单个资源的目录 */
     fun dirOf(kind: GameAssetKind, id: String): File = File(rootDir(kind), id)
 
+    /**
+     * 全库扫描：四类资源目录互不重叠，**并发**扫描。
+     *
+     * 立绘/过场图动辄几千个目录，每个目录要读侧车 + 统计体积，串行时总耗时是四段相加；
+     * 并发后接近「最慢的那一类」，这也是导入/删除/重命名后 refreshLibrary 的耗时大头。
+     */
     suspend fun scanAll(): Map<GameAssetKind, List<GameAssetInfo>> = withContext(Dispatchers.IO) {
-        GameAssetKind.ordered.associateWith { kind ->
-            runCatching { scan(kind) }
-                .onFailure { Log.w(TAG, "扫描 ${kind.key} 失败", it) }
-                .getOrDefault(emptyList())
+        coroutineScope {
+            GameAssetKind.ordered
+                .map { kind ->
+                    async {
+                        kind to runCatching { scan(kind) }
+                            .onFailure { Log.w(TAG, "扫描 ${kind.key} 失败", it) }
+                            .getOrDefault(emptyList())
+                    }
+                }
+                .awaitAll()
+                .toMap()
         }
     }
 
@@ -73,10 +92,18 @@ class GameAssetLibrary @Inject constructor(
      * （分层残图目录同样排除），Live2D 看有无 `model3.json`。
      */
     suspend fun scanAllIds(): Map<GameAssetKind, Set<String>> = withContext(Dispatchers.IO) {
-        GameAssetKind.ordered.associateWith { kind ->
-            runCatching { scanIds(kind) }
-                .onFailure { Log.w(TAG, "扫描 ${kind.key} id 失败", it) }
-                .getOrDefault(emptySet())
+        // 与 scanAll 同理：四类目录并发列举，避免一次「找状态」把四段 listFiles 串起来等
+        coroutineScope {
+            GameAssetKind.ordered
+                .map { kind ->
+                    async {
+                        kind to runCatching { scanIds(kind) }
+                            .onFailure { Log.w(TAG, "扫描 ${kind.key} id 失败", it) }
+                            .getOrDefault(emptySet())
+                    }
+                }
+                .awaitAll()
+                .toMap()
         }
     }
 
@@ -129,6 +156,7 @@ class GameAssetLibrary @Inject constructor(
         val dir = dirOf(kind, id)
         val ok = runCatching { dir.deleteRecursively() }.getOrDefault(false)
         if (!ok) Log.w(TAG, "删除失败：${kind.key}/$id")
+        invalidateMeasure(dir)
         // SD 资源库与秘书舰共用同一份目录索引：删除后要让它重新扫
         if (ok && kind == GameAssetKind.SD_CHAR) {
             runCatching { com.azurlane.blyy.util.SDResourceManager.onGameImportChanged() }
@@ -149,6 +177,9 @@ class GameAssetLibrary @Inject constructor(
                 !dirOf(kind, id).isDirectory -> "资源不存在"
                 !dirOf(kind, id).renameTo(dirOf(kind, sanitized)) -> "重命名失败（文件可能被占用）"
                 else -> {
+                    // 路径变了：体积缓存按路径为键，旧的直接失效
+                    invalidateMeasure(dirOf(kind, id))
+                    invalidateMeasure(dirOf(kind, sanitized))
                     // 秘书舰的 SD 资源库按目录名建索引，改名后要重建
                     if (kind == GameAssetKind.SD_CHAR) {
                         runCatching { com.azurlane.blyy.util.SDResourceManager.onGameImportChanged() }
@@ -272,7 +303,32 @@ class GameAssetLibrary @Inject constructor(
         )
     }
 
+    /** 目录体积/文件数缓存条目：目录 mtime + 派生结果 */
+    private data class DirMeasure(val modified: Long, val size: Long, val count: Int)
+
+    /**
+     * [measure] 的结果缓存（LRU）。
+     *
+     * `measure` 要对整个资产目录 walkTopDown + 逐文件 stat；而 `scanAll()` 在每次导入、
+     * 删除、重命名后都会跑一遍全库 —— 6000+ 个立绘目录就是几万次 stat 排在同一批 IO 线程上，
+     * 这就是「导入完返回列表要等一下」的主要来源。
+     *
+     * 目录 mtime 在「直接子项增删」时必然变化（导入新增文件、删除目录都会命中），
+     * 因此以 mtime 为指纹足够；[delete]/[rename] 成功后还会主动剔除，双保险。
+     * 唯一漏网场景是「只改动子目录内部的文件」——导入产物本身是重建目录，不会出现。
+     */
+    private val measureCache = object : LinkedHashMap<String, DirMeasure>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, DirMeasure>?): Boolean =
+            size > MeasureCacheCapacity
+    }
+
     private fun measure(dir: File): Pair<Long, Int> {
+        val modified = dir.lastModified()
+        synchronized(measureCache) {
+            measureCache[dir.path]?.let { hit ->
+                if (hit.modified == modified) return hit.size to hit.count
+            }
+        }
         var size = 0L
         var count = 0
         dir.walkTopDown().forEach { f ->
@@ -281,6 +337,12 @@ class GameAssetLibrary @Inject constructor(
                 count++
             }
         }
+        synchronized(measureCache) { measureCache[dir.path] = DirMeasure(modified, size, count) }
         return size to count
+    }
+
+    /** 让某个资源目录的体积缓存失效（删除/改名后调用） */
+    private fun invalidateMeasure(dir: File) {
+        synchronized(measureCache) { measureCache.remove(dir.path) }
     }
 }

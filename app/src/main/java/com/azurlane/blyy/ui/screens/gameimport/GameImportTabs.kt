@@ -123,12 +123,22 @@ internal fun BundlesTab(
     // 「需要导入」= 从未导入过（NEW）或上次失败（FAILED）。
     // CHANGED 表示「已导入但源包/管线更新过」，属于可选更新，
     // 不能算进待导入数量——否则用户已经导入过的资源会一直显示导入按钮。
-    val pendingInScope = state.filteredEntries.count {
-        it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
+    //
+    // 两个计数都走 remember：8000 条规模下遍历一次不便宜，而它们在任何一次重组
+    // （进度刷新、搜索输入、类型切换）里都会被重新读一遍。
+    val pendingInScope = remember(state.entriesRevision, state.kindFilter) {
+        state.filteredEntries.count {
+            it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
+        }
     }
     // 可更新数量（单独提示，不占「导入」按钮名额）
-    val updatableInScope = state.filteredEntries.count {
-        it.state == GameBundleEntry.State.CHANGED
+    val updatableInScope = remember(state.entriesRevision, state.kindFilter) {
+        state.filteredEntries.count { it.state == GameBundleEntry.State.CHANGED }
+    }
+    // 显示名依赖拼音表与 wiki 换装名：只在它们变化时重算一张 id → 名字的表，
+    // 避免每个卡片在任意重组里都去反查一次舰名（滚动时的主要 JS 开销之一）
+    val displayNames = remember(entries, state.pinyinMap, state.skinNameSequences) {
+        entries.associate { it.path to viewModel.displayNameOfEntry(it) }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -257,7 +267,7 @@ internal fun BundlesTab(
         items(entries, key = { it.path }) { entry ->
             BundleEntryCard(
                 entry = entry,
-                displayName = viewModel.displayNameOfEntry(entry),
+                displayName = displayNames[entry.path] ?: entry.fileName,
                 sizeText = viewModel.formatSize(entry.size),
                 busy = state.busy,
                 onImport = { onImport(entry) },
@@ -583,7 +593,15 @@ internal fun LibraryTab(
     onRequestRename: (GameAssetInfo) -> Unit,
     onGoBundles: () -> Unit
 ) {
-    val assets = state.filteredAssets
+    // libraryRevision 而不是 state.assets 当 key：导入进度刷新时资源库内容没变，
+    // 这里必须拿回同一个 List 实例，否则下面的 LaunchedEffect / 网格都会白跑一轮。
+    val assets = remember(state.libraryRevision, state.kindFilter) { state.filteredAssets }
+    // 容量概览：几千条资源求和，不能每帧算
+    val totalBytes = remember(assets) { assets.sumOf { it.sizeBytes } }
+    // 显示名同理，只在资源库或名字数据变化时批量算一次
+    val displayNames = remember(assets, state.pinyinMap, state.skinNameSequences) {
+        assets.associate { keyOfAsset(it) to viewModel.displayNameFor(it) }
+    }
 
     // ---- 多选（编辑/删除）----
     // 长按任意卡片进入多选；多选下单击切换选中，顶部工具条支持全选/重命名/删除。
@@ -694,7 +712,7 @@ internal fun LibraryTab(
                 // 库容量概览：告诉用户当前占用，避免「导入了很多但不知道占多少」
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Text(
-                        "共 ${assets.size} 个资源 · 占用 ${viewModel.formatSize(assets.sumOf { it.sizeBytes })}",
+                        "共 ${assets.size} 个资源 · 占用 ${viewModel.formatSize(totalBytes)}",
                         style = AppTypography.CaptionSmall,
                         color = secondaryTextColor(),
                         modifier = Modifier.padding(top = AppSpacing.Xs, bottom = AppSpacing.Xs)
@@ -703,7 +721,7 @@ internal fun LibraryTab(
                 items(assets, key = { "${it.kind.key}/${it.id}" }) { asset ->
                     AssetCard(
                         asset = asset,
-                        displayName = viewModel.displayNameFor(asset),
+                        displayName = displayNames[keyOf(asset)] ?: asset.id,
                         sizeText = viewModel.formatSize(asset.sizeBytes),
                         isSelected = selectionMode && selected.containsKey(keyOf(asset)),
                         selectionMode = selectionMode,
@@ -1193,3 +1211,10 @@ private fun secondaryTextColor(): Color = if (LocalIsDark.current) {
 } else {
     MaterialTheme.colorScheme.onSurfaceVariant
 }
+
+/**
+ * 资源在列表/选中表里的唯一键。
+ *
+ * 同一个 id 可能同时存在于立绘与动态皮肤，裸 id 会撞车，必须带上 kind。
+ */
+private fun keyOfAsset(asset: GameAssetInfo): String = "${asset.kind.key}/${asset.id}"

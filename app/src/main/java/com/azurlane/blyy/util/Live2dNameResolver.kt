@@ -38,6 +38,20 @@ class Live2dNameResolver @Inject constructor(
     /** 拼音 → 中文舰名（随舰船库刷新自动重建）；界面层可订阅其就绪时机 */
     val pinyinMap = MutableStateFlow(emptyMap<String, String>())
 
+    /**
+     * `baseShipName` 的进程级记忆化缓存（LRU，按访问顺序淘汰）。
+     *
+     * - **空结果也缓存**：查不到的 id（联动舰、乱名目录）否则会每帧重查全表。
+     * - **表刷新即失效**：舰船库同步完成后 [pinyinMap] 会整体重建，此处清空，
+     *   避免旧表算出的 null / 错名一直卡住。
+     * - 容量 4096 覆盖常见资源规模；命中率接近 100%，内存占用可忽略。
+     * - 声明位置必须在 [init] 之前：`init` 里的协程会在对象构造完成前就被调度。
+     */
+    private val baseNameCache = object : LinkedHashMap<String, String?>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String?>?): Boolean =
+            size > BaseNameCacheCapacity
+    }
+
     init {
         // SD 资源库（含游戏导入的小人）复用同一套反查：目录名 → 中文舰名，
         // 秘书舰据此联动语音/立绘。挂在对象上避免 SD 模块再依赖 DI。
@@ -48,6 +62,8 @@ class Live2dNameResolver @Inject constructor(
                 // 同步完成、或导入的是联动舰（2B / A2 / 涅普顿 等）时可能查不到，
                 // 那样资源卡就只能显示拼音 id。兜底表保证这些名字也解析得出来。
                 pinyinMap.value = FALLBACK_NAMES + ships.associate { PinyinHelper.toPinyin(it.name) to it.name }
+                // 映射表已换新：清空反查缓存，否则旧表算出的结果会一直生效
+                synchronized(baseNameCache) { baseNameCache.clear() }
             }
         }
     }
@@ -85,6 +101,9 @@ class Live2dNameResolver @Inject constructor(
             "kin" to "试作型布里MKII",
             "gin" to "泛用型布里"
         )
+
+        /** [baseNameCache] 容量上限：覆盖常见资源规模，超出按 LRU 淘汰 */
+        private const val BaseNameCacheCapacity = 4096
     }
 
     /**
@@ -113,8 +132,24 @@ class Live2dNameResolver @Inject constructor(
         return variant?.let { "$name · ${it.second}" } ?: name
     }
 
-    /** 基础中文舰名（无换装/变体后缀），供语音查询等按舰名检索的场景；查不到返回 null */
+    /**
+     * 基础中文舰名（无换装/变体后缀），供语音查询等按舰名检索的场景；查不到返回 null。
+     *
+     * 结果带记忆化：这个函数会被资源卡片的重组、搜索过滤、以及导入后对全量 8000+ 资源 id
+     * 的皮肤名预热反复调用，而每次未命中都要在 700+ 条映射表上最多遍历三遍并分配临时
+     * List。缓存后热路径退化为一次 HashMap 查找。
+     */
     fun baseShipName(id: String): String? {
+        synchronized(baseNameCache) {
+            if (baseNameCache.containsKey(id)) return baseNameCache[id]
+        }
+        val resolved = resolveBaseShipName(id)
+        synchronized(baseNameCache) { baseNameCache[id] = resolved }
+        return resolved
+    }
+
+    /** [baseShipName] 的实际反查逻辑（无缓存） */
+    private fun resolveBaseShipName(id: String): String? {
         val base = stripSuffixes(id)
         // 统一小写后比对：资源目录可能保留原始大小写（`2B_2` / `A2` / `HDN101`），
         // 而映射表 key 由 toPinyin 生成、恒为小写。

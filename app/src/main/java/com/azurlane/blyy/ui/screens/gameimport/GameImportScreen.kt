@@ -135,6 +135,18 @@ fun GameImportScreen(
         if (initialKind != null) viewModel.onIntent(GameImportIntent.SelectKind(initialKind))
     }
 
+    // 上千条条目时，每敲一个字都要把全部条目（含舰名反查）过一遍过滤器。
+    // 这里只给「结果列表」加 120ms 防抖：输入框本身仍是本地 state，回显零延迟。
+    var debouncedQuery by remember { mutableStateOf("") }
+    LaunchedEffect(searchQuery, state.entriesRevision) {
+        if (searchQuery.isBlank() || state.entries.size < SearchDebounceThreshold) {
+            debouncedQuery = searchQuery
+        } else {
+            delay(SearchDebounceMillis)
+            debouncedQuery = searchQuery
+        }
+    }
+
     // 提示横幅 8 秒自动收起
     LaunchedEffect(state.batchMessage) {
         if (state.batchMessage != null) {
@@ -143,13 +155,15 @@ fun GameImportScreen(
         }
     }
 
-    val filteredEntries = remember(state.entries, state.kindFilter, searchQuery) {
+    // key 用版本号而不是 state.entries：后者是几千条记录，每次重组做一次结构比较
+    // （List.equals 逐元素）比重新过滤还贵，而版本号是 O(1) 的 Int 比较
+    val filteredEntries = remember(state.entriesRevision, state.kindFilter, debouncedQuery) {
         val base = state.filteredEntries
-        if (searchQuery.isBlank()) base
+        if (debouncedQuery.isBlank()) base
         else base.filter {
-            it.displayName.contains(searchQuery, ignoreCase = true) ||
-                it.fileName.contains(searchQuery, ignoreCase = true) ||
-                viewModel.displayNameOfEntry(it).contains(searchQuery, ignoreCase = true)
+            it.displayName.contains(debouncedQuery, ignoreCase = true) ||
+                it.fileName.contains(debouncedQuery, ignoreCase = true) ||
+                viewModel.displayNameOfEntry(it).contains(debouncedQuery, ignoreCase = true)
         }
     }
 
@@ -178,8 +192,13 @@ fun GameImportScreen(
                 }
             )
 
+            // Tab 文案只依赖「条目数 / 库内资源数」这两个数字：remember 一下，
+            // 避免每次重组都新建一个 List 让 BlyyTabRow 整行重组
+            val tabLabels = remember(state.entries.size, state.totalAssets) {
+                GameImportTab.entries.map { "${it.label}${countSuffix(state, it)}" }
+            }
             BlyyTabRow(
-                tabs = GameImportTab.entries.map { "${it.label}${countSuffix(state, it)}" },
+                tabs = tabLabels,
                 selectedIndex = GameImportTab.entries.indexOf(state.tab),
                 onTabSelected = { index ->
                     viewModel.onIntent(GameImportIntent.SelectTab(GameImportTab.entries[index]))
@@ -311,4 +330,10 @@ private fun countSuffix(state: GameImportViewModel.State, tab: GameImportTab): S
     GameImportTab.BUNDLES -> if (state.entries.isEmpty()) "" else " ${state.entries.size}"
     GameImportTab.LIBRARY -> if (state.totalAssets == 0) "" else " ${state.totalAssets}"
 }
+
+/** 条目数达到这个规模后，搜索才需要防抖（小列表即时过滤更跟手） */
+private const val SearchDebounceThreshold = 500
+
+/** 搜索防抖窗口：略大于一帧，足以吃掉连续击键 */
+private const val SearchDebounceMillis = 120L
 
