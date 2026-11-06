@@ -102,6 +102,9 @@ class PlayerSettingsDataStore @Inject constructor(
         // 船坞顶栏「舰娘/学生」档案切换按钮开关（关闭后隐藏切换器，顶栏自动回收空间）
         private val SHOW_ARCHIVE_SWITCHER_KEY = booleanPreferencesKey("show_archive_switcher")
 
+        // 游戏资源导入页排序方案（"name_asc" / "time_desc"，空 = 默认名称正序）
+        private val GAME_IMPORT_SORT_KEY = stringPreferencesKey("game_import_sort")
+
         // Live2D 查看器互动语音开关
         private val LIVE2D_VOICE_ENABLED_KEY = booleanPreferencesKey("live2d_voice_enabled")
 
@@ -335,6 +338,14 @@ class PlayerSettingsDataStore @Inject constructor(
     /** 船坞顶栏「舰娘/学生」档案切换按钮，默认开启；关闭后隐藏切换器并自动回收顶栏空间 */
     val showArchiveSwitcher: Flow<Boolean> = safeData.map { it[SHOW_ARCHIVE_SWITCHER_KEY] ?: true }
 
+    /**
+     * 游戏资源导入页的排序方案（编码 `name_asc` / `time_desc`，空 = 从未设置）。
+     *
+     * 存原始字符串而不是枚举：解析放在 UI 侧（`GameSortOrder.parse`），
+     * 脏数据只影响「记不住上次排序」，不会让设置读取链路抛异常。
+     */
+    val gameImportSort: Flow<String> = safeData.map { it[GAME_IMPORT_SORT_KEY] ?: "" }
+
     /** Live2D 查看器：点击皮肤互动时播放对应语音，默认开启 */
     val live2dVoiceEnabled: Flow<Boolean> = safeData.map { it[LIVE2D_VOICE_ENABLED_KEY] ?: true }
 
@@ -524,6 +535,13 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setShowArchiveSwitcher(enabled: Boolean) {
         context.dataStore.edit { prefs ->
             prefs[SHOW_ARCHIVE_SWITCHER_KEY] = enabled
+        }
+    }
+
+    /** 保存游戏资源导入页排序方案（见 [gameImportSort]） */
+    suspend fun setGameImportSort(value: String) {
+        context.dataStore.edit { prefs ->
+            prefs[GAME_IMPORT_SORT_KEY] = value
         }
     }
 

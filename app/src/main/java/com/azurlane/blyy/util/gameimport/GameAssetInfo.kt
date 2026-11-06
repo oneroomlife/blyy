@@ -15,6 +15,13 @@ data class GameAssetInfo(
     val dir: File,
     val sizeBytes: Long,
     val fileCount: Int,
+    /**
+     * 资源目录的最后修改时间（毫秒，0 = 未知）。
+     *
+     * 导入管线是「整目录重建」，所以它近似等于「导入到本地的时间」，
+     * 列表的「按时间排序」直接用这个值（不额外落盘时间戳，避免与索引不同步）。
+     */
+    val modifiedAt: Long = 0L,
     /** Spine：目录内全部骨骼主名（多骨骼时查看器可切换） */
     val skeletons: List<String> = emptyList(),
     /** Spine：默认骨骼主名 */

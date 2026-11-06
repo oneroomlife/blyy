@@ -1,7 +1,9 @@
 package com.azurlane.blyy.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.util.Live2dNameResolver
 import com.azurlane.blyy.util.Live2dSkinNameRegistry
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
@@ -11,6 +13,7 @@ import com.azurlane.blyy.util.gameimport.GameAssetNaming
 import com.azurlane.blyy.util.gameimport.GameBundleEntry
 import com.azurlane.blyy.util.gameimport.GameBundleScanner
 import com.azurlane.blyy.util.gameimport.GameImportIndex
+import com.azurlane.blyy.util.gameimport.GameSortOrder
 import com.azurlane.blyy.util.gameimport.ShellState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -55,6 +58,15 @@ sealed interface GameImportIntent {
     /** 切换分区 */
     data class SelectTab(val tab: GameImportTab) : GameImportIntent
 
+    /**
+     * 设置列表排序（名称 / 时间 × 升序 / 降序）。
+     *
+     * 两个分区共用一份方案；方案会落盘（DataStore），下次进页面仍是同一顺序。
+     * 具体「点芯片 / 点方向按钮」如何推导出新方案由 UI 层用
+     * [GameSortOrder.selecting] / [GameSortOrder.toggled] 算，ViewModel 只认结果。
+     */
+    data class SetSortOrder(val order: GameSortOrder) : GameImportIntent
+
     /** 删除已导入资源 */
     data class DeleteAsset(val kind: GameAssetKind, val id: String) : GameImportIntent
 
@@ -94,7 +106,8 @@ class GameImportViewModel @Inject constructor(
     private val index: GameImportIndex,
     private val nameResolver: Live2dNameResolver,
     private val skinNameRegistry: Live2dSkinNameRegistry,
-    private val secretaryManager: SecretaryManager
+    private val secretaryManager: SecretaryManager,
+    private val settings: PlayerSettingsDataStore
 ) : ViewModel() {
 
     data class ImportProgress(
@@ -113,6 +126,13 @@ class GameImportViewModel @Inject constructor(
         val tab: GameImportTab = GameImportTab.BUNDLES,
         /** null = 全部类型 */
         val kindFilter: GameAssetKind? = null,
+        /**
+         * 列表排序方案（名称 / 时间 × 升序 / 降序），「资源包」与「已导入」共用。
+         *
+         * 排序本身在 UI 层做（那里已经有批量算好的显示名），这里只保存「方案」：
+         * 这样排序选择能跨 Tab、跨页面存活，也能落盘。
+         */
+        val sortOrder: GameSortOrder = GameSortOrder.Default,
         val scanning: Boolean = false,
         /** 扫描进行中的实时文案（已发现的候选数），完成或失败后清空 */
         val scanStatus: String? = null,
@@ -267,6 +287,13 @@ class GameImportViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // 排序方案是纯 UI 偏好：读不到/脏数据就保持默认（名称正序），不影响扫描与导入
+            settings.gameImportSort.collect { raw ->
+                val restored = GameSortOrder.parse(raw) ?: return@collect
+                _state.update { if (it.sortOrder == restored) it else it.copy(sortOrder = restored) }
+            }
+        }
+        viewModelScope.launch {
             refreshLibrary()
             refreshDeviceCapability()
             refreshShellStateNow()
@@ -300,6 +327,7 @@ class GameImportViewModel @Inject constructor(
             }
             is GameImportIntent.SelectKind -> _state.update { it.copy(kindFilter = intent.kind) }
             is GameImportIntent.SelectTab -> _state.update { it.copy(tab = intent.tab) }
+            is GameImportIntent.SetSortOrder -> updateSortOrder(intent.order)
             is GameImportIntent.DeleteAsset -> deleteAsset(intent.kind, intent.id)
             is GameImportIntent.DeleteAssets -> deleteAssets(intent.keys)
             is GameImportIntent.RenameAsset -> renameAsset(intent.kind, intent.id, intent.newName)
@@ -726,5 +754,24 @@ class GameImportViewModel @Inject constructor(
             }
             refreshLibrary()
         }
+    }
+
+    /**
+     * 切换排序方案：先更新界面（列表立刻重排），再异步落盘。
+     *
+     * 落盘失败（DataStore IO / 空间不足）只影响「下次进页面记不住顺序」，
+     * 不该打断本次排序，因此异常吞掉只留日志。
+     */
+    private fun updateSortOrder(order: GameSortOrder) {
+        if (order == _state.value.sortOrder) return
+        _state.update { it.copy(sortOrder = order) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { settings.setGameImportSort(order.storageKey) }
+                .onFailure { Log.w(TAG, "排序方案保存失败：${order.storageKey}", it) }
+        }
+    }
+
+    private companion object {
+        private const val TAG = "GameImportVM"
     }
 }

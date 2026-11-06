@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -34,6 +35,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Animation
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
@@ -44,6 +47,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.CircularProgressIndicator
@@ -98,7 +102,10 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.util.gameimport.GameAssetKind
+import com.azurlane.blyy.util.gameimport.GameAssetSorting
 import com.azurlane.blyy.util.gameimport.GameBundleEntry
+import com.azurlane.blyy.util.gameimport.GameSortField
+import com.azurlane.blyy.util.gameimport.GameSortOrder
 import com.azurlane.blyy.util.gameimport.ShellState
 import com.azurlane.blyy.viewmodel.GameImportIntent
 import com.azurlane.blyy.viewmodel.GameImportTab
@@ -139,6 +146,13 @@ internal fun BundlesTab(
     // 避免每个卡片在任意重组里都去反查一次舰名（滚动时的主要 JS 开销之一）
     val displayNames = remember(entries, state.pinyinMap, state.skinNameSequences) {
         entries.associate { it.path to viewModel.displayNameOfEntry(it) }
+    }
+    // 排序：用上面这张批量算好的名字表，避免每次比较都去反查舰名。
+    // displayNames 参与 remember key —— 拼音表 / wiki 皮肤名就绪后要按新名字重排。
+    val sortedEntries = remember(entries, state.sortOrder, displayNames) {
+        GameAssetSorting.sortBundles(entries, state.sortOrder) { entry ->
+            displayNames[entry.path] ?: entry.displayName
+        }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -188,6 +202,14 @@ internal fun BundlesTab(
         }
 
         item(key = "filters") { KindFilterRow(state = state, viewModel = viewModel) }
+
+        item(key = "sort") {
+            SortOrderRow(
+                order = state.sortOrder,
+                onOrderChange = { viewModel.onIntent(GameImportIntent.SetSortOrder(it)) },
+                timeHint = "按资源包自身的时间排序（游戏内下载时间）"
+            )
+        }
 
         item(key = "actions") {
             Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
@@ -264,7 +286,7 @@ internal fun BundlesTab(
             }
         }
 
-        items(entries, key = { it.path }) { entry ->
+        items(sortedEntries, key = { it.path }) { entry ->
             BundleEntryCard(
                 entry = entry,
                 displayName = displayNames[entry.path] ?: entry.fileName,
@@ -384,12 +406,112 @@ private fun DeviceWarningCard(text: String) {
     }
 }
 
+/**
+ * 排序条：字段（名称 / 时间）+ 方向（升序 / 降序）。
+ *
+ * 排序列的是「候选对象」——资源包是游戏下载下来的包文件，已导入是库里的目录，
+ * 所以时间语义不同，由调用方用 [timeHint] 各自解释。
+ *
+ * 交互约定（与市面列表排序一致）：
+ * - 点当前已选字段 = 翻转方向（不弹菜单，少一次点击）；
+ * - 点另一个字段 = 切字段并套用它自己的默认方向（名称正序、时间倒序 = 最新在前）；
+ * - 右侧按钮永远显示当前方向并可直接翻转，纯键盘/无障碍路径也能用。
+ */
+@Composable
+private fun SortOrderRow(
+    order: GameSortOrder,
+    onOrderChange: (GameSortOrder) -> Unit,
+    timeHint: String? = null,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Rounded.SwapVert,
+                contentDescription = null,
+                tint = secondaryTextColor(),
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "排序",
+                style = AppTypography.LabelSmall,
+                color = secondaryTextColor()
+            )
+            Spacer(Modifier.width(AppSpacing.Sm))
+            GameSortField.entries.forEach { field ->
+                SortFieldChip(
+                    field = field,
+                    active = order.field == field,
+                    // 选中态图标直接显示当前方向，避免「芯片说升序、按钮说降序」的歧义
+                    ascending = order.ascending,
+                    onClick = { onOrderChange(order.selecting(field)) }
+                )
+                Spacer(Modifier.width(AppSpacing.Xs))
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(
+                onClick = { onOrderChange(order.toggled()) },
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                modifier = Modifier.height(30.dp)
+            ) {
+                Icon(
+                    if (order.ascending) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(2.dp))
+                Text(order.directionLabel, style = AppTypography.LabelSmall)
+            }
+        }
+        if (order.field == GameSortField.TIME && timeHint != null) {
+            Text(
+                timeHint,
+                style = AppTypography.CaptionSmall,
+                color = secondaryTextColor(),
+                modifier = Modifier.padding(start = 19.dp, top = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SortFieldChip(
+    field: GameSortField,
+    active: Boolean,
+    ascending: Boolean,
+    onClick: () -> Unit
+) {
+    FilterChip(
+        selected = active,
+        onClick = onClick,
+        label = { Text(field.label, style = AppTypography.LabelSmall) },
+        leadingIcon = if (active) {
+            {
+                Icon(
+                    if (ascending) Icons.Rounded.ArrowUpward else Icons.Rounded.ArrowDownward,
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp)
+                )
+            }
+        } else {
+            null
+        }
+    )
+}
+
 @Composable
 private fun KindFilterRow(
     state: GameImportViewModel.State,
-    viewModel: GameImportViewModel
+    viewModel: GameImportViewModel,
+    // 「资源包」在 LazyColumn 里，横向留白由列表的 contentPadding 给；
+    // 「已导入」是普通 Column，需要自己留白，否则芯片会贴到屏幕边缘、与网格错开
+    contentPadding: PaddingValues = PaddingValues()
 ) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm),
+        contentPadding = contentPadding
+    ) {
         item(key = "all") {
             FilterChip(
                 selected = state.kindFilter == null,
@@ -602,6 +724,12 @@ internal fun LibraryTab(
     val displayNames = remember(assets, state.pinyinMap, state.skinNameSequences) {
         assets.associate { keyOfAsset(it) to viewModel.displayNameFor(it) }
     }
+    // 排序：与「资源包」共用同一个方案；名字表参与 key，改名的资源会立刻挪到新位置
+    val sortedAssets = remember(assets, state.sortOrder, displayNames) {
+        GameAssetSorting.sortAssets(assets, state.sortOrder) { asset ->
+            displayNames[keyOfAsset(asset)] ?: asset.id
+        }
+    }
 
     // ---- 多选（编辑/删除）----
     // 长按任意卡片进入多选；多选下单击切换选中，顶部工具条支持全选/重命名/删除。
@@ -631,7 +759,26 @@ internal fun LibraryTab(
     }
 
     Column(Modifier.fillMaxSize()) {
-        KindFilterRow(state = state, viewModel = viewModel)
+        KindFilterRow(
+            state = state,
+            viewModel = viewModel,
+            contentPadding = PaddingValues(horizontal = AppSpacing.Screen.Horizontal)
+        )
+
+        // 多选态下隐藏排序条：此时顶部要给批量工具条腾位置，且排序会打乱「勾了哪几个」的心智
+        if (!selectionMode) {
+            SortOrderRow(
+                order = state.sortOrder,
+                onOrderChange = { viewModel.onIntent(GameImportIntent.SetSortOrder(it)) },
+                timeHint = "按资源导入到本机的时间排序（最上面是最新导入）",
+                modifier = Modifier.padding(
+                    start = AppSpacing.Screen.Horizontal,
+                    end = AppSpacing.Screen.Horizontal,
+                    top = AppSpacing.Xs,
+                    bottom = AppSpacing.Xs
+                )
+            )
+        }
 
         if (selectionMode) {
             LibrarySelectionBar(
@@ -718,7 +865,7 @@ internal fun LibraryTab(
                         modifier = Modifier.padding(top = AppSpacing.Xs, bottom = AppSpacing.Xs)
                     )
                 }
-                items(assets, key = { "${it.kind.key}/${it.id}" }) { asset ->
+                items(sortedAssets, key = { "${it.kind.key}/${it.id}" }) { asset ->
                     AssetCard(
                         asset = asset,
                         displayName = displayNames[keyOf(asset)] ?: asset.id,
