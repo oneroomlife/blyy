@@ -57,6 +57,18 @@ data class GameBundleEntry(
 }
 
 /**
+ * 磁盘快照还原出来的扫描结果（导入状态已按当前索引重算）。
+ *
+ * 与 [GameBundleEntry] 列表一起带上 [savedAt]，界面才能显示「这是哪一次的扫描」，
+ * 而不是让用户以为自己看到的是一份新鲜数据。
+ */
+data class ScanSnapshot(
+    val roots: Map<GameAssetKind, String>,
+    val entries: List<GameBundleEntry>,
+    val savedAt: Long
+)
+
+/**
  * 游戏资源包扫描器（四类资源统一）。
  *
  * 流程：Shizuku 列举 `AssetBundles/<kind>` → 用持久化索引判断已导入/有更新
@@ -69,7 +81,8 @@ class GameBundleScanner @Inject constructor(
     private val bridge: ShizukuBridge,
     private val index: GameImportIndex,
     private val library: GameAssetLibrary,
-    private val importer: GameBundleImporter
+    private val importer: GameBundleImporter,
+    private val scanCache: GameScanCache
 ) {
     companion object {
         private const val TAG = "GameBundleScanner"
@@ -187,6 +200,9 @@ class GameBundleScanner @Inject constructor(
 
     fun release() = bridge.release()
 
+    /** 丢弃扫描快照（资源目录整个不见了 / 索引被清空时调用，避免继续展示过期的列表） */
+    suspend fun clearScanCache() = scanCache.clear()
+
     /** 模型中是否还存在该资源（索引自检用） */
     suspend fun assetExists(kind: GameAssetKind, id: String): Boolean = withContext(Dispatchers.IO) {
         runCatching { library.find(kind, id) != null }.getOrDefault(false)
@@ -207,6 +223,20 @@ class GameBundleScanner @Inject constructor(
         // 这里**不能**把异常吞掉：绑定失败与「游戏没装资源」是两回事，
         // 吞掉之后用户只会看到「未找到资源目录」，永远不知道是通道坏了。
         val service = bridge.requireService()
+        // 快路径：上次扫描记下的根目录还在，就直接复用。
+        // 常规场景（游戏装在同一个包名下）能省掉 KNOWN_PACKAGES×STORAGE_PREFIXES
+        // 的 10 次跨进程 exists()，进页面少一次可见的白等。
+        val remembered = runCatching { index.roots() }.getOrDefault(emptyMap())
+        if (remembered.isNotEmpty()) {
+            val alive = LinkedHashMap<GameAssetKind, String>(remembered.size)
+            for ((key, path) in remembered) {
+                val kind = GameAssetKind.fromKey(key) ?: continue
+                if (runCatching { service.exists(path) }.getOrDefault(false)) {
+                    alive[kind] = path
+                }
+            }
+            if (alive.size == remembered.size) return@withContext alive
+        }
         val bundlesRoots = discoverBundlesRoots(service)
         if (bundlesRoots.isEmpty()) return@withContext emptyMap()
 
@@ -285,6 +315,49 @@ class GameBundleScanner @Inject constructor(
         }
         Log.i(TAG, "自动发现资源目录：${roots.keys.joinToString()}")
         return roots.values.toList()
+    }
+
+    /**
+     * 读取上次扫描的磁盘快照，供界面「秒开」。
+     *
+     * 快照里只有远端包的物理信息，导入状态在这里用索引 + 本地资源库重算，
+     * 所以「刚导入完再进页面」不会把资产显示成未导入。
+     *
+     * @return null 表示没有可用快照（首次使用 / 文件损坏 / 版本不符）
+     */
+    suspend fun cachedScan(): ScanSnapshot? = withContext(Dispatchers.IO) {
+        val tStart = android.os.SystemClock.elapsedRealtime()
+        val data = scanCache.load() ?: return@withContext null
+        if (data.entries.isEmpty()) return@withContext null
+        val tParsed = android.os.SystemClock.elapsedRealtime()
+        val known = index.load().entries.associateBy { it.path }
+        val tIndex = android.os.SystemClock.elapsedRealtime()
+        val importedIds = library.scanAllIds()
+        val tLibrary = android.os.SystemClock.elapsedRealtime()
+        val entries = ArrayList<GameBundleEntry>(data.entries.size)
+        for (c in data.entries) {
+            val record = known[c.path]
+            val remote = RemoteFile(c.path, c.path.substringAfterLast('/'), c.size, c.modified)
+            val state = resolveState(record, c.kind, c.assetId, remote, importedIds[c.kind].orEmpty())
+            entries += GameBundleEntry(
+                path = c.path,
+                fileName = remote.name,
+                size = c.size,
+                modified = c.modified,
+                kind = c.kind,
+                assetId = c.assetId,
+                state = state,
+                importedAt = record?.importedAt ?: 0L,
+                error = if (state == GameBundleEntry.State.FAILED) record?.error else null,
+                companions = c.companions
+            )
+        }
+        Log.i(
+            TAG,
+            "还原扫描快照 ${entries.size} 条，耗时 ${android.os.SystemClock.elapsedRealtime() - tStart}ms" +
+                "（解析 ${tParsed - tStart}ms / 索引 ${tIndex - tParsed}ms / 本地库 ${tLibrary - tIndex}ms）"
+        )
+        ScanSnapshot(roots = data.roots, entries = entries, savedAt = data.savedAt)
     }
 
     /**
@@ -411,7 +484,15 @@ class GameBundleScanner @Inject constructor(
             "扫描完成：${entries.size} 条，耗时 ${android.os.SystemClock.elapsedRealtime() - tStart}ms" +
                 "（其中列举 ${tListDone - tListAll}ms）"
         )
-        entries.sortedWith(compareBy({ GameAssetKind.ordered.indexOf(it.kind) }, { it.displayName.lowercase() }))
+        val sorted = entries.sortedWith(
+            compareBy({ GameAssetKind.ordered.indexOf(it.kind) }, { it.displayName.lowercase() })
+        )
+        // 落盘快照：下次进页面先把这份结果铺到界面上，不必等 Shizuku 重新列举
+        val tCache = android.os.SystemClock.elapsedRealtime()
+        runCatching { scanCache.save(roots, sorted) }
+            .onFailure { Log.w(TAG, "写扫描缓存失败", it) }
+        Log.d(TAG, "扫描阶段[写缓存] ${sorted.size} 条 ${android.os.SystemClock.elapsedRealtime() - tCache}ms")
+        sorted
     }
 
     /**

@@ -324,7 +324,12 @@ class GameImportViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // 本地资源库先动（纯本地 IO，量很小），列表头部的「已导入 N」才有数
             refreshLibrary()
+            // 再把上次扫描的快照铺到界面上（不依赖 Shizuku，本地磁盘即可），
+            // 然后检测通道、后台重新扫描校正：1 万多个文件的目录每次重新列举要 2 秒上下，
+            // 等它就是用户抱怨的「每次点进来都要转圈」
+            preloadScanCache()
             refreshDeviceCapability()
             refreshShellStateNow()
             if (_state.value.shellState == ShellState.READY) scan()
@@ -781,6 +786,34 @@ class GameImportViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 用磁盘扫描快照预填列表（秒开），随后由 [scan] 在后台校正。
+     *
+     * 只在还没有任何扫描结果时生效：用户已经手动刷新/扫描过就不该被旧快照盖回去。
+     */
+    private suspend fun preloadScanCache() {
+        if (_state.value.entries.isNotEmpty()) return
+        val tStart = android.os.SystemClock.elapsedRealtime()
+        val snapshot = runCatching { scanner.cachedScan() }
+            .onFailure { android.util.Log.w("GameImportViewModel", "读取扫描缓存失败", it) }
+            .getOrNull() ?: return
+        if (snapshot.entries.isEmpty()) return
+        _state.update {
+            it.copy(
+                entries = snapshot.entries,
+                entriesRevision = it.entriesRevision + 1,
+                roots = snapshot.roots,
+                lastScanAt = snapshot.savedAt,
+                scanStatus = "已载入上次扫描结果 · 正在后台校验文件变化…"
+            )
+        }
+        refreshSortedLists()
+        android.util.Log.i(
+            "GameImportViewModel",
+            "扫描缓存预填 ${snapshot.entries.size} 条 ${android.os.SystemClock.elapsedRealtime() - tStart}ms"
+        )
+    }
+
     /** 扫描游戏目录（Shizuku 不可用时只刷新本地资源库） */
     fun scan() {
         if (_state.value.scanning) return
@@ -810,9 +843,14 @@ class GameImportViewModel @Inject constructor(
             try {
                 val roots = scanner.discoverRoots()
                 if (roots.isEmpty()) {
+                    // 资源目录彻底没了（游戏被卸载/移走）：连缓存一起清掉，
+                    // 否则列表里会一直挂着一堆点不动的过期资源包
+                    scanner.clearScanCache()
                     _state.update {
                         it.copy(
                             scanning = false,
+                            entries = emptyList(),
+                            entriesRevision = it.entriesRevision + 1,
                             error = "未找到碧蓝航线资源目录（请确认游戏已安装并下载过资源，然后点「重试」重新扫描）"
                         )
                     }
@@ -824,17 +862,20 @@ class GameImportViewModel @Inject constructor(
                     // scanner 的进度回调在 IO 线程触发，StateFlow.update 线程安全
                     _state.update { it.copy(scanStatus = "已发现 $found 个资源包…") }
                 }
+                // 与当前列表完全一致时（常态：文件没变）不重新发布，
+                // 避免 6000+ 条目的列表整体重建导致滚动位置跳动
+                val unchanged = _state.value.entries == entries
                 _state.update {
                     it.copy(
                         scanning = false,
                         scanStatus = null,
-                        entries = entries,
-                        entriesRevision = it.entriesRevision + 1,
+                        entries = if (unchanged) it.entries else entries,
+                        entriesRevision = if (unchanged) it.entriesRevision else it.entriesRevision + 1,
                         roots = roots,
                         lastScanAt = System.currentTimeMillis()
                     )
                 }
-                refreshSortedLists()
+                if (!unchanged) refreshSortedLists()
                 refreshLibrary()
             } catch (c: kotlinx.coroutines.CancellationException) {
                 throw c
