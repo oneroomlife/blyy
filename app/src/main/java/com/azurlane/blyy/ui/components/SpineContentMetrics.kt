@@ -167,6 +167,128 @@ internal data class RegionAlpha(
     }
 }
 
+/** 部件分类：决定它是否参与取景框计算 */
+internal enum class PartKind {
+    /** 身体/服饰：取景的核心依据 */
+    BODY,
+    /** 手持武器：贴身时并入取景，飞出去时不并 */
+    WEAPON,
+    /** 特效层（fx_ / slash / warp / halo …）：**永不**参与取景 */
+    EFFECT,
+    /** 场景道具（canyin / table / 食物 …）：**永不**参与取景 */
+    PROP,
+    /** 无法识别：只在紧贴身体时并入 */
+    OTHER
+}
+
+/** 一个部件所属的 slot / attachment 名（分类器两个都看，slot 名泛化时靠 attachment 名兜底） */
+internal data class PartNames(val slot: String?, val attachment: String?)
+
+/**
+ * 按部件名分类。
+ *
+ * 碧蓝航线 SD 骨骼的 slot 命名很稳定：`head` / `face_x` / `hair_x` / `body` /
+ * `leg_x` / `hand_x` / `skirt_x` 是身体，`wep_*` 是武器，`fx_*` 是特效，
+ * `canyin*` 是食堂道具。判定按 EFFECT → PROP → WEAPON → BODY 的优先级，
+ * 所以 `fx_halo` 归特效、`wep_ring_L` 归武器（前缀匹配，不做包含匹配）。
+ */
+internal object SpinePartNaming {
+
+    private val EFFECT_PREFIXES = arrayOf(
+        "fx", "ef_", "efx", "effect", "glow", "halo", "slash", "warp", "hit",
+        "circle", "flip", "smoke", "spark", "light", "trail", "splash", "dust",
+        "star", "wave", "beam", "laser", "shock", "magic", "flash", "bubble",
+        "cloud", "ripple", "fog", "aura", "flare", "shield_fx"
+    )
+
+    private val PROP_PREFIXES = arrayOf(
+        "canyin", "bg", "background", "prop", "table", "chair", "bed",
+        "food", "dish", "tray", "balloon", "furniture"
+    )
+
+    private val WEAPON_PREFIXES = arrayOf(
+        "wep", "weapon", "sword", "gun", "spear", "shield", "bow", "blade",
+        "axe", "hammer", "cannon", "torpedo", "plane", "missile"
+    )
+
+    private val BODY_PREFIXES = arrayOf(
+        "head", "face", "hair", "brow", "mayuge", "eye", "ear", "hoho",
+        "body", "leg", "arm", "hand", "skirt", "neck", "chest", "cloth",
+        "dress", "sleeve", "foot", "thigh", "waist", "wing", "tail",
+        "ribbon", "cape", "cloak", "hood", "hat", "horn", "band", "ahoge",
+        "mouth", "nose", "cheek", "skin", "shoulder", "belly", "shoe",
+        "boot", "sock", "glove", "scarf", "collar", "tie", "belt",
+        "badge", "emblem", "flower", "sailor", "uniform"
+    )
+
+    fun kindOf(names: PartNames): PartKind {
+        classify(names.slot)?.let { return it }
+        classify(names.attachment)?.let { return it }
+        return PartKind.OTHER
+    }
+
+    private fun classify(raw: String?): PartKind? {
+        val name = raw?.lowercase()?.trim().orEmpty()
+        if (name.isEmpty()) return null
+        return when {
+            EFFECT_PREFIXES.any { name.startsWith(it) } -> PartKind.EFFECT
+            PROP_PREFIXES.any { name.startsWith(it) } -> PartKind.PROP
+            WEAPON_PREFIXES.any { name.startsWith(it) } -> PartKind.WEAPON
+            BODY_PREFIXES.any { name.startsWith(it) } -> PartKind.BODY
+            else -> null
+        }
+    }
+}
+
+/**
+ * 取景部件筛选：**框住角色本体**（身体 + 武器/舰装），不让离体特效和道具把框撑大。
+ *
+ * 【为什么需要它】
+ * 实测 `char/2b_2`（Spine 3.8.99）的 `stand` 里，特效 slot 的 slot alpha 与骨骼缩放
+ * 都是 1.0，几何却飞在身体之外：
+ * ```
+ *   fx_circle   box=(569,-158,1164,440)      595×598   ← 身体右侧 800 单位外
+ *   fx_flip2    box=(-52,-407,110,1281)      162×1688  ← 上下各溢出 400+
+ *   fx_slash1   box=(-77,-111,1057,1104)    1134×1215  ← 与身体重叠的整屏大罩子
+ *   wep_manjuuhead2 box=(-35,-55,1475,966)  1509×1020  ← 武器特效甩出画面
+ * ```
+ * 这些件体积大、权重高，旧的 1.5% 权重修剪永远剪不掉，取景框于是变成 681×839：
+ * 小人被压到 1/3 大小、重心还被拉到 (390,430) —— 即"偏小 + 位置偏移"。
+ *
+ * 现在的规则很简单：**EFFECT / PROP 一律不参与**，BODY/WEAPON/OTHER 全体并集。
+ * 武器与舰装是角色的造型组成部分，必须算进来，否则大剑/炮塔会被视口裁掉；
+ * 特效（斩击/光环/传送门）只是动画修饰，算进来只会把框撑大。
+ * 名字完全不可用（件数太少）时返回 null，调用方回退到旧的权重修剪。
+ */
+internal object FrameBoxSelector {
+
+    /** 少于这么多可用件就认为名字不可靠，交给旧逻辑 */
+    private const val MIN_PARTS = 2
+
+    /** 单件最大边超过可用件中位数的这个倍数就当离群大块丢掉（整屏背景/罩子） */
+    private const val SIZE_OUTLIER_RATIO = 4f
+
+    fun select(parts: List<WeightedPart>, namesOf: (Int) -> PartNames): ContentBox? {
+        if (parts.size < MIN_PARTS) return null
+        val kept = parts.filter { part ->
+            when (SpinePartNaming.kindOf(namesOf(part.slot))) {
+                PartKind.EFFECT, PartKind.PROP -> false
+                else -> true
+            }
+        }
+        if (kept.size < MIN_PARTS) return null
+        val spans = kept.map { maxOf(it.box.width, it.box.height) }.sorted()
+        val median = spans[spans.size / 2]
+        val sized = if (median > 0f) {
+            kept.filter { maxOf(it.box.width, it.box.height) <= median * SIZE_OUTLIER_RATIO }
+        } else {
+            kept
+        }
+        val usable = if (sized.size >= MIN_PARTS) sized else kept
+        return ContentBox.of(usable.map { it.box })
+    }
+}
+
 /**
  * 扫描图集贴图，统计每个 region 的不透明像素范围。
  *

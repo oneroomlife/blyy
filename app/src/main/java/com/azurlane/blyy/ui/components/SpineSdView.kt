@@ -52,6 +52,7 @@ import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.roundToInt
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
@@ -724,6 +725,9 @@ private class SpineRenderer(
     @Volatile private var hitTestReliable = false
 
     private var lastTimeNs = 0L
+
+    /** 诊断日志节流（仅 log.tag.SpineSdView=DEBUG 时用） */
+    private var lastFrameDebugMs = 0L
     private var viewWidth = 0
     private var viewHeight = 0
     private var loadFailed = false
@@ -1124,8 +1128,13 @@ private class SpineRenderer(
     /**
      * 采样一组动画，测量「可见内容」包围盒。
      *
-     * 每个采样帧逐 slot 取真实几何（见 [SpineContentProbe]），同一 slot 跨帧取并集
-     * （运动包络），最后按可见权重剪掉离群碎屑（[ContentBoxTrimmer]）。
+     * 采样分两级，避免把运动轨迹算进取景框：
+     * 1. **帧内**：逐 slot 取真实几何（见 [SpineContentProbe]），先筛掉特效/道具件
+     *    （[FrameBoxSelector]），得到这一帧的角色框（身体 + 武器/舰装）；
+     * 2. **帧间**：取面积中位数的那一帧当「典型姿态」（[representativeBox]），四周各留
+     *    6% 余量。**不能**把各帧并起来当取景框——`char/2b_2` 的 `stand` 单帧 487×366，
+     *    整段动画的包络却是 419×724 的骨架尺度（角色在动画里大幅位移），按包络定框
+     *    会让小人常态只有 1/3 大小。
      *
      * @return null 表示没有任何可测量部件（调用方回退到骨骼 AABB）
      */
@@ -1138,8 +1147,11 @@ private class SpineRenderer(
         val alphaOf: (String?, String?) -> RegionAlpha = { name, path ->
             regionAlpha[name] ?: regionAlpha[path] ?: RegionAlpha.FULL
         }
-        val slotBoxes = LinkedHashMap<Int, ContentBox>()
-        val slotWeights = HashMap<Int, Float>()
+        val namesOf = namesLookup(sampler)
+        val frameBoxes = ArrayList<ContentBox>(sampleCount * animNames.size)
+        // 跨帧 slot 并集只为诊断日志服务（默认关闭时不收集，零开销）
+        val debugSlotBoxes = if (Log.isLoggable(TAG, Log.DEBUG)) LinkedHashMap<Int, ContentBox>() else null
+        var legacyFrames = 0
 
         animNames.forEach { name ->
             val anim = skeletonData.animations.firstOrNull { it.name == name } ?: return@forEach
@@ -1153,31 +1165,100 @@ private class SpineRenderer(
                     Animation.MixBlend.first, Animation.MixDirection.`in`
                 )
                 sampler.updateWorldTransform()
-                SpineContentProbe.frameParts(sampler, alphaOf).forEach { part ->
-                    val previous = slotBoxes[part.slot]
-                    slotBoxes[part.slot] = previous?.union(part.box) ?: part.box
-                    val weight = slotWeights[part.slot] ?: 0f
-                    if (part.weight > weight) slotWeights[part.slot] = part.weight
+                val parts = SpineContentProbe.frameParts(sampler, alphaOf)
+                if (parts.isEmpty()) continue
+                val bodyBox = FrameBoxSelector.select(parts, namesOf)
+                if (bodyBox == null) legacyFrames++
+                val box = bodyBox ?: ContentBoxTrimmer.trim(parts) ?: continue
+                frameBoxes += box
+                debugSlotBoxes?.let { map ->
+                    parts.forEach { part ->
+                        map[part.slot] = map[part.slot]?.union(part.box) ?: part.box
+                    }
                 }
             }
         }
-        if (slotBoxes.isEmpty()) return null
-        val parts = slotBoxes.map { (slot, box) ->
-            WeightedPart(box = box, weight = slotWeights[slot] ?: 1f, slot = slot)
-        }
-        val trimmed = ContentBoxTrimmer.trim(parts) ?: return null
-        // 合理性兜底：某些待机动画会把身体大部分 slot 隐藏（只留表情/局部特效），
-        // 这时测出的内容盒会远小于骨骼本身，若直接采用会把模型放大到异常尺寸。
-        val skeletonSpan = setupPoseSpan(skeletonData, sampler)
-        val contentSpan = maxOf(trimmed.width, trimmed.height)
-        if (skeletonSpan > 0f && contentSpan < skeletonSpan * MIN_CONTENT_SPAN_RATIO) {
-            Log.w(
+        if (frameBoxes.isEmpty()) return null
+
+        if (debugSlotBoxes != null) {
+            // 诊断用：`adb shell setprop log.tag.SpineSdView DEBUG` 后逐 slot 打印跨帧并集，
+            // 用来定位「内容盒被离体道具/特效或运动轨迹撑大」的问题。
+            val slots = sampler.slots
+            debugSlotBoxes.entries.sortedByDescending { it.value.width * it.value.height }
+                .forEach { (index, box) ->
+                    val slot = if (index in 0 until slots.size) slots[index] else null
+                    Log.d(
+                        TAG,
+                        "  slot[$index] ${slot?.data?.name}?${slot?.attachment?.name ?: "-"} " +
+                            "a=${slot?.color?.a} union=(${box.left},${box.bottom},${box.right},${box.top}) " +
+                            "size=${box.width}x${box.height}"
+                    )
+                }
+            Log.d(
                 TAG,
-                "内容盒异常偏小（content=$contentSpan，skeleton=$skeletonSpan），回退骨骼 AABB"
+                "  measure frames=${frameBoxes.size} legacyFrames=$legacyFrames " +
+                    "boxes=" + frameBoxes.joinToString("; ") {
+                        "${it.width.toInt()}x${it.height.toInt()}"
+                    }
             )
-            return null
+        }
+
+        val trimmed = representativeBox(frameBoxes)
+        // 合理性兜底：只在回退到旧的权重裁剪时才检查 —— 那时测出的框可能只剩下
+        // 表情/局部特效，直接采用会把模型放大到异常尺寸。身体优先路径得到的框
+        // 天然比骨骼 AABB（含离体特效）小，不能用同一个比例去卡。
+        if (legacyFrames > 0 && legacyFrames * 2 >= frameBoxes.size) {
+            val skeletonSpan = setupPoseSpan(skeletonData, sampler)
+            val contentSpan = maxOf(trimmed.width, trimmed.height)
+            if (skeletonSpan > 0f && contentSpan < skeletonSpan * MIN_CONTENT_SPAN_RATIO) {
+                Log.w(
+                    TAG,
+                    "内容盒异常偏小（content=$contentSpan，skeleton=$skeletonSpan），回退骨骼 AABB"
+                )
+                return null
+            }
         }
         return trimmed
+    }
+
+    /** slot 索引 → slot/attachment 名的查询闭包（分类器两个名字都会看） */
+    private fun namesLookup(skeleton: Skeleton): (Int) -> PartNames = { index ->
+        val slots = skeleton.slots
+        if (index in 0 until slots.size) {
+            val slot = slots[index]
+            PartNames(slot.data.name, slot.attachment?.name)
+        } else {
+            PartNames(null, null)
+        }
+    }
+
+    /**
+     * 各帧框按边取分位：`keep` 越小越贴近"典型姿态"、越容易被极端帧裁到。
+     *
+     * 逐边独立取分位得到的框不一定是某一帧的真实轮廓，但作为取景框足够稳，
+     * 而且保证了绝大多数帧能完整落在框内。
+     */
+    /**
+     * 取「大部分姿态都装得下」的那一帧当典型姿态（面积 [keep] 分位），四周各留 [slack]。
+     *
+     * 用分位帧而不是并集，是因为碧蓝的 `stand` 里角色会大幅位移：`char/2b_2` 采样 12 帧
+     * 得到 434×372 ~ 560×366 的常态、外加一帧 950×777 的"武器展开"极值；若按包络
+     * （681×839 全 slot 并集）缩放，小人常态只有 1/3 大小。取 80% 分位 + 6% 余量，
+     * 常态姿态完整可见，最极端的那一两帧溢出容器一点——游戏里 SD 也是这么裁的。
+     */
+    private fun representativeBox(frames: List<ContentBox>, keep: Float = 0.8f, slack: Float = 0.06f): ContentBox {
+        if (frames.size <= 2) return frames.first()
+        val sorted = frames.sortedBy { it.width * it.height }
+        val index = ((sorted.size - 1) * keep).roundToInt().coerceIn(0, sorted.size - 1)
+        val pick = sorted[index]
+        val padX = pick.width * slack
+        val padY = pick.height * slack
+        return ContentBox(
+            left = pick.left - padX,
+            bottom = pick.bottom - padY,
+            right = pick.right + padX,
+            top = pick.top + padY
+        )
     }
 
     /** setup pose 的骨骼 AABB 跨度（用于判断内容盒是否合理，只取较大边） */
@@ -1426,6 +1507,26 @@ private class SpineRenderer(
         // 真正决定命中与否的是 [isContentTouch] 里的逐部件几何判定，这里只是粗筛。
         val renderedBoundsW = baseBoundsW * scale
         val renderedBoundsH = baseBoundsH * scale
+        if (Log.isLoggable(TAG, Log.DEBUG)) {
+            val nowMs = System.currentTimeMillis()
+            if (nowMs - lastFrameDebugMs > 1000L) {
+                lastFrameDebugMs = nowMs
+                val alphaOf: (String?, String?) -> RegionAlpha = { name, path ->
+                    regionAlpha[name] ?: regionAlpha[path] ?: RegionAlpha.FULL
+                }
+                val liveParts = SpineContentProbe.frameParts(skel, alphaOf)
+                val liveBox = ContentBox.of(liveParts.map { it.box })
+                Log.d(
+                    TAG,
+                    "frame vw=$vw vh=$vh boxOffset=($baseBoundsOffsetX,$baseBoundsOffsetY) " +
+                        "box=${baseBoundsW}x$baseBoundsH scale=$scale " +
+                        "rendered=${renderedBoundsW}x$renderedBoundsH " +
+                        "liveBox=(${liveBox?.left},${liveBox?.bottom},${liveBox?.right},${liveBox?.top}) " +
+                        "liveSize=${liveBox?.width}x${liveBox?.height} parts=${liveParts.size} " +
+                        "relScale=${scaleProvider()} viewport=$viewWidth x$viewHeight"
+                )
+            }
+        }
         val boundsLeft = (vw - renderedBoundsW) / 2f + panX
         val boundsTop = (vh - renderedBoundsH) / 2f - panY
         _boundsInViewport = RectF(
