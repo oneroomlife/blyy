@@ -267,6 +267,47 @@ muscle 姿态）。动画根节点没有 Avatar，曲线直接打在 `CubismPara
 | 「该资源包使用 LZMA 压缩」 | 该包压缩格式未支持，需先离线转换 |
 | 画面正常但点击没动作 / 动作列表为空 | 旧产物（`pipelineVersion < 3`）没有动作文件：进入「游戏资源导入 → 资源包」筛选 Live2D，点 **全部导入**（或对单包点 **更新**）重解包 |
 | 模型是"色块/错位" | 旧产物贴图行序错误：同上，重解包后即恢复（索引会把它标记为 **有更新**） |
+| 打开后整屏纯黑，但日志里尺寸/贴图/动作都正常 | 该 moc3 含「正片叠底整场景覆盖层」把整帧乘黑了，见 §6.1（查看器已内置自愈守卫，无需手工处理） |
+
+### 6.1 「打开黑屏」根因：正片叠底覆盖层（Cubism 4.2+ Multiplicative）
+
+现象：某几个皮肤（实测 `wuqi_3`「吾妻·心向何方的指导课」与它的 HX 变体）打开后整屏**不透明纯黑**，
+缩略图也是全黑；日志里 `model 9495x5616`、`fitted scale=0.0735`、`ticker=true` 全部正常，
+没有任何 404 / 解析错误。换桌面 Chromium + 同一份 `viewer.js` 也能复现 → **数据侧问题，不是 WebView/GPU 特有**。
+
+定位链路（可复用）：
+
+1. **先确认提取无损**：把游戏原始包 `AssetBundles/Live2D/<id>` 拉下来，用工程自己的 `UnityFsBundle` +
+   `SerializedFile` 打真值 —— `wuqi_3` 的 moc3 在 bundle 内 `declared = remaining = 4,168,768`，
+   与产物 `model.moc3` md5 一致（`60cae861104636766de68b0c14a566d6`）。贴图同理：包内只有 1 张
+   4096² ASTC_4x4，软解后与产物 2048² PNG 只差一次行翻转。**排除「截断/取错 blob/降采样」**。
+2. **给渲染器打只读探针**：把 `cubism4.min.js` 里唯一的
+   `getDrawableDynamicFlagIsVisible(t)&&(` 改成
+   `getDrawableDynamicFlagIsVisible(t)&&!(window.__HIDE&&window.__HIDE[t])&&(window.__CUR=t,!0)&&(`，
+   再钩 `gl.drawElements` 并在每次调用后 `readPixels(中心1px)` → 得到「哪个 drawable 画完中心变黑」。
+   `wuqi_3` 的答案是 **#859（`ArtMesh766`）**：它是最后一次 canvas 绘制，画完中心立刻 `(0,0,0,255)`；
+   跳过它就得到完整画面（夜幕教室 + 吾妻坐课桌拿教鞭）。
+   > 注意：直接改 `drawables.opacities[i] = 0` **对渲染无效**（渲染端每帧从 Core 重读），
+   > 只能用上面的补丁或在 `coreModel` 实例上重写 `getDrawableDynamicFlagIsVisible`。
+3. **为什么这个网格会把整屏乘黑**：`constantFlags` 位语义（`Live2DCubismCore.Utils` 实测）是
+   `bit0=Additive / bit1=Multiplicative / bit2=DoubleSided / bit3=InvertedMask`。
+   `#859` 的 flags = **6** ⇒ 正片叠底 + 双面。它的几何是 `384.74 × 439.70` 模型单位
+   （画布才 `28.57 × 16.90`，**面积 350 倍**），UV 却只取图集里一条 **60×4 texel 的窄带**
+   `u[0.9562,0.9852] v[0.3082,0.3100]`（美术常用「一像素高渐变条拉满四边形」做氛围滤镜）。
+   乘算公式 `dst*src + dst*(1-srcAlpha)` 于是把 350 倍画布的区域整体压暗 —— 正好落在图集那段
+   不透明深蓝渐变上时是「夜色滤镜」，一旦数据不自洽就会压成纯黑。
+
+修复（`app/src/main/assets/live2d/viewer.js`，`applyBlackGuard(m)`，在 `computeFit()` 之后调用）：
+
+- 这类图层**无法从数据上判别**（面积、UV、混合模式全都合法；`wuqi_2` 也有 9 个 18~37× 画布的
+  乘算/普通网格，只是 `opacity = 0`），所以改用**渲染结果**判定：
+  `frameDarkness()` 采样一帧（`app.renderer.extract.pixels`，跳过 alpha≤8，统计 `luma<24` 与 `luma>60` 的占比）。
+- 仅当 `dark > 0.9` 且 `bright < 0.02` 时介入；候选 = `hasBlendMultiplicativeBit(constantFlags[i])`
+  且包围盒面积 ≥ 0.3× 画布且当前可见，按面积降序逐个跳过，`dark < 0.5` 即判定修复并永久保留；
+  全部失败则还原原函数。
+- 实测：`wuqi_3`/`wuqi_3_hx` `guard before dark=1.000 bright=0.000 → try #859 area=350.3x →
+  dark=0.185 bright=0.658`；健康模型完全不触发（`wuqi_2` dark=0.017、`jinshi_2` dark=0.001、
+  `abeikelongbi_3` dark=0.004）。缩略图在首次打开时由 `captureThumb()` 重拍，也会一并恢复。
 
 ---
 

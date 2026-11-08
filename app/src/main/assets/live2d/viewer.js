@@ -375,6 +375,140 @@
         fitScale = Math.min(fitScale, 4); // 防止贴图极小的模型被放大过头
     }
 
+    // ---------- 黑屏自愈守卫（正片叠底覆盖层） ----------
+    // 部分皮肤的 moc3 里带一层 Cubism 4.2+ 的**正片叠底**（Multiplicative，constantFlags
+    // bit1）整场景覆盖网格。这类网格本身完全合法：4 顶点、覆盖整个美术区、UV 只取图集里
+    // 一条几十像素宽的窄带（美术作者常拿一像素高的渐变条拉满一个四边形）。问题出在数据
+    // 不自洽时：窄带落在图集的不透明纯黑区，乘算公式 dst*src + dst*(1-srcAlpha) 会把整帧
+    // 乘成不透明黑 —— 表现就是「打开皮肤黑屏」，且日志里没有任何错误。
+    //   wuqi_3（吾妻·心向何方的指导课）#859 ArtMesh766 就是这一类：几何 384.7x439.7 模型
+    //   单位（画布才 28.6x16.9），UV u[0.9562,0.9852] v[0.3082,0.3100] ≈ 60x4 texel 的窄带，
+    //   乘算后整屏 (0,0,0,255)。
+    // 这类图层没法从数据上和正常图层区分（面积、UV、混合模式都合法），只能用**渲染结果**
+    // 判定：先渲染一帧，若几乎全暗且几乎没有亮部，就逐个跳过「乘算 + 大覆盖」的网格，
+    // 能恢复就保留。健康的模型（wuqi_2 dark=0.02、jinshi_2 dark=0.001）不会触发。
+    var GUARD_DARK_RATIO = 0.9;
+    var GUARD_BRIGHT_RATIO = 0.02;
+    var GUARD_CANDIDATE_AREA = 0.3;
+
+    /** 取一帧像素；scale<1 时先尝试降分辨率（不同 pixi 版本签名不同，逐个试，失败回落全尺寸） */
+    function extractFrame(scale) {
+        var extract = app.renderer.extract;
+        var attempts = [];
+        if (scale && scale < 1) {
+            attempts.push(function () { return extract.pixels(app.stage, null, scale); });
+            attempts.push(function () { return extract.pixels({ target: app.stage, resolution: scale }); });
+        }
+        attempts.push(function () { return extract.pixels(app.stage); });
+        for (var i = 0; i < attempts.length; i++) {
+            try {
+                var px = attempts[i]();
+                if (px && px.length) return px;
+            } catch (e) { /* 换下一种签名 */ }
+        }
+        return null;
+    }
+
+    /** 采样当前画面（跳过透明像素），返回 { dark, bright } 比例 */
+    function frameDarkness(scale) {
+        try {
+            var px = extractFrame(scale);
+            if (!px || !px.length) return null;
+            var step = 4 * 17;
+            var dark = 0, bright = 0, sampled = 0, opaque = 0;
+            for (var i = 0; i < px.length; i += step) {
+                sampled++;
+                if (px[i + 3] <= 8) continue;
+                opaque++;
+                var l = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+                if (l < 24) dark++;
+                if (l > 60) bright++;
+            }
+            // 全透明说明这一帧没读到模型（拿错缓冲区），当作测量失败
+            if (!sampled || !opaque) return null;
+            return { dark: dark / sampled, bright: bright / sampled };
+        } catch (e) {
+            dbg('guard measure failed: ' + e);
+            return null;
+        }
+    }
+
+    /** 网格包围盒面积与画布面积之比 */
+    function drawableAreaRatio(core, index, ppu, canvasArea) {
+        var vp = null;
+        try { vp = core.getDrawableVertexPositions(index); } catch (e) { return 0; }
+        if (!vp || vp.length < 4 || !canvasArea) return 0;
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (var k = 0; k < vp.length; k += 2) {
+            if (vp[k] < minX) minX = vp[k];
+            if (vp[k] > maxX) maxX = vp[k];
+            if (vp[k + 1] < minY) minY = vp[k + 1];
+            if (vp[k + 1] > maxY) maxY = vp[k + 1];
+        }
+        return ((maxX - minX) * ppu * (maxY - minY) * ppu) / canvasArea;
+    }
+
+    /** 按覆盖面积从大到小列出「正片叠底 + 大覆盖 + 当前可见」的网格索引 */
+    function blackGuardCandidates(m) {
+        var utils = window.Live2DCubismCore && window.Live2DCubismCore.Utils;
+        if (!utils || !utils.hasBlendMultiplicativeBit) return [];
+        var core = m.internalModel.coreModel;
+        var d = core.getModel().drawables;
+        var ppu = m.internalModel.pixelsPerUnit || 1;
+        var canvasArea = (m.internalModel.width || 1) * (m.internalModel.height || 1);
+        var out = [];
+        for (var i = 0; i < d.count; i++) {
+            if (!utils.hasBlendMultiplicativeBit(d.constantFlags[i])) continue;
+            var area = drawableAreaRatio(core, i, ppu, canvasArea);
+            if (area < GUARD_CANDIDATE_AREA) continue;
+            try { if (!core.getDrawableDynamicFlagIsVisible(i)) continue; } catch (e) { continue; }
+            out.push({ index: i, area: area });
+        }
+        out.sort(function (a, b) { return b.area - a.area; });
+        return out;
+    }
+
+    /**
+     * 黑屏自愈：画面完全不透明 + 全暗时，跳过破坏性的正片叠底覆盖层。
+     * 只在「暗比例 > 0.9 且亮比例 < 0.02」时介入，命中后永久跳过该网格。
+     */
+    function applyBlackGuard(m) {
+        if (!m || !m.internalModel) return;
+        // 先做零开销的数据筛查：没有「正片叠底 + 大覆盖」网格的模型直接返回，
+        // 连一帧都不测量 —— 健康模型因此没有任何额外开销。
+        var candidates = blackGuardCandidates(m);
+        if (!candidates.length) return;
+        var before = frameDarkness(0.25) || frameDarkness();
+        if (!before) return;
+        dbg('guard before dark=' + before.dark.toFixed(3) + ' bright=' + before.bright.toFixed(3));
+        if (before.dark < GUARD_DARK_RATIO || before.bright > GUARD_BRIGHT_RATIO) return;
+        var core = m.internalModel.coreModel;
+        var original = core.getDrawableDynamicFlagIsVisible;
+        var hidden = {};
+        var override = function (index) {
+            return hidden[index] ? false : original.call(core, index);
+        };
+        for (var c = 0; c < candidates.length; c++) {
+            hidden = {};
+            hidden[candidates[c].index] = true;
+            core.getDrawableDynamicFlagIsVisible = override;
+            try { m.update(0.016); } catch (e) { /* 单帧更新失败不致命 */ }
+            var after = frameDarkness(0.25) || frameDarkness();
+            dbg('guard try #' + candidates[c].index + ' area=' + candidates[c].area.toFixed(1)
+                + 'x -> dark=' + (after ? after.dark.toFixed(3) : 'n/a')
+                + ' bright=' + (after ? after.bright.toFixed(3) : 'n/a'));
+            if (after && after.dark < 0.5) {
+                dbg('guard fixed by skipping drawable #' + candidates[c].index
+                    + ' (multiplicative overlay)');
+                return;
+            }
+        }
+        // 逐个跳过都救不回来 → 还原，保持原状交给上游
+        core.getDrawableDynamicFlagIsVisible = original;
+        hidden = {};
+        dbg('guard gave up');
+    }
+
     function cancelTransformAnim() {
         if (transformAnim) {
             cancelAnimationFrame(transformAnim.raf);
@@ -817,6 +951,9 @@
                 dbg('fitted scale=' + m.scale.x + ' pos=' + m.x + ',' + m.y
                     + ' fit=' + fitScale + ' ticker=' + app.ticker.started
                     + ' renderer=' + app.renderer.width + 'x' + app.renderer.height);
+
+                // 黑屏自愈：跳过会把整帧乘成黑色的正片叠底覆盖层（wuqi_3 等）
+                applyBlackGuard(m);
 
                 // ---------- 待机循环接线（关键） ----------
                 // 运行时（pixi-live2d-display 0.4.0）把待机组名**硬编码**为 `{idle:'Idle'}`：
