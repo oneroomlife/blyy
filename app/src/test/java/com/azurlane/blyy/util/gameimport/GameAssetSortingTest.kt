@@ -188,6 +188,120 @@ class GameAssetSortingTest {
         assertEquals(listOf("p1", "p2"), sorted.map { it.path })
     }
 
+    // ---------------------------------------------------------------- 自然序（名字里的编号）
+
+    @Test
+    fun `自然序归一只是把数字段补零`() {
+        // 中文名里的编号：立绘 2 必须排在立绘 10 前面
+        assertEquals("立绘 0000000002", GameAssetSorting.naturalize("立绘 2"))
+        assertEquals("立绘 0000000010", GameAssetSorting.naturalize("立绘 10"))
+        // 英文 id 里的编号：abeikelongbi_4 / _14
+        assertEquals("abeikelongbi_0000000014", GameAssetSorting.naturalize("abeikelongbi_14"))
+        // 没有数字时原样返回（只做首尾去空格），不分配新串
+        assertEquals("纯中文没有数字", GameAssetSorting.naturalize("  纯中文没有数字 "))
+        assertEquals("", GameAssetSorting.naturalize(""))
+        // 多段数字各补各的
+        assertEquals("0000000012x0000000003", GameAssetSorting.naturalize("12x3"))
+    }
+
+    @Test
+    fun `中文名里的编号按数值大小排序`() {
+        val entries = listOf(
+            bundle("立绘 10", "p10", modified = 0L),
+            bundle("立绘 2", "p2", modified = 0L),
+            bundle("立绘 1", "p1", modified = 0L)
+        )
+        val asc = GameAssetSorting.sortBundles(entries, GameSortOrder(GameSortField.NAME, true)) { it.displayName }
+        assertEquals(listOf("p1", "p2", "p10"), asc.map { it.path })
+
+        val desc = GameAssetSorting.sortBundles(entries, GameSortOrder(GameSortField.NAME, false)) { it.displayName }
+        assertEquals(listOf("p10", "p2", "p1"), desc.map { it.path })
+    }
+
+    @Test
+    fun `英文 id 里的编号同样按数值排序`() {
+        val entries = listOf(
+            bundle("abeikelongbi_14", "p14", modified = 0L),
+            bundle("abeikelongbi_4", "p4", modified = 0L),
+            bundle("abeikelongbi_2", "p2", modified = 0L)
+        )
+        val asc = GameAssetSorting.sortBundles(entries, GameSortOrder(GameSortField.NAME, true)) { it.displayName }
+        assertEquals(listOf("p2", "p4", "p14"), asc.map { it.path })
+    }
+
+    // ---------------------------------------------------------------- 两段式 API（键复用）
+
+    @Test
+    fun `两段式排序与一步到位结果一致`() {
+        val entries = listOf(
+            bundle("立绘 10", "p10", modified = 5L),
+            bundle("立绘 2", "p2", modified = 9L),
+            bundle("Z23", "p3", modified = 1L),
+            bundle("埃塞克斯", "p1", modified = 9L)
+        )
+        // 键生成一次，四种方案全部复用 → 切排序不需要重跑 ICU / 重查舰名
+        val keys = GameAssetSorting.bundleKeys(entries) { it.displayName }
+        GameSortField.entries.forEach { field ->
+            listOf(true, false).forEach { ascending ->
+                val order = GameSortOrder(field, ascending)
+                assertEquals(
+                    "field=$field asc=$ascending",
+                    GameAssetSorting.sortBundles(entries, order) { it.displayName }.map { it.path },
+                    GameAssetSorting.sorted(keys, order).map { it.path }
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `已导入资源的两段式排序与一步到位一致`() {
+        val assets = listOf(
+            asset("blhx_b", modifiedAt = 300L),
+            asset("blhx_a", modifiedAt = 100L),
+            asset("22", modifiedAt = 100L),
+            asset("2", modifiedAt = 100L)
+        )
+        val keys = GameAssetSorting.assetKeys(assets) { it.id }
+        GameSortField.entries.forEach { field ->
+            listOf(true, false).forEach { ascending ->
+                val order = GameSortOrder(field, ascending)
+                assertEquals(
+                    "field=$field asc=$ascending",
+                    GameAssetSorting.sortAssets(assets, order) { it.id }.map { it.id },
+                    GameAssetSorting.sorted(keys, order).map { it.id }
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `只取顺序再按稳定键换回最新条目`() {
+        // 导入成功只改 state（不改 mtime、不改路径）→ 排序键签名不变、命中缓存。
+        // 若直接把键里的 item 发出去，列表会一直显示「待导入」——
+        // 所以排序结果必须用 tieBreaker（path）换回当前条目。
+        val entries = listOf(bundle("a", "/x/a.ab", 10L), bundle("b", "/x/b.ab", 20L))
+        val keys = GameAssetSorting.bundleKeys(entries) { it.displayName }
+        val order = GameSortOrder(GameSortField.NAME, true)
+
+        assertEquals(
+            "键里的 item 是生成时的快照",
+            listOf(GameBundleEntry.State.NEW, GameBundleEntry.State.NEW),
+            GameAssetSorting.sorted(keys, order).map { it.state }
+        )
+
+        val fresh = entries
+            .map { it.copy(state = GameBundleEntry.State.IMPORTED) }
+            .associateBy { it.path }
+        val rebound = GameAssetSorting.sortedKeys(keys, order)
+            .map { key -> fresh[key.tieBreaker] ?: key.item }
+
+        assertEquals(listOf("/x/a.ab", "/x/b.ab"), rebound.map { it.path })
+        assertEquals(
+            listOf(GameBundleEntry.State.IMPORTED, GameBundleEntry.State.IMPORTED),
+            rebound.map { it.state }
+        )
+    }
+
     // ---------------------------------------------------------------- 夹具
 
     private fun bundle(name: String, path: String, modified: Long) = GameBundleEntry(

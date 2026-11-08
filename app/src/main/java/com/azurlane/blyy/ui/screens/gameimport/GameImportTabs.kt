@@ -73,9 +73,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.azurlane.blyy.ui.components.AdaptiveScreenBackground
 import com.azurlane.blyy.ui.components.BlyyAnimatedEmptyState
 import com.azurlane.blyy.ui.components.BlyyButton
@@ -102,7 +105,6 @@ import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.util.gameimport.GameAssetKind
-import com.azurlane.blyy.util.gameimport.GameAssetSorting
 import com.azurlane.blyy.util.gameimport.GameBundleEntry
 import com.azurlane.blyy.util.gameimport.GameSortField
 import com.azurlane.blyy.util.gameimport.GameSortOrder
@@ -142,18 +144,9 @@ internal fun BundlesTab(
     val updatableInScope = remember(state.entriesRevision, state.kindFilter) {
         state.filteredEntries.count { it.state == GameBundleEntry.State.CHANGED }
     }
-    // 显示名依赖拼音表与 wiki 换装名：只在它们变化时重算一张 id → 名字的表，
-    // 避免每个卡片在任意重组里都去反查一次舰名（滚动时的主要 JS 开销之一）
-    val displayNames = remember(entries, state.pinyinMap, state.skinNameSequences) {
-        entries.associate { it.path to viewModel.displayNameOfEntry(it) }
-    }
-    // 排序：用上面这张批量算好的名字表，避免每次比较都去反查舰名。
-    // displayNames 参与 remember key —— 拼音表 / wiki 皮肤名就绪后要按新名字重排。
-    val sortedEntries = remember(entries, state.sortOrder, displayNames) {
-        GameAssetSorting.sortBundles(entries, state.sortOrder) { entry ->
-            displayNames[entry.path] ?: entry.displayName
-        }
-    }
+    // 显示名与排序都由 ViewModel 在后台算好（state.entryNames / state.sortedEntries）：
+    // 卡片直接查表，组合期不再逐条反查舰名、也不再跑 ICU 排序（滚动更顺、切排序不顿）
+    val displayNames = state.entryNames
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -286,11 +279,14 @@ internal fun BundlesTab(
             }
         }
 
-        items(sortedEntries, key = { it.path }) { entry ->
+        // 顺序直接用 ViewModel 排好的 entries；contentType 按类型分组，
+        // 不同类型卡片高度不同，LazyColumn 复用错类型会多一次测量
+        items(entries, key = { it.path }, contentType = { it.kind.key }) { entry ->
             BundleEntryCard(
                 entry = entry,
                 displayName = displayNames[entry.path] ?: entry.fileName,
-                sizeText = viewModel.formatSize(entry.size),
+                // 体积格式化要查表 + 拼字符串，别在滚动重组里反复做
+                sizeText = remember(entry.size) { viewModel.formatSize(entry.size) },
                 busy = state.busy,
                 onImport = { onImport(entry) },
                 onOpen = { onOpen(entry) },
@@ -715,21 +711,25 @@ internal fun LibraryTab(
     onRequestRename: (GameAssetInfo) -> Unit,
     onGoBundles: () -> Unit
 ) {
-    // libraryRevision 而不是 state.assets 当 key：导入进度刷新时资源库内容没变，
-    // 这里必须拿回同一个 List 实例，否则下面的 LaunchedEffect / 网格都会白跑一轮。
-    val assets = remember(state.libraryRevision, state.kindFilter) { state.filteredAssets }
+    // 排序结果由 ViewModel 在后台算好（state.sortedAssets），这里只做一次类型筛选。
+    // key 用 sortRevision（O(1) 的 Int）而不是 sortedAll 本身：后者变化时做 equals 要逐条比
+    // 几千个资源，而版本号既便宜又能保证「后台算完那一刻」列表一定刷新。
+    // 下面的 LaunchedEffect(assets) 与网格靠这个稳定的 List 才不会每次重组都白跑一轮。
+    val sortedAll = state.sortedAssets
+    val assets = remember(
+        state.libraryRevision,
+        state.sortRevision,
+        state.sortOrder,
+        state.kindFilter
+    ) {
+        val source = if (sortedAll.isEmpty()) state.filteredAssets else sortedAll
+        val kind = state.kindFilter
+        if (kind == null) source else source.filter { it.kind == kind }
+    }
     // 容量概览：几千条资源求和，不能每帧算
     val totalBytes = remember(assets) { assets.sumOf { it.sizeBytes } }
-    // 显示名同理，只在资源库或名字数据变化时批量算一次
-    val displayNames = remember(assets, state.pinyinMap, state.skinNameSequences) {
-        assets.associate { keyOfAsset(it) to viewModel.displayNameFor(it) }
-    }
-    // 排序：与「资源包」共用同一个方案；名字表参与 key，改名的资源会立刻挪到新位置
-    val sortedAssets = remember(assets, state.sortOrder, displayNames) {
-        GameAssetSorting.sortAssets(assets, state.sortOrder) { asset ->
-            displayNames[keyOfAsset(asset)] ?: asset.id
-        }
-    }
+    // 显示名同样来自 ViewModel 的批量结果（拼音表 / wiki 换装名就绪后会自动升级）
+    val displayNames = state.assetNames
 
     // ---- 多选（编辑/删除）----
     // 长按任意卡片进入多选；多选下单击切换选中，顶部工具条支持全选/重命名/删除。
@@ -859,17 +859,18 @@ internal fun LibraryTab(
                 // 库容量概览：告诉用户当前占用，避免「导入了很多但不知道占多少」
                 item(span = { GridItemSpan(maxLineSpan) }) {
                     Text(
-                        "共 ${assets.size} 个资源 · 占用 ${viewModel.formatSize(totalBytes)}",
+                        "共 ${assets.size} 个资源 · 占用 ${remember(totalBytes) { viewModel.formatSize(totalBytes) }}",
                         style = AppTypography.CaptionSmall,
                         color = secondaryTextColor(),
                         modifier = Modifier.padding(top = AppSpacing.Xs, bottom = AppSpacing.Xs)
                     )
                 }
-                items(sortedAssets, key = { "${it.kind.key}/${it.id}" }) { asset ->
+                // contentType 按类型分组：同类型卡片尺寸一致，网格能直接复用、少测一次
+                items(assets, key = { keyOf(it) }, contentType = { it.kind.key }) { asset ->
                     AssetCard(
                         asset = asset,
                         displayName = displayNames[keyOf(asset)] ?: asset.id,
-                        sizeText = viewModel.formatSize(asset.sizeBytes),
+                        sizeText = remember(asset.sizeBytes) { viewModel.formatSize(asset.sizeBytes) },
                         isSelected = selectionMode && selected.containsKey(keyOf(asset)),
                         selectionMode = selectionMode,
                         onClick = {
@@ -999,23 +1000,56 @@ private fun AssetCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(0.85f)
-                    .background(
-                        Brush.verticalGradient(AppColors.Live2DViewer.CoverGradient)
-                    )
+                    // 渐变刷子提到文件级常量：每张卡片重组都 new 一个 ShaderBrush 太浪费
+                    .background(CoverGradientBrush)
             ) {
+                val context = LocalContext.current
                 val preview = asset.previewFile
+                // 缩略图请求：关掉淡入（一屏十几张图同时做动画很吃 GPU，滚动时尤其明显）、
+                // 允许 RGB565 解码（卡片这么小看不出色差，内存直接减半）。
+                // 缓存键必须带上「版本」：Coil 对 File 默认只按路径做键，重新导入同名资源后路径不变，
+                // 内存缓存会一直命中旧图 —— 用 asset.previewCacheKey（路径 + 目录 mtime + 体积）
+                // 让重新导入 / 更新后的新图走新键，刷新一次就能看到。
+                val previewCacheKey = asset.previewCacheKey
+                val previewRequest = remember(preview, previewCacheKey) {
+                    preview?.let {
+                        ImageRequest.Builder(context)
+                            .data(it)
+                            .crossfade(false)
+                            .allowRgb565(true)
+                            .apply {
+                                if (previewCacheKey != null) {
+                                    memoryCacheKey(previewCacheKey)
+                                    diskCacheKey(previewCacheKey)
+                                }
+                            }
+                            .build()
+                    }
+                }
+                val avatarRequest = remember(asset.avatarAsset) {
+                    asset.avatarAsset?.let {
+                        ImageRequest.Builder(context)
+                            .data("file:///android_asset/blhx_avatar/$it")
+                            .crossfade(false)
+                            .allowRgb565(true)
+                            .build()
+                    }
+                }
                 when {
-                    preview != null -> AsyncImage(
-                        model = preview,
+                    previewRequest != null -> AsyncImage(
+                        model = previewRequest,
                         contentDescription = displayName,
                         contentScale = if (asset.isImage) ContentScale.Fit else ContentScale.Crop,
+                        // 缩略图是缩小显示，双线性（Low）足够，比 Medium 省一次滤波
+                        filterQuality = FilterQuality.Low,
                         modifier = Modifier.fillMaxSize()
                     )
 
-                    asset.avatarAsset != null -> AsyncImage(
-                        model = "file:///android_asset/blhx_avatar/${asset.avatarAsset}",
+                    avatarRequest != null -> AsyncImage(
+                        model = avatarRequest,
                         contentDescription = displayName,
                         contentScale = ContentScale.Crop,
+                        filterQuality = FilterQuality.Low,
                         modifier = Modifier.fillMaxSize()
                     )
 
@@ -1365,3 +1399,11 @@ private fun secondaryTextColor(): Color = if (LocalIsDark.current) {
  * 同一个 id 可能同时存在于立绘与动态皮肤，裸 id 会撞车，必须带上 kind。
  */
 private fun keyOfAsset(asset: GameAssetInfo): String = "${asset.kind.key}/${asset.id}"
+
+/**
+ * 卡片封面的兜底渐变。
+ *
+ * 提到文件级：原先每个卡片在组合期都 `Brush.verticalGradient(...)` 新建一个 ShaderBrush，
+ * 一屏 20 张卡片滚动时就是每秒上千次分配。这里只依赖静态色板，可以安全地做成常量。
+ */
+private val CoverGradientBrush = Brush.verticalGradient(AppColors.Live2DViewer.CoverGradient)

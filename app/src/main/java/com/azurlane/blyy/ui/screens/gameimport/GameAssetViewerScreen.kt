@@ -37,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import coil.size.Size
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -218,7 +219,13 @@ fun GameAssetViewerScreen(onBack: () -> Unit) {
                                 // 图片是窗口内绘制的，可以直接用图层 alpha 参与退场淡出；
                                 // 注意不能把 alpha 加在 AndroidView 的祖先上（会破坏 Surface 合成）
                                 .graphicsLayer { alpha = contentAlpha.value },
-                            contentScale = ContentScale.Fit
+                            contentScale = ContentScale.Fit,
+                            // 立绘按原图最高分辨率解码：默认解码会按视图尺寸降采样，
+                            // 双击 2.5x / 捏合 5x 一放大就糊
+                            requestSize = Size.ORIGINAL,
+                            // 缓存键带版本：重新导入同名立绘后路径不变，
+                            // 不加版本键查看器会一直显示内存里的旧图
+                            cacheKey = asset.previewCacheKey
                         )
                     } else {
                         Text(

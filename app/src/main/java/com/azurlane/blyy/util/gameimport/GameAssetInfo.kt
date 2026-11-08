@@ -68,6 +68,17 @@ data class GameAssetInfo(
     /** 单张图片型资源（静态立绘 / 过场图）：查看器用可缩放图片、支持导出 */
     val isImage: Boolean get() = isPainting || isLoadingBg
     val isLive2d: Boolean get() = kind == GameAssetKind.LIVE2D
+
+    /**
+     * 预览图的缓存版本键。
+     *
+     * Coil 对 `File` 的默认缓存键只有路径 —— 重新导入 / 更新同名资源后路径不变，
+     * 内存缓存会一直回旧图，表现为「替换了 painting.png，刷新也不变」。
+     * 把目录 mtime 与资源体积拼进键里：任何一次重新导入都会改写目录 mtime，
+     * 体积也必然变化，缓存键随之前进，旧位图自然失效。
+     */
+    val previewCacheKey: String?
+        get() = previewFile?.let { "${it.absolutePath}#$modifiedAt#$sizeBytes" }
 }
 
 /** 资源包内容探测结论 */

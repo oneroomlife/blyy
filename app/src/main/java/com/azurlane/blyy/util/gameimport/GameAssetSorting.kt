@@ -82,98 +82,194 @@ data class GameSortOrder(
 }
 
 /**
+ * 一条记录的排序键。
+ *
+ * 名字在构造时就折成 [CollationKey]：8000 条资源排序约 10 万次比较，
+ * 逐次 `Collator.compare` 每次都要跑一遍 ICU 规则表；预生成之后只剩字节比较。
+ *
+ * 键可以**跨升降序、跨排序字段复用**：切换方向只是换一个 [Comparator]，
+ * 切到「时间」也只需再读一次已经算好的字段 —— 不必重跑 ICU，也不必重查舰名。
+ */
+class GameAssetSortKey<T> internal constructor(
+    /** 自然序归一后的名称键（见 [GameAssetSorting.naturalize]） */
+    val name: CollationKey,
+    /** 时间戳（毫秒；0 表示未知） */
+    val time: Long,
+    /** 最后一级唯一键（路径 / `kind/id`），保证结果与输入顺序无关 */
+    val tieBreaker: String,
+    val item: T
+)
+
+/**
  * 资源列表排序（纯函数，无 Android 依赖，可直接单测）。
  *
  * 为什么不用 `sortedBy { it.displayName }`：
  * 资源名是「中文舰名 + 英文 id + 数字编号」混排，UTF-16 码点序对中文毫无意义
  * （「阿」会排在「白」后面，「企业」和「埃塞克斯」谁前谁后全看码位）。
- * 这里用 [Collator]（`Locale.CHINA`，ICU 拼音序）比较；并在排序前把每个名字转成
- * [CollationKey]：8000 条资源约 10 万次比较，逐次 `compare(String, String)` 每次都要
- * 走一遍 ICU 规则表，切排序时能感到卡顿，预生成 key 之后只是字节比较。
+ * 这里用 [Collator]（`Locale.CHINA`，ICU 拼音序）比较；混排规则整体交给 ICU：
+ * 汉字按拼音、拉丁字母在汉字之前，与系统文件管理器一致。
+ *
+ * 为什么要「自然序」（[naturalize]）：资源名大量带编号（`22_tex` / `2_tex`、
+ * `abeikelongbi_4` / `abeikelongbi_14`、`立绘 10` / `立绘 2`）。纯字符序会把
+ * 「10」排在「2」前面，用户看到的就是「名字没按顺序排」。这里把连续数字段补零到
+ * 固定宽度再比较，等于按数值大小排；补零对中文/字母的 ICU 排序没有任何影响。
+ *
+ * 排序分两步（[keysOf] → [sorted]）：
+ * 1. 生成键：名字反查 + 折 [CollationKey]，跟数据量成正比，**只在数据/名字变了时**做；
+ * 2. 排序：纯比较，O(n log n)，切成百上千次方案也只是重排既有键。
+ * UI 层因此不用在组合期跑 ICU —— 那正是原来「切排序/扫描结束卡一下」的来源。
  *
  * 排序是**稳定**的，并且次关键字固定升序：主序翻转时（升↔降）只有主轴换向，
  * 时间相同/同名的那几条不会跟着乱跳，列表看起来才「只是倒过来了」。
- *
- * 混排规则完全交给 ICU（`Locale.CHINA`）：汉字按拼音、拉丁字母在汉字之前、
- * 数字按数值内的字符序 —— 与系统文件管理器一致，不做额外「让 123 挨着 Z」的私货规则。
  */
 object GameAssetSorting {
 
-    /** 资源包列表排序：时间取源包自身时间（[GameBundleEntry.modified]） */
-    fun sortBundles(
+    /**
+     * 数字段补零宽度：10 位足够覆盖游戏内的所有编号（9_999_999_999）。
+     *
+     * 超过宽度的数字段不补零也能正确比较：补零后所有段都以 0 开头，
+     * 长数字的首位必然大于 0，位数多的自然更大。
+     */
+    private const val NUMBER_PAD_WIDTH = 10
+
+    // ---------------------------------------------------------------- 两段式 API
+
+    /** 资源包排序键：时间取源包自身时间（[GameBundleEntry.modified]） */
+    fun bundleKeys(
         entries: List<GameBundleEntry>,
-        order: GameSortOrder,
         nameOf: (GameBundleEntry) -> String
-    ): List<GameBundleEntry> = sort(
+    ): List<GameAssetSortKey<GameBundleEntry>> = keysOf(
         items = entries,
-        order = order,
         nameOf = nameOf,
         timeOf = { it.modified },
         tieBreakerOf = { it.path }
     )
 
-    /** 已导入资源排序：时间取资源目录的最后修改时间（≈ 导入时间） */
-    fun sortAssets(
+    /** 已导入资源排序键：时间取资源目录的最后修改时间（≈ 导入时间） */
+    fun assetKeys(
         assets: List<GameAssetInfo>,
-        order: GameSortOrder,
         nameOf: (GameAssetInfo) -> String
-    ): List<GameAssetInfo> = sort(
+    ): List<GameAssetSortKey<GameAssetInfo>> = keysOf(
         items = assets,
-        order = order,
         nameOf = nameOf,
         timeOf = { it.modifiedAt },
         tieBreakerOf = { "${it.kind.key}/${it.id}" }
     )
 
     /**
-     * 通用排序。
+     * 按已有键排出顺序（切方向/切字段走这里，不再碰 ICU）。
      *
-     * @param order 字段 + 方向
-     * @param nameOf 显示名（可能是拼音反查/wiki 皮肤名，调用方通常已批量算好）
-     * @param timeOf 时间戳（毫秒；0 表示未知）
-     * @param tieBreakerOf 最后一级唯一键（路径 / `kind/id`），保证结果与输入顺序无关
+     * 返回的是**键**而不是条目：键里存的是生成那一刻的条目快照，
+     * 而「导入成功 / 导入失败」只改条目状态、不改 mtime 与路径（签名因此不变、键会命中缓存）。
+     * 调用方拿到顺序后应按 [GameAssetSortKey.tieBreaker] 换回最新条目，
+     * 否则列表会一直显示旧的「待导入」徽章与「导入」按钮。
      */
-    fun <T> sort(
-        items: List<T>,
-        order: GameSortOrder,
-        nameOf: (T) -> String,
-        timeOf: (T) -> Long,
-        tieBreakerOf: (T) -> String = { "" }
-    ): List<T> {
-        // 0/1 条不需要排序：直接返回原实例，remember 的引用比较才不会空转
-        if (items.size < 2) return items
+    fun <T> sortedKeys(
+        keys: List<GameAssetSortKey<T>>,
+        order: GameSortOrder
+    ): List<GameAssetSortKey<T>> {
+        // 0/1 条不需要排序：直接返回原列表，省掉一次 Comparator 分配与排序
+        if (keys.size < 2) return keys
 
-        val collator = Collator.getInstance(Locale.CHINA)
-        val rows = ArrayList<SortRow<T>>(items.size)
-        for (item in items) {
-            rows += SortRow(
-                name = collator.getCollationKey(nameOf(item).trim()),
-                time = timeOf(item),
-                tieBreaker = tieBreakerOf(item),
-                item = item
-            )
-        }
-
-        val primary: Comparator<SortRow<T>> = when (order.field) {
+        val primary: Comparator<GameAssetSortKey<T>> = when (order.field) {
             GameSortField.NAME -> compareBy { it.name }
             GameSortField.TIME -> compareBy { it.time }
         }
         // 次关键字（固定升序）：时间相同看名字，名字相同看时间，再相同用唯一键兜底
-        val secondary: Comparator<SortRow<T>> = when (order.field) {
+        val secondary: Comparator<GameAssetSortKey<T>> = when (order.field) {
             GameSortField.NAME -> compareBy({ it.time }, { it.tieBreaker })
             GameSortField.TIME -> compareBy({ it.name }, { it.tieBreaker })
         }
         val comparator =
             if (order.ascending) primary.then(secondary) else primary.reversed().then(secondary)
 
-        return rows.sortedWith(comparator).map { it.item }
+        return keys.sortedWith(comparator)
     }
 
-    /** 排序中间行：名字先转成 [CollationKey]，避免每次比较都跑一遍 ICU 规则 */
-    private class SortRow<T>(
-        val name: CollationKey,
-        val time: Long,
-        val tieBreaker: String,
-        val item: T
-    )
+    /** 按已有键排序并取回键里带的条目（键与数据同步时用；数据可能变旧时用 [sortedKeys]） */
+    fun <T> sorted(keys: List<GameAssetSortKey<T>>, order: GameSortOrder): List<T> =
+        sortedKeys(keys, order).map { it.item }
+
+    // ---------------------------------------------------------------- 一步到位（小列表用）
+
+    /** 资源包列表排序：一次性生成键并排序（列表很小、或调用方不缓存键时用） */
+    fun sortBundles(
+        entries: List<GameBundleEntry>,
+        order: GameSortOrder,
+        nameOf: (GameBundleEntry) -> String
+    ): List<GameBundleEntry> =
+        // 0/1 条无需排序，返回原实例：Compose 侧的 remember/LaunchedEffect 靠引用相等跳过重组
+        if (entries.size < 2) entries else sorted(bundleKeys(entries, nameOf), order)
+
+    /** 已导入资源排序：一次性生成键并排序 */
+    fun sortAssets(
+        assets: List<GameAssetInfo>,
+        order: GameSortOrder,
+        nameOf: (GameAssetInfo) -> String
+    ): List<GameAssetInfo> =
+        if (assets.size < 2) assets else sorted(assetKeys(assets, nameOf), order)
+
+    // ---------------------------------------------------------------- 基础件
+
+    /**
+     * 生成排序键。
+     *
+     * @param nameOf 显示名（可能是拼音反查/wiki 皮肤名，调用方通常已批量算好）
+     * @param timeOf 时间戳（毫秒；0 表示未知）
+     * @param tieBreakerOf 最后一级唯一键，保证结果与输入顺序无关
+     */
+    fun <T> keysOf(
+        items: List<T>,
+        nameOf: (T) -> String,
+        timeOf: (T) -> Long,
+        tieBreakerOf: (T) -> String = { "" }
+    ): List<GameAssetSortKey<T>> {
+        if (items.isEmpty()) return emptyList()
+        // Collator 不是线程安全的：每次生成键都取一个（getInstance 只是 clone，很轻）
+        val collator = Collator.getInstance(Locale.CHINA)
+        val keys = ArrayList<GameAssetSortKey<T>>(items.size)
+        for (item in items) {
+            keys += GameAssetSortKey(
+                name = collator.getCollationKey(naturalize(nameOf(item))),
+                time = timeOf(item),
+                tieBreaker = tieBreakerOf(item),
+                item = item
+            )
+        }
+        return keys
+    }
+
+    /**
+     * 自然序归一：把每一段连续 ASCII 数字左侧补零到 [NUMBER_PAD_WIDTH] 位。
+     *
+     * `立绘 2` → `立绘 0000000002`，`立绘 10` → `立绘 0000000010`，
+     * 于是 ICU 的字符序就等价于数值序（2 在 10 之前）。
+     * 非数字字符原样保留，中英文混排规则仍由 ICU 决定。
+     */
+    internal fun naturalize(raw: String): String {
+        if (raw.isEmpty()) return raw
+        // 没有数字就原样返回：绝大多数名字走这条快路径，不分配新串
+        var hasDigit = false
+        for (ch in raw) if (ch in '0'..'9') { hasDigit = true; break }
+        if (!hasDigit) return raw.trim()
+
+        val out = StringBuilder(raw.length + NUMBER_PAD_WIDTH)
+        var index = 0
+        while (index < raw.length) {
+            val ch = raw[index]
+            if (ch !in '0'..'9') {
+                out.append(ch)
+                index++
+                continue
+            }
+            var end = index
+            while (end < raw.length && raw[end] in '0'..'9') end++
+            val digits = end - index
+            var pad = NUMBER_PAD_WIDTH - digits
+            while (pad-- > 0) out.append('0')
+            out.append(raw, index, end)
+            index = end
+        }
+        return out.toString().trim()
+    }
 }

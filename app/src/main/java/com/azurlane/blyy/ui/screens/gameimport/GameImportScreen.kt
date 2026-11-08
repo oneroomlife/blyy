@@ -156,14 +156,28 @@ fun GameImportScreen(
     }
 
     // key 用版本号而不是 state.entries：后者是几千条记录，每次重组做一次结构比较
-    // （List.equals 逐元素）比重新过滤还贵，而版本号是 O(1) 的 Int 比较
-    val filteredEntries = remember(state.entriesRevision, state.kindFilter, debouncedQuery) {
-        val base = state.filteredEntries
-        if (debouncedQuery.isBlank()) base
-        else base.filter {
-            it.displayName.contains(debouncedQuery, ignoreCase = true) ||
-                it.fileName.contains(debouncedQuery, ignoreCase = true) ||
-                viewModel.displayNameOfEntry(it).contains(debouncedQuery, ignoreCase = true)
+    // （List.equals 逐元素）比重新过滤还贵，而版本号是 O(1) 的 Int 比较。
+    //
+    // 排序已经由 ViewModel 在后台算好（state.sortedEntries），这里只做「类型 + 搜索」筛选，
+    // 顺序直接沿用 —— 切升/降序时不需要再过滤一遍全表。
+    val filteredEntries = remember(
+        state.entriesRevision,
+        state.sortRevision,
+        state.sortOrder,
+        state.kindFilter,
+        debouncedQuery
+    ) {
+        val ordered = if (state.sortedEntries.isEmpty()) state.filteredEntries else state.sortedEntries
+        val scoped = if (state.kindFilter == null) ordered else ordered.filter { it.kind == state.kindFilter }
+        if (debouncedQuery.isBlank()) {
+            scoped
+        } else {
+            val names = state.entryNames
+            scoped.filter {
+                it.displayName.contains(debouncedQuery, ignoreCase = true) ||
+                    it.fileName.contains(debouncedQuery, ignoreCase = true) ||
+                    names[it.path]?.contains(debouncedQuery, ignoreCase = true) == true
+            }
         }
     }
 

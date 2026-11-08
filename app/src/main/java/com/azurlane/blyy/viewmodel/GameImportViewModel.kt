@@ -10,6 +10,8 @@ import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.util.gameimport.GameAssetKind
 import com.azurlane.blyy.util.gameimport.GameAssetLibrary
 import com.azurlane.blyy.util.gameimport.GameAssetNaming
+import com.azurlane.blyy.util.gameimport.GameAssetSortKey
+import com.azurlane.blyy.util.gameimport.GameAssetSorting
 import com.azurlane.blyy.util.gameimport.GameBundleEntry
 import com.azurlane.blyy.util.gameimport.GameBundleScanner
 import com.azurlane.blyy.util.gameimport.GameImportIndex
@@ -18,6 +20,7 @@ import com.azurlane.blyy.util.gameimport.ShellState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -129,8 +132,8 @@ class GameImportViewModel @Inject constructor(
         /**
          * 列表排序方案（名称 / 时间 × 升序 / 降序），「资源包」与「已导入」共用。
          *
-         * 排序本身在 UI 层做（那里已经有批量算好的显示名），这里只保存「方案」：
-         * 这样排序选择能跨 Tab、跨页面存活，也能落盘。
+         * 排序结果由 ViewModel 在后台算好写进 [sortedEntries] / [sortedAssets]，
+         * 这里只保存「方案」：这样排序选择能跨 Tab、跨页面存活，也能落盘。
          */
         val sortOrder: GameSortOrder = GameSortOrder.Default,
         val scanning: Boolean = false,
@@ -138,6 +141,26 @@ class GameImportViewModel @Inject constructor(
         val scanStatus: String? = null,
         val entries: List<GameBundleEntry> = emptyList(),
         val assets: Map<GameAssetKind, List<GameAssetInfo>> = emptyMap(),
+        /**
+         * 已按 [sortOrder] 排好序的资源包（含全部类型；类型/搜索筛选在 UI 侧做）。
+         *
+         * 排序不在组合期做：名字反查与 ICU 排序键的生成都在后台任务里，
+         * UI 只读这一份结果（见 [GameAssetSorting] 的两段式 API）。
+         */
+        val sortedEntries: List<GameBundleEntry> = emptyList(),
+        /** 资源包显示名快照（path → 名称）：卡片标题与搜索共用，避免逐条反查舰名 */
+        val entryNames: Map<String, String> = emptyMap(),
+        /** 已按 [sortOrder] 排好序的已导入资源（含全部类型） */
+        val sortedAssets: List<GameAssetInfo> = emptyList(),
+        /** 资源显示名快照（`kind/id` → 名称） */
+        val assetNames: Map<String, String> = emptyMap(),
+        /**
+         * 排序结果版本，每发布一批 [sortedEntries] / [sortedAssets] 就 +1。
+         *
+         * UI 用它当 `remember` 键：直接拿列表当键会退化成几千条元素的 `equals`，
+         * 而 Int 比较是 O(1) —— 后台算完那一刻列表能可靠刷新，又不用比对全表。
+         */
+        val sortRevision: Int = 0,
         val roots: Map<GameAssetKind, String> = emptyMap(),
         val progress: ImportProgress? = null,
         /** 批量导入结果文案 */
@@ -277,6 +300,8 @@ class GameImportViewModel @Inject constructor(
             // 舰名反查（拼音 → 中文）就绪后刷新显示名
             nameResolver.pinyinMap.collect { map ->
                 _state.update { it.copy(pinyinMap = map) }
+                nameEpoch++
+                refreshSortedLists()
                 requestSkinNames()
             }
         }
@@ -284,13 +309,18 @@ class GameImportViewModel @Inject constructor(
             // 真实换装名就绪后刷新显示名：把「换装N」升级为 wiki 皮肤名
             skinNameRegistry.skinSequences.collect { sequences ->
                 _state.update { it.copy(skinNameSequences = sequences) }
+                nameEpoch++
+                refreshSortedLists()
             }
         }
         viewModelScope.launch {
             // 排序方案是纯 UI 偏好：读不到/脏数据就保持默认（名称正序），不影响扫描与导入
             settings.gameImportSort.collect { raw ->
                 val restored = GameSortOrder.parse(raw) ?: return@collect
-                _state.update { if (it.sortOrder == restored) it else it.copy(sortOrder = restored) }
+                if (_state.value.sortOrder != restored) {
+                    _state.update { it.copy(sortOrder = restored) }
+                    refreshSortedLists()
+                }
             }
         }
         viewModelScope.launch {
@@ -417,6 +447,273 @@ class GameImportViewModel @Inject constructor(
         else -> "$bytes B"
     }
 
+    // ------------------------------------------------------------------ 排序
+
+    /**
+     * 显示名数据（舰名拼音 / wiki 换装名）的版本号。
+     *
+     * 一到就自增，排序键缓存随之失效 —— 显示名变了，排序结果和卡片标题都得跟着变。
+     */
+    @Volatile
+    private var nameEpoch = 0
+
+    /**
+     * 显示名增量缓存。
+     *
+     * 反查舰名（拼音表 / wiki 换装名）是排序键生成里最贵的一步。批量导入时列表每次刷新
+     * 都重算全表就是几千次反查；这里按 path / `kind/id` 缓存，重新扫描时只补算新条目，
+     * 名字数据（[nameEpoch]）一变就整体作废。
+     */
+    private val nameCacheLock = Any()
+    private val bundleNameCache = HashMap<String, String>()
+    private val assetNameCache = HashMap<String, String>()
+    private var nameCacheEpoch = -1
+
+    /**
+     * 上一批排序键 + 名字签名。
+     *
+     * 签名是「全部 (键, 名字)」的无序哈希：导入只改条目状态（待导入 → 已导入）时签名不变，
+     * 于是 [GameAssetSorting.keysOf] 的 ICU 折键可以整批复用，只重排已有键。
+     */
+    private class BundleKeys(
+        val signature: Long,
+        val nameEpoch: Int,
+        val names: Map<String, String>,
+        val keys: List<GameAssetSortKey<GameBundleEntry>>
+    )
+
+    /** 上一批排序键（已导入资源）+ 它对应的名字签名 */
+    private class AssetKeys(
+        val signature: Long,
+        val nameEpoch: Int,
+        val names: Map<String, String>,
+        val keys: List<GameAssetSortKey<GameAssetInfo>>
+    )
+
+    @Volatile
+    private var bundleKeysCache: BundleKeys? = null
+
+    @Volatile
+    private var assetKeysCache: AssetKeys? = null
+
+    private var sortJob: Job? = null
+
+    /**
+     * 重算「显示名表 + 排序键 + 排序结果」，全部在 [Dispatchers.Default] 上做。
+     *
+     * 为什么不在 UI 层 remember 里排：显示名要反查舰名（拼音表 + wiki 皮肤名），
+     * 排序键要把名字折成 ICU 的 [java.text.CollationKey]，8000 条资源做一遍是几十毫秒的
+     * CPU 活儿。原来这些都压在提交线程上，表现为「扫描结束那一下卡顿」「切排序顿一下」。
+     *
+     * 两点关键设计：
+     * 1. **键缓存**：数据版本（[State.entriesRevision] / [State.libraryRevision]）和名字版本
+     *    （[nameEpoch]）都没变时直接复用上一批键 —— 切升/降序、切字段、切 Tab 都不再跑 ICU；
+     * 2. **合并触发**：批量导入时每导完一个条目都会 [markEntry] 一次，这里用
+     *    [SORT_DEBOUNCE_MS] 的窗口把连续刷新合并成一次（任务被取消即重来）。
+     *
+     * 结果写回前会核对版本：期间数据又变了就丢弃这批结果，交给后一次刷新，
+     * 避免旧快照覆盖新列表（列表错位比慢一点严重得多）。
+     */
+    private fun refreshSortedLists() {
+        val snapshot = _state.value
+        val entries = snapshot.entries
+        val assets = snapshot.assets
+        val entriesRev = snapshot.entriesRevision
+        val libraryRev = snapshot.libraryRevision
+        val epoch = nameEpoch
+        val order = snapshot.sortOrder
+
+        sortJob?.cancel()
+        sortJob = viewModelScope.launch(Dispatchers.Default) {
+            delay(SORT_DEBOUNCE_MS)
+
+            val bundleNames = buildBundleNames(entries, epoch)
+            val bundleSignature = bundleSignatureOf(entries, bundleNames)
+            val bundles = bundleKeysCache
+                ?.takeIf { it.signature == bundleSignature && it.nameEpoch == epoch }
+                ?: buildBundleKeys(entries, bundleNames, bundleSignature, epoch)
+                    .also { bundleKeysCache = it }
+
+            val flatAssets = flattenAssets(assets)
+            val libraryNames = buildAssetNames(flatAssets, epoch)
+            val librarySignature = assetSignatureOf(flatAssets, libraryNames)
+            val library = assetKeysCache
+                ?.takeIf { it.signature == librarySignature && it.nameEpoch == epoch }
+                ?: buildAssetKeys(flatAssets, libraryNames, librarySignature, epoch)
+                    .also { assetKeysCache = it }
+
+            // 排序键里带的是生成那一刻的条目快照。导入成功 / 失败只改 entry.state（不改 mtime、不改路径），
+            // 签名不变 → 键命中缓存 → 若直接把键里的 item 发出去，列表会一直显示旧的「待导入 / 导入」按钮。
+            // 所以这里只取「顺序」，再按 tieBreaker 换回当前状态里的条目对象。
+            val bundleFresh = HashMap<String, GameBundleEntry>(entries.size * 2).apply {
+                for (entry in entries) put(entry.path, entry)
+            }
+            val sortedEntries = GameAssetSorting.sortedKeys(bundles.keys, order)
+                .map { key -> bundleFresh[key.tieBreaker] ?: key.item }
+
+            val assetFresh = HashMap<String, GameAssetInfo>(flatAssets.size * 2).apply {
+                for (asset in flatAssets) put(assetKey(asset), asset)
+            }
+            val sortedAssets = GameAssetSorting.sortedKeys(library.keys, order)
+                .map { key -> assetFresh[key.tieBreaker] ?: key.item }
+
+            _state.update { current ->
+                if (current.entriesRevision != entriesRev ||
+                    current.libraryRevision != libraryRev ||
+                    current.sortOrder != order ||
+                    nameEpoch != epoch
+                ) {
+                    current
+                } else {
+                    current.copy(
+                        sortedEntries = sortedEntries,
+                        entryNames = bundles.names,
+                        sortedAssets = sortedAssets,
+                        assetNames = library.names,
+                        sortRevision = current.sortRevision + 1
+                    )
+                }
+            }
+        }
+    }
+
+    /** 资源库按类型摊平成一条列表（顺序固定为 [GameAssetKind.ordered]，结果可复现） */
+    private fun flattenAssets(assets: Map<GameAssetKind, List<GameAssetInfo>>): List<GameAssetInfo> {
+        val total = assets.values.sumOf { it.size }
+        val flat = ArrayList<GameAssetInfo>(total)
+        for (kind in GameAssetKind.ordered) {
+            assets[kind]?.let(flat::addAll)
+        }
+        return flat
+    }
+
+    /**
+     * 增量算出资源包的显示名表：只有新路径才去反查舰名。
+     *
+     * 排序键的生成依赖这张表，所以它每次刷新都要有；但「反查」不必每次都有。
+     */
+    private fun buildBundleNames(
+        entries: List<GameBundleEntry>,
+        epoch: Int
+    ): Map<String, String> = synchronized(nameCacheLock) {
+        resetNameCachesIfStale(epoch)
+        val names = HashMap<String, String>(entries.size * 2)
+        for (entry in entries) {
+            val cached = bundleNameCache[entry.path]
+            val name = cached ?: displayNameOfEntry(entry).ifBlank { entry.displayName }
+            if (cached == null) bundleNameCache[entry.path] = name
+            names[entry.path] = name
+        }
+        // 已删除的资源包（重装游戏 / 清缓存）不该一直留在缓存里
+        if (bundleNameCache.size > entries.size * 2) {
+            bundleNameCache.keys.retainAll(names.keys)
+        }
+        names
+    }
+
+    /** 增量算出已导入资源的显示名表（只给新 key 反查舰名 / wiki 换装名） */
+    private fun buildAssetNames(
+        assets: List<GameAssetInfo>,
+        epoch: Int
+    ): Map<String, String> = synchronized(nameCacheLock) {
+        resetNameCachesIfStale(epoch)
+        val names = HashMap<String, String>(assets.size * 2)
+        for (asset in assets) {
+            val key = assetKey(asset)
+            val cached = assetNameCache[key]
+            val name = cached ?: displayNameFor(asset.kind, asset.id).ifBlank { asset.id }
+            if (cached == null) assetNameCache[key] = name
+            names[key] = name
+        }
+        if (assetNameCache.size > assets.size * 2) {
+            assetNameCache.keys.retainAll(names.keys)
+        }
+        names
+    }
+
+    private fun resetNameCachesIfStale(epoch: Int) {
+        if (nameCacheEpoch == epoch) return
+        nameCacheEpoch = epoch
+        bundleNameCache.clear()
+        assetNameCache.clear()
+    }
+
+    /**
+     * 名字表的无序哈希。
+     *
+     * 导入只改条目状态（待导入 → 已导入）时名字表内容不变，签名也不变 ——
+     * 于是整批 ICU 排序键可以复用，只重排已有键。
+     */
+    private fun signatureOf(names: Map<String, String>): Long {
+        var signature = 0L
+        for ((key, value) in names) {
+            signature += (key.hashCode().toLong() shl 32) xor
+                (value.hashCode().toLong() and 0xFFFFFFFFL)
+        }
+        return signature
+    }
+
+    /**
+     * 资源包的排序键签名：名字表 + 每条的时间与路径。
+     *
+     * 时间必须参与签名 —— 资源包被游戏重新下载后 mtime 变了，按时间排序的键不能沿用旧值。
+     */
+    private fun bundleSignatureOf(
+        entries: List<GameBundleEntry>,
+        names: Map<String, String>
+    ): Long {
+        var signature = signatureOf(names)
+        for (entry in entries) {
+            signature = signature * 31 + entry.modified
+            signature = signature * 31 + entry.path.hashCode()
+        }
+        return signature
+    }
+
+    /** 已导入资源的排序键签名：名字表 + 每条的时间与 kind/id */
+    private fun assetSignatureOf(
+        assets: List<GameAssetInfo>,
+        names: Map<String, String>
+    ): Long {
+        var signature = signatureOf(names)
+        for (asset in assets) {
+            signature = signature * 31 + asset.modifiedAt
+            signature = signature * 31 + asset.id.hashCode()
+        }
+        return signature
+    }
+
+    private fun buildBundleKeys(
+        entries: List<GameBundleEntry>,
+        names: Map<String, String>,
+        signature: Long,
+        epoch: Int
+    ): BundleKeys = BundleKeys(
+        signature = signature,
+        nameEpoch = epoch,
+        names = names,
+        keys = GameAssetSorting.bundleKeys(entries) { entry ->
+            names[entry.path] ?: entry.displayName
+        }
+    )
+
+    private fun buildAssetKeys(
+        assets: List<GameAssetInfo>,
+        names: Map<String, String>,
+        signature: Long,
+        epoch: Int
+    ): AssetKeys = AssetKeys(
+        signature = signature,
+        nameEpoch = epoch,
+        names = names,
+        keys = GameAssetSorting.assetKeys(assets) { asset ->
+            names[assetKey(asset)] ?: asset.id
+        }
+    )
+
+    /** 已导入资源的稳定键：同一 id 可能同时存在于立绘与动态皮肤，裸 id 会撞车 */
+    private fun assetKey(asset: GameAssetInfo): String = "${asset.kind.key}/${asset.id}"
+
     // ------------------------------------------------------------------ 扫描
 
     /**
@@ -537,6 +834,7 @@ class GameImportViewModel @Inject constructor(
                         lastScanAt = System.currentTimeMillis()
                     )
                 }
+                refreshSortedLists()
                 refreshLibrary()
             } catch (c: kotlinx.coroutines.CancellationException) {
                 throw c
@@ -562,6 +860,7 @@ class GameImportViewModel @Inject constructor(
         viewModelScope.launch {
             val assets = library.scanAll()
             _state.update { it.copy(assets = assets, libraryRevision = it.libraryRevision + 1) }
+            refreshSortedLists()
             requestSkinNames()
         }
     }
@@ -569,75 +868,95 @@ class GameImportViewModel @Inject constructor(
     // ------------------------------------------------------------------ 导入
 
     private fun importEntries(targets: List<GameBundleEntry>) {
-        if (targets.isEmpty() || _state.value.progress != null) return
+        if (targets.isEmpty()) return
+        // 自愈：上一次导入协程已经结束（正常跑完 / 被停止 / 被取消），但进度条因为某条异常路径残留下来，
+        // 会让入口守卫把之后所有的「导入 / 重试 / 更新 / 全部导入」全部静默拦住 —— 先把残影清掉。
+        if (_state.value.progress != null && importJob?.isActive != true) {
+            _state.update { it.copy(progress = null) }
+        }
+        if (_state.value.progress != null) return
         cancelRequested = false
         importJob = viewModelScope.launch {
             val success = mutableListOf<String>()
             val failed = mutableListOf<Pair<String, String>>()
-            targets.forEachIndexed { position, entry ->
-                if (cancelRequested) return@launch
-                _state.update {
-                    it.copy(
-                        progress = ImportProgress(
-                            fileName = entry.fileName,
-                            index = position + 1,
-                            total = targets.size,
-                            fraction = 0f,
-                            message = "准备导入"
-                        )
-                    )
-                }
-                try {
-                    val outcome = scanner.importEntry(entry) { fraction, message ->
-                        _state.update { current ->
-                            current.copy(
-                                progress = ImportProgress(
-                                    fileName = entry.fileName,
-                                    index = position + 1,
-                                    total = targets.size,
-                                    fraction = ((position + fraction) / targets.size).coerceIn(0f, 1f),
-                                    message = message
-                                )
+            // try/finally 保证「清进度 + 刷新库」一定会执行：
+            // 早期版本在用户点「停止」时 return 直接跳过了收尾，进度条永久卡在最后一帧，
+            // 之后卡片按钮全部因为 busy = progress != null 而变灰，看起来就是「导入完还是导入按钮」。
+            try {
+                for ((position, entry) in targets.withIndex()) {
+                    // 用户点了停止：跳出循环（不是 return），finally 依然会收尾
+                    if (cancelRequested) break
+                    _state.update {
+                        it.copy(
+                            progress = ImportProgress(
+                                fileName = entry.fileName,
+                                index = position + 1,
+                                total = targets.size,
+                                fraction = 0f,
+                                message = "准备导入"
                             )
-                        }
+                        )
                     }
-                    success += entry.fileName
-                    // 实际 id 可能与列表里预估的不同（被别的来源占用时会加哈希后缀），
-                    // 必须回写到条目上，否则「查看」会打开错的资源
-                    markEntry(entry.path, GameBundleEntry.State.IMPORTED, null, outcome.assetId)
-                    // 就地补一条资产卡片，避免整库重扫的等待感（随后 refreshLibrary 校准）
-                    val imported = libraryAssetOrNull(outcome.kind, outcome.assetId)
-                    if (imported != null) {
-                        _state.update { current ->
-                            val list = current.assets[imported.kind].orEmpty()
-                            if (list.any { it.id == imported.id }) {
-                                current
-                            } else {
+                    try {
+                        val outcome = scanner.importEntry(entry) { fraction, message ->
+                            _state.update { current ->
                                 current.copy(
-                                    assets = current.assets +
-                                        (imported.kind to (list + imported).sortedBy { it.id }),
-                                    libraryRevision = current.libraryRevision + 1
+                                    progress = ImportProgress(
+                                        fileName = entry.fileName,
+                                        index = position + 1,
+                                        total = targets.size,
+                                        fraction = ((position + fraction) / targets.size).coerceIn(0f, 1f),
+                                        message = message
+                                    )
                                 )
                             }
                         }
+                        success += entry.fileName
+                        // 实际 id 可能与列表里预估的不同（被别的来源占用时会加哈希后缀），
+                        // 必须回写到条目上，否则「查看」会打开错的资源
+                        markEntry(entry.path, GameBundleEntry.State.IMPORTED, null, outcome.assetId)
+                        // 就地补一条资产卡片，避免整库重扫的等待感（随后 refreshLibrary 校准）
+                        val imported = libraryAssetOrNull(outcome.kind, outcome.assetId)
+                        if (imported != null) {
+                            _state.update { current ->
+                                val list = current.assets[imported.kind].orEmpty()
+                                if (list.any { it.id == imported.id }) {
+                                    current
+                                } else {
+                                    current.copy(
+                                        assets = current.assets +
+                                            (imported.kind to (list + imported)),
+                                        libraryRevision = current.libraryRevision + 1
+                                    )
+                                }
+                            }
+                            refreshSortedLists()
+                        }
+                    } catch (c: kotlinx.coroutines.CancellationException) {
+                        // 页面销毁导致协程取消：取消不是导入失败，
+                        // 剩余条目保持原状态，索引也不会被写成 FAILED
+                        throw c
+                    } catch (t: Throwable) {
+                        val reason = t.message ?: t.javaClass.simpleName
+                        failed += entry.fileName to reason
+                        markEntry(entry.path, GameBundleEntry.State.FAILED, reason)
                     }
-                } catch (c: kotlinx.coroutines.CancellationException) {
-                    // 页面销毁导致协程取消：取消不是导入失败，
-                    // 剩余条目保持原状态，索引也不会被写成 FAILED
-                    throw c
-                } catch (t: Throwable) {
-                    val reason = t.message ?: t.javaClass.simpleName
-                    failed += entry.fileName to reason
-                    markEntry(entry.path, GameBundleEntry.State.FAILED, reason)
                 }
+            } finally {
+                _state.update {
+                    it.copy(
+                        progress = null,
+                        batchMessage = if (success.isEmpty() && failed.isEmpty() && cancelRequested) {
+                            null
+                        } else {
+                            buildBatchMessage(success.size, failed, cancelRequested)
+                        }
+                    )
+                }
+                // 协程可能已被取消，finally 里直接 suspend 会立刻抛 CancellationException；
+                // 另起一个协程收尾，页面还在就校准库、已销毁就静默丢弃
+                viewModelScope.launch { refreshLibrary() }
             }
-            _state.update {
-                it.copy(
-                    progress = null,
-                    batchMessage = buildBatchMessage(success.size, failed, cancelRequested)
-                )
-            }
-            refreshLibrary()
         }
     }
 
@@ -681,6 +1000,7 @@ class GameImportViewModel @Inject constructor(
                 }
             )
         }
+        refreshSortedLists()
     }
 
     // ------------------------------------------------------------------ 资源库操作
@@ -757,7 +1077,7 @@ class GameImportViewModel @Inject constructor(
     }
 
     /**
-     * 切换排序方案：先更新界面（列表立刻重排），再异步落盘。
+     * 切换排序方案：先更新界面（方案芯片立刻变），排序结果由后台任务重排后写回。
      *
      * 落盘失败（DataStore IO / 空间不足）只影响「下次进页面记不住顺序」，
      * 不该打断本次排序，因此异常吞掉只留日志。
@@ -765,6 +1085,7 @@ class GameImportViewModel @Inject constructor(
     private fun updateSortOrder(order: GameSortOrder) {
         if (order == _state.value.sortOrder) return
         _state.update { it.copy(sortOrder = order) }
+        refreshSortedLists()
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { settings.setGameImportSort(order.storageKey) }
                 .onFailure { Log.w(TAG, "排序方案保存失败：${order.storageKey}", it) }
@@ -773,5 +1094,13 @@ class GameImportViewModel @Inject constructor(
 
     private companion object {
         private const val TAG = "GameImportVM"
+
+        /**
+         * 排序刷新的合并窗口（毫秒）。
+         *
+         * 批量导入时每导完一个条目都会刷新一次列表状态，1000 个文件就是 1000 次重排；
+         * 用 50ms 窗口合并：用户感知不到延迟，后台少做上千次无用功。
+         */
+        private const val SORT_DEBOUNCE_MS = 50L
     }
 }
