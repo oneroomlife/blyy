@@ -457,9 +457,23 @@ fun Live2dViewerScreen(
                         setBackgroundColor(android.graphics.Color.TRANSPARENT)
                         setLayerType(View.LAYER_TYPE_HARDWARE, null)
                         webViewClient = viewModel.createWebViewClient(ctx) { currentInfo }
+                        // debug 包把 WebView 控制台转发到 logcat（`adb logcat -s Live2dWeb`），
+                        // 渲染端脚本异常/资源 404 才有迹可循；release 不挂，避免日志噪音
+                        if (com.azurlane.blyy.BuildConfig.DEBUG) {
+                            webChromeClient = object : android.webkit.WebChromeClient() {
+                                override fun onConsoleMessage(msg: android.webkit.ConsoleMessage): Boolean {
+                                    Log.d(
+                                        "Live2dWeb",
+                                        "${msg.messageLevel()} ${msg.message()} @${msg.sourceId()}:${msg.lineNumber()}"
+                                    )
+                                    return true
+                                }
+                            }
+                        }
                         addJavascriptInterface(bridge, "AndroidBridge")
                         loadUrl(
-                            "https://live2d.local/viewer.html?model=${android.net.Uri.encode(viewModel.modelId)}"
+                            "https://live2d.local/viewer.html?model=${android.net.Uri.encode(viewModel.modelId)}" +
+                                if (com.azurlane.blyy.BuildConfig.DEBUG) "&debug=1" else ""
                         )
                     }.also { webViewHolder.set(it) }
                 },

@@ -49,6 +49,13 @@
     var modelId = params.get('model') || '';
     var BASE = 'https://live2d.local/models/' + encodeURIComponent(modelId) + '/';
 
+    // 调试通道：宿主在 debug 包里带 ?debug=1，渲染端把加载各阶段回传 logcat
+    // （正常包不带，零额外开销；排障时 `adb logcat -s Live2dViewer` 即可看到）
+    var DEBUG = params.get('debug') === '1';
+    function dbg(message) {
+        if (DEBUG) postLog(message);
+    }
+
     var app = null;
     var model = null;
 
@@ -728,6 +735,40 @@
         }
     }
 
+
+    /**
+     * 只读探针：确认贴图是否真的上传并绑定到了渲染器。
+     * 未绑定的采样在 WebGL 里恒返回 (0,0,0,1)，正好是「整块不透明黑」的成因，
+     * 所以这里只读不写，用来区分「没绑上」和「绑上了但采样黑」。
+     */
+
+
+    /**
+     * 临时实验（仅 ?debug=1）：把模型贴图换成高对比棋盘格。
+     * 用来区分「UV / 采样链路坏了」和「采样到图集里的黑色区域」——
+     * 换图后若出现棋盘则采样正常，画面全黑则问题在着色/底色链路。
+     */
+
+
+    /**
+     * 临时实验（仅 ?debug=1）：每帧渲染完把帧缓冲与视口复位到 PIXI 的主画布。
+     * 怀疑蒙版通道绘制把 WebGL 状态留在了 256x256 的 mask FBO 上，
+     * 导致后续批次都画进了蒙版缓冲区（画面上看到的就是通道色）。
+     */
+
+
+    /**
+     * 只读探针：看裁剪（蒙版）缓冲区的实际状态。
+     * 若 mask FBO 不完整或尺寸非法，SetupMask 的绘制会直接落到画布上，
+     * 用户看到的就是整块「通道色」（黑/红/绿/蓝）而不是角色。
+     */
+
+
+    /**
+     * 临时实验（仅 ?debug=1）：跳过「几乎铺满画布」的网格，验证黑屏是否由这类
+     * 全屏片（场景背景/蒙版残留件）造成。
+     */
+
     function loadModel() {
         if (!window.Live2DCubismCore) {
             postError('Cubism Core 加载失败');
@@ -738,6 +779,11 @@
             return;
         }
         var manifestUrl = BASE + '__l2d_manifest__.json';
+        try {
+            dbg('core=' + (window.Live2DCubismCore.Version
+                ? window.Live2DCubismCore.Version.csmGetVersion() : 'n/a')
+                + ' pixi=' + PIXI.VERSION + ' manifest=' + manifestUrl);
+        } catch (e) { /* 版本号拿不到不影响加载 */ }
         fetch(manifestUrl)
             .then(function (res) {
                 if (!res.ok) throw new Error('读取模型清单失败 HTTP ' + res.status);
@@ -746,18 +792,31 @@
             .then(function (manifest) {
                 if (!manifest || !manifest.model3) throw new Error('模型清单缺少 model3 字段');
                 var rel = String(manifest.model3).split('/').map(encodeURIComponent).join('/');
+                dbg('model3=' + rel + ' files=' + (manifest.files ? manifest.files.length : 'n/a'));
+                dbg('from start');
                 return PIXI.live2d.Live2DModel.from(BASE + rel, {
                     autoInteract: true,
                     autoUpdate: true
                 });
             })
             .then(function (m) {
+                dbg('from resolved');
                 model = m;
+                try {
+                    var im0 = m.internalModel;
+                    dbg('model ' + im0.width + 'x' + im0.height
+                        + ' screen=' + window.innerWidth + 'x' + window.innerHeight
+                        + ' textures=' + ((im0.textures && im0.textures.length) || 0)
+                        + ' scale=' + m.scale.x + ' pos=' + m.x + ',' + m.y);
+                } catch (e) { dbg('probe failed: ' + e); }
                 // 锚点居中：position 直接表示模型中心的屏幕位置
                 m.anchor.set(0.5, 0.5);
                 app.stage.addChild(m);
                 computeFit();
                 applyTransform();
+                dbg('fitted scale=' + m.scale.x + ' pos=' + m.x + ',' + m.y
+                    + ' fit=' + fitScale + ' ticker=' + app.ticker.started
+                    + ' renderer=' + app.renderer.width + 'x' + app.renderer.height);
 
                 // ---------- 待机循环接线（关键） ----------
                 // 运行时（pixi-live2d-display 0.4.0）把待机组名**硬编码**为 `{idle:'Idle'}`：
@@ -877,9 +936,11 @@
                 }, 8000);
             })
             .catch(function (e) {
+                dbg('load failed: ' + ((e && (e.stack || e.message)) || e));
                 postError((e && e.message) || '模型加载失败');
             });
     }
+
 
     // 宿主遥控入口
     window.__viewer = {
