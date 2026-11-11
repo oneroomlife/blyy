@@ -36,9 +36,6 @@ class Live2dImporter @Inject constructor(
         private const val MODEL3_EXT = ".model3.json"
         private const val MAX_WALK_DEPTH = 6
         private const val MAX_ENTRIES = 20000
-
-        /** 目录名非法字符（Windows 风格保留符一并处理，保证跨平台一致性） */
-        private val ILLEGAL_CHARS = Regex("""[/\\:*?"<>|]""")
     }
 
     enum class Phase { SCANNING, COPYING, EXTRACTING, FINALIZING }
@@ -92,6 +89,9 @@ class Live2dImporter @Inject constructor(
             importCollected(
                 files = files,
                 groupByModelRoot = { relPath -> relPath.substringBeforeLast('/', "") },
+                // 用户直接选中模型文件夹本身时（模型根相对路径为空串），
+                // 用所选目录名兜底，避免退化成"目录名无效"
+                fallbackName = treeDisplayName(treeUri),
                 onProgress = onProgress,
                 isCancelled = isCancelled,
                 createdTargets = createdTargets
@@ -138,21 +138,33 @@ class Live2dImporter @Inject constructor(
             )
 
             ZipFile(srcFile).use { zip ->
-                val fileEntries = zip.entries().asSequence().filter { !it.isDirectory }.toList()
-                val model3Entries = fileEntries.filter { it.name.endsWith(MODEL3_EXT, ignoreCase = true) }
+                // zip 条目名先归一化（Windows 打包工具会写反斜杠，也会带 "./" 前缀），
+                // 否则"模型根"永远算不出来，整包模型会被判成"目录名无效"
+                val fileEntries = zip.entries().asSequence()
+                    .filter { !it.isDirectory }
+                    .mapNotNull { entry ->
+                        Live2dModelLayout.normalizeEntryPath(entry.name)?.let { rel -> entry to rel }
+                    }
+                    .toList()
+                val model3Entries = fileEntries.filter { (_, rel) ->
+                    rel.endsWith(MODEL3_EXT, ignoreCase = true)
+                }
                 if (model3Entries.isEmpty()) {
                     return@withContext ImportResult(
-                        emptyList(), emptyList(), listOf("压缩包内未找到 *.model3.json 模型文件"), false
+                        emptyList(),
+                        emptyList(),
+                        listOf("压缩包内未找到 *.model3.json 模型文件（仅支持 Cubism 3/4）"),
+                        false
                     )
                 }
-                val modelRoots = model3Entries.map { it.name.substringBeforeLast('/', "") }.toSet()
+                val modelRoots = model3Entries.map { (_, rel) -> rel.substringBeforeLast('/', "") }.distinct()
 
                 // 仅解包属于模型根的条目（归属规则与 importCollected 一致：
                 // 取最长匹配根，保证根目录下 motions/textures 等子目录一并解出）
                 var extracted = 0
-                for (entry in fileEntries) {
-                    if (ownerRoot(entry.name, modelRoots.toList()) != null) {
-                        val out = safeOutputFile(tempDir, entry.name)
+                for ((entry, rel) in fileEntries) {
+                    if (Live2dModelLayout.ownerRoot(rel, modelRoots) != null) {
+                        val out = safeOutputFile(tempDir, rel)
                         if (out != null) {
                             // zip 条目按需逐级建父目录（目录条目在压缩包里可能缺省）
                             out.parentFile?.mkdirs()
@@ -182,6 +194,8 @@ class Live2dImporter @Inject constructor(
             importCollected(
                 files = files,
                 groupByModelRoot = { relPath -> relPath.substringBeforeLast('/', "") },
+                // 压缩包里模型就在包根（没有外层目录）时，用压缩包文件名兜底命名
+                fallbackName = documentDisplayName(zipUri)?.substringBeforeLast('.'),
                 onProgress = onProgress,
                 isCancelled = isCancelled,
                 createdTargets = createdTargets
@@ -210,10 +224,12 @@ class Live2dImporter @Inject constructor(
     /**
      * 把收集到的文件按"model3.json 所在目录 = 模型根"分组，逐模型拷入库根目录。
      * [groupByModelRoot] 从相对路径给出模型根相对目录（顶层模型为空串）。
+     * [fallbackName] 顶层模型（模型根为空串）时的命名兜底：SAF 所选目录名 / zip 文件名。
      */
     private suspend fun importCollected(
         files: List<SourceFile>,
         groupByModelRoot: (String) -> String,
+        fallbackName: String? = null,
         onProgress: (ImportProgress) -> Unit,
         isCancelled: () -> Boolean,
         createdTargets: MutableList<String>
@@ -229,7 +245,7 @@ class Live2dImporter @Inject constructor(
         val rootRels = model3Files.map { groupByModelRoot(it.relPath) }.distinct()
         val groups = rootRels.map { rootRel ->
             val owned = files.filter { f ->
-                ownerRoot(f.relPath, rootRels) == rootRel
+                Live2dModelLayout.ownerRoot(f.relPath, rootRels) == rootRel
             }
             ModelGroup(rootRel, owned)
         }
@@ -247,10 +263,19 @@ class Live2dImporter @Inject constructor(
                 createdTargets.forEach { runCatching { File(library.rootDir(), it).deleteRecursively() } }
                 return ImportResult(emptyList(), emptyList(), emptyList(), cancelled = true)
             }
-            val rootName = group.rootRel.substringAfterLast('/')
-            val folderName = sanitizeFolderName(rootName)
+            // 命名优先级：模型根目录名 → model3.json 文件名 → 导入源名称。
+            // 旧实现只认模型根目录名，用户"直接选中模型文件夹本身"（或 zip 内模型就在包根）
+            // 时根相对路径是空串 → 判成「目录名无效」，整模型被丢弃 → 库里当然看不到。
+            val primaryModel3 = group.files
+                .filter { it.relPath.endsWith(MODEL3_EXT, ignoreCase = true) }
+                .minByOrNull { f -> f.relPath.count { it == '/' } }
+            val folderName = Live2dModelLayout.modelIdFor(
+                rootRel = group.rootRel,
+                model3Rel = primaryModel3?.relPath.orEmpty(),
+                fallback = fallbackName
+            )
             if (folderName.isEmpty()) {
-                failed += "${rootName.ifEmpty { "(根目录)" }}: 目录名无效"
+                failed += "${group.rootRel.ifEmpty { "(根目录)" }}: 无法确定模型名，请把模型放进独立文件夹后重试"
                 continue
             }
             // 重名规则：本次导入已占用 → 加后缀；库中已存在 → 原位替换；否则新增
@@ -299,6 +324,27 @@ class Live2dImporter @Inject constructor(
                         )
                     )
                 }
+
+                // 落盘后合格化校验：
+                // 1) model3.json 里的引用（Moc/Textures/Motions…）若与磁盘真实文件名不一致
+                //    （Windows 打包的大小写差异 / 反斜杠 / 贴图换了层级）就地改写为真实路径，
+                //    否则扫描会把它判成"model3.json 损坏"→ 模型永远不显示
+                // 2) 缺 moc3 或全部贴图 → 当场报失败，而不是静默入库后看不见
+                val outcome = runCatching { Live2dModelLocalizer.localize(targetDir) }
+                    .getOrElse { Live2dModelLocalizer.Outcome(true) }
+                if (!outcome.ok) {
+                    val reason = outcome.reason ?: "模型文件不完整"
+                    Log.w(TAG, "模型不可渲染: $targetId → $reason")
+                    failed += "$targetId: $reason"
+                    runCatching { targetDir.deleteRecursively() }
+                    imported -= targetId
+                    updated -= targetId
+                    createdTargets -= targetId
+                    continue
+                }
+                if (outcome.rewrittenRefs > 0) {
+                    Log.i(TAG, "已修正 $targetId 的 ${outcome.rewrittenRefs} 处模型引用路径")
+                }
             } catch (e: InterruptedException) {
                 throw e
             } catch (e: Exception) {
@@ -316,24 +362,25 @@ class Live2dImporter @Inject constructor(
     }
 
     /**
-     * 相对路径归属的模型根：取能匹配的所有根中最长的一个。
-     * 例：根 {"adaerbote_2/adaerbote_2"} 时，"adaerbote_2/textures/t.png"
-     * 不匹配任何根（此文件不属于该模型，导入源含冗余文件）。
+     * 所选 SAF 目录树的显示名（用户"直接选中模型文件夹本身"时用它当模型名兜底）。
+     * 取不到就返回 null，由 modelIdFor 继续向下兜底。
      */
-    private fun ownerRoot(relPath: String, rootRels: List<String>): String? {
-        var best: String? = null
-        for (root in rootRels) {
-            val matches = if (root.isEmpty()) {
-                !relPath.contains('/')
-            } else {
-                relPath == root || relPath.startsWith("$root/")
-            }
-            if (matches && (best == null || root.length > best!!.length)) {
-                best = root
-            }
+    private fun treeDisplayName(treeUri: Uri): String? = runCatching {
+        val docId = DocumentsContract.getTreeDocumentId(treeUri)
+        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+        documentDisplayName(docUri)
+    }.getOrNull()
+
+    /** 单个 document uri 的显示名（zip 文件名兜底用） */
+    private fun documentDisplayName(uri: Uri): String? = runCatching {
+        context.contentResolver.query(
+            uri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) cursor.getString(0) else null
         }
-        return best
-    }
+    }.getOrNull()
 
     private fun copySourceToFile(src: SourceFile, out: File) {
         if (src.localFile != null) {
@@ -393,7 +440,4 @@ class Live2dImporter @Inject constructor(
         // canonicalPath 前缀比较必须带分隔符，否则同级兄弟目录会误判通过
         return if (out.canonicalPath.startsWith(baseDir.canonicalPath + File.separator)) out else null
     }
-
-    private fun sanitizeFolderName(name: String): String =
-        ILLEGAL_CHARS.replace(name.trim(), "_").take(64)
 }

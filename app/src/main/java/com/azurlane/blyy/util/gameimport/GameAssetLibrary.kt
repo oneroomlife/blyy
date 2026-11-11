@@ -110,11 +110,11 @@ class GameAssetLibrary @Inject constructor(
     private fun scanIds(kind: GameAssetKind): Set<String> {
         val dirs = rootDir(kind).listFiles { f -> f.isDirectory }?.sortedBy { it.name }.orEmpty()
         return when (kind) {
+            // 与 Live2dLibrary.scan() 同一口径：模型文件可能不在目录第一层
+            // （手动导入的包常是 <id>/subdir/xxx.model3.json），这里必须递归判定，
+            // 否则游戏资源页与 Live2D 库两边状态对不上
             GameAssetKind.LIVE2D -> dirs
-                .filter { dir ->
-                    dir.listFiles { f -> f.isFile && f.name.endsWith(".model3.json", true) }
-                        .orEmpty().isNotEmpty()
-                }
+                .filter { dir -> hasFileRecursively(dir, ".model3.json") }
             GameAssetKind.PAINTING, GameAssetKind.LOADING_BG -> dirs
                 // 分层包（_rw/_bjN/_front）单独展示是残图，与 scanImageAssets 的过滤保持一致
                 .filterNot { kind == GameAssetKind.PAINTING && GameAssetNaming.isPaintingLayer(it.name) }
@@ -128,6 +128,26 @@ class GameAssetLibrary @Inject constructor(
                         .orEmpty().isNotEmpty()
                 }
         }.map { it.name }.toSet()
+    }
+
+    /**
+     * 目录内（含任意子目录）是否存在指定后缀的文件。
+     * [maxDepth] 与 Live2dLibrary 的扫描深度保持一致，避免深层垃圾目录拖慢扫描。
+     */
+    private fun hasFileRecursively(dir: File, suffix: String, maxDepth: Int = 4): Boolean {
+        val queue = ArrayDeque<Pair<File, Int>>()
+        queue.addLast(dir to 0)
+        while (queue.isNotEmpty()) {
+            val (cur, depth) = queue.removeFirst()
+            val children = cur.listFiles() ?: continue
+            for (child in children) {
+                if (child.isFile && child.name.endsWith(suffix, ignoreCase = true)) return true
+            }
+            if (depth < maxDepth) {
+                for (child in children) if (child.isDirectory) queue.addLast(child to depth + 1)
+            }
+        }
+        return false
     }
 
     suspend fun scan(kind: GameAssetKind): List<GameAssetInfo> = withContext(Dispatchers.IO) {

@@ -481,7 +481,7 @@ fun Live2dLibraryScreen(
                 ImportOptionCard(
                     icon = Icons.Rounded.FolderOpen,
                     title = "从文件夹导入",
-                    description = "选择包含 Cubism 模型的文件夹（*.model3.json；游戏资源包请走「从游戏资源包导入」）",
+                    description = "选中含 *.model3.json 的文件夹（可直接选中模型文件夹本身，也可选中装多个模型的上级文件夹）；游戏资源包请走「从游戏资源包导入」",
                     enabled = state.importProgress == null,
                     onClick = {
                         showImportSheet = false
@@ -492,7 +492,7 @@ fun Live2dLibraryScreen(
                 ImportOptionCard(
                     icon = Icons.Rounded.Archive,
                     title = "从压缩包导入",
-                    description = "支持 .zip 压缩包，自动解包并识别其中的全部 Cubism 模型",
+                    description = "支持 .zip，自动解包并识别其中全部 Cubism 模型（模型直接在包根也能识别）",
                     enabled = state.importProgress == null,
                     onClick = {
                         showImportSheet = false

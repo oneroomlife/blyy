@@ -202,7 +202,11 @@ class Live2dLibrary @Inject constructor(
             for (child in children) {
                 if (child.isFile && child.name.endsWith(MODEL3_EXT, ignoreCase = true)) {
                     // 优先与目录同名的 model3.json（官方rip命名习惯）
-                    if (child.nameWithoutExtension == dir.name) return child
+                    // 注意不能用 nameWithoutExtension：它只剥最后一段扩展名，
+                    // `haitun_2.model3.json` → `haitun_2.model3`，永远对不上目录名
+                    if (Live2dModelLayout.stripModel3Ext(child.name).equals(dir.name, ignoreCase = true)) {
+                        return child
+                    }
                     fallback = fallback ?: child
                 }
             }
@@ -233,28 +237,52 @@ class Live2dLibrary @Inject constructor(
     private fun parseModel3(dir: File, model3Rel: String): Live2dModelInfo? {
         val file = File(dir, model3Rel)
         if (!file.isFile) return null
+        // model3.json 内的引用按 Cubism 规范相对其**自身所在目录**解析；
+        // 转换回"库内模型目录相对路径"供查看器/清单使用（常见情况下两者相同）
+        val jsonDirRel = model3Rel.substringBeforeLast('/', "")
+        fun toDirRef(rel: String): String = if (jsonDirRel.isEmpty()) rel else "$jsonDirRel/$rel"
+        fun unify(raw: String): String = raw.replace('\\', '/')
         return try {
-            val root = json.parseToJsonElement(file.readText()).jsonObject
+            val index = Live2dFileIndex(file.parentFile ?: dir)
+            val original = file.readText()
+            val repaired = Live2dModelRefs.repair(original, index)
+            val text = repaired?.json ?: original
+            // 引用与磁盘真实文件名不一致（Windows 打包的大小写/反斜杠/层级漂移）→ 就地回写。
+            // 不回写的话渲染端仍按错路径取贴图（整屏空白），而旧实现更直接：
+            // 解析阶段就判"model3.json 损坏"→ 模型在库里根本不显示。
+            // 回写幂等：第二次扫描 changedRefs 为 0，不会反复写盘。
+            if (repaired != null && repaired.changedRefs > 0) {
+                runCatching { file.writeText(text) }
+                    .onSuccess { Log.i(TAG, "修正模型引用 $model3Rel: ${repaired.changedRefs} 处") }
+                    .onFailure { Log.w(TAG, "回写模型引用失败: ${file.path}", it) }
+            }
+            val root = json.parseToJsonElement(text).jsonObject
             val version = root["Version"]?.jsonPrimitive?.content
             val fr = root["FileReferences"]?.jsonObject ?: return null
-            val moc = fr["Moc"]?.jsonPrimitive?.content
-            if (moc.isNullOrBlank() || !File(dir, moc).isFile) return null
+            val mocRaw = fr["Moc"]?.jsonPrimitive?.content
+            val moc = index.resolve(mocRaw)?.let(::toDirRef) ?: return null
 
-            val textures = fr["Textures"]?.jsonArray?.mapNotNull {
-                runCatching { it.jsonPrimitive.content }.getOrNull()
-            } ?: emptyList()
             // 贴图必须至少一张真实存在，否则渲染必然失败 → 视为无效模型
-            if (textures.isEmpty() || textures.none { File(dir, it).isFile }) return null
+            val textures = fr["Textures"]?.jsonArray
+                ?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }
+                ?.mapNotNull { index.resolve(it)?.let(::toDirRef) }
+                ?.distinct()
+                .orEmpty()
+            if (textures.isEmpty()) return null
             val physics = fr["Physics"]?.jsonPrimitive?.content
+                ?.let { r -> index.resolve(r)?.let(::toDirRef) ?: unify(r) }
             val pose = fr["Pose"]?.jsonPrimitive?.content
+                ?.let { r -> index.resolve(r)?.let(::toDirRef) ?: unify(r) }
 
             val motionGroups = fr["Motions"]?.jsonObject?.map { (group, arr) ->
                 val motions = arr.jsonArray.mapNotNull { m ->
                     runCatching {
                         val obj = m.jsonObject
+                        val raw = obj["File"]!!.jsonPrimitive.content
                         Live2dMotion(
-                            file = obj["File"]!!.jsonPrimitive.content,
+                            file = index.resolve(raw)?.let(::toDirRef) ?: unify(raw),
                             sound = obj["Sound"]?.jsonPrimitive?.content
+                                ?.let { s -> index.resolve(s)?.let(::toDirRef) ?: unify(s) }
                         )
                     }.getOrNull()
                 }
@@ -264,10 +292,12 @@ class Live2dLibrary @Inject constructor(
             val expressions = fr["Expressions"]?.jsonArray?.mapNotNull { e ->
                 runCatching {
                     val obj = e.jsonObject
+                    val raw = obj["File"]!!.jsonPrimitive.content
+                    val resolved = index.resolve(raw)?.let(::toDirRef) ?: unify(raw)
                     Live2dExpression(
                         name = obj["Name"]?.jsonPrimitive?.content
-                            ?: File(obj["File"]!!.jsonPrimitive.content).nameWithoutExtension,
-                        file = obj["File"]!!.jsonPrimitive.content
+                            ?: File(resolved).nameWithoutExtension,
+                        file = resolved
                     )
                 }.getOrNull()
             } ?: emptyList()
