@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.ui.theme.UiStyle
@@ -104,6 +105,10 @@ class PlayerSettingsDataStore @Inject constructor(
 
         // 游戏资源导入页排序方案（"name_asc" / "time_desc"，空 = 默认名称正序）
         private val GAME_IMPORT_SORT_KEY = stringPreferencesKey("game_import_sort")
+
+        // 游戏资源导入页被「不再提示」关掉的设备提示 code（按提示身份记，不是单个布尔）
+        private val GAME_IMPORT_DISMISSED_NOTICES_KEY =
+            stringSetPreferencesKey("game_import_dismissed_notices")
 
         // Live2D 查看器互动语音开关
         private val LIVE2D_VOICE_ENABLED_KEY = booleanPreferencesKey("live2d_voice_enabled")
@@ -346,6 +351,15 @@ class PlayerSettingsDataStore @Inject constructor(
      */
     val gameImportSort: Flow<String> = safeData.map { it[GAME_IMPORT_SORT_KEY] ?: "" }
 
+    /**
+     * 已被用户点「不再提示」关掉的设备提示 code 集合。
+     *
+     * 按 code 而不是一个布尔值记：将来新增另一种设备提示时，老用户关掉的只是旧提示，
+     * 新提示照常出现，不会被一起静默掉。
+     */
+    val gameImportDismissedNotices: Flow<Set<String>> =
+        safeData.map { it[GAME_IMPORT_DISMISSED_NOTICES_KEY] ?: emptySet() }
+
     /** Live2D 查看器：点击皮肤互动时播放对应语音，默认开启 */
     val live2dVoiceEnabled: Flow<Boolean> = safeData.map { it[LIVE2D_VOICE_ENABLED_KEY] ?: true }
 
@@ -543,6 +557,25 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { prefs ->
             prefs[GAME_IMPORT_SORT_KEY] = value
         }
+    }
+
+    /**
+     * 记住「不再提示」的设备提示 code（见 [gameImportDismissedNotices]）。
+     *
+     * 已存在就不写盘：DataStore 每次 edit 都会重新发一遍所有 Flow，用户连点两下按钮时
+     * 没必要让整条设置链路抖动一次。
+     */
+    suspend fun dismissGameImportNotice(code: String) {
+        if (code.isBlank()) return
+        context.dataStore.edit { prefs ->
+            val current = prefs[GAME_IMPORT_DISMISSED_NOTICES_KEY].orEmpty()
+            if (code !in current) prefs[GAME_IMPORT_DISMISSED_NOTICES_KEY] = current + code
+        }
+    }
+
+    /** 撤销「不再提示」：清空记忆，被隐藏的设备提示重新出现 */
+    suspend fun restoreGameImportNotices() {
+        context.dataStore.edit { prefs -> prefs.remove(GAME_IMPORT_DISMISSED_NOTICES_KEY) }
     }
 
     suspend fun setLive2dVoiceEnabled(enabled: Boolean) {

@@ -16,6 +16,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -106,11 +108,14 @@ class GameImportIndex @Inject constructor(
     private fun indexFile(): File = File(context.filesDir, FILE_NAME)
     private fun legacyFile(): File = File(context.filesDir, LEGACY_FILE_NAME)
 
-    suspend fun load(): GameImportIndexData = mutex.withLock {
+    suspend fun load(): GameImportIndexData = mutex.withLock { loadLocked() }
+
+    /** 读索引；调用方必须已持有 [mutex]（否则 [update] 里会自我死锁） */
+    private suspend fun loadLocked(): GameImportIndexData {
         cached?.let { return it }
         val loaded = withContext(Dispatchers.IO) { readOrMigrate() }
         cached = loaded
-        loaded
+        return loaded
     }
 
     suspend fun save(data: GameImportIndexData) {
@@ -120,67 +125,93 @@ class GameImportIndex @Inject constructor(
         }
     }
 
+    /**
+     * 读-改-写整体持锁。
+     *
+     * 之前每个 mutator 都是 `load()` + `save()` 两次独立加锁：扫描期的 [replaceAll] 与导入期的
+     * [upsert]、或两条 markEntry 交错时，后写者会拿陈旧快照覆盖先写者（表现为「刚导入的记录
+     * 下次进页面又变回待导入」）。[block] 返回同一个实例表示「无变化」，此时不写盘。
+     */
+    private suspend fun update(block: (GameImportIndexData) -> GameImportIndexData): GameImportIndexData =
+        mutex.withLock {
+            val current = loadLocked()
+            val next = block(current)
+            if (next === current) {
+                current
+            } else {
+                cached = next
+                withContext(Dispatchers.IO) { write(next) }
+                next
+            }
+        }
+
     suspend fun roots(): Map<String, String> = load().roots
 
     suspend fun rememberRoot(kind: GameAssetKind, path: String) {
-        val index = load()
-        val roots = index.roots.toMutableMap().apply { put(kind.key, path) }
-        if (roots == index.roots) return
-        save(index.copy(roots = roots))
+        update { index ->
+            val roots = index.roots.toMutableMap().apply { put(kind.key, path) }
+            if (roots == index.roots) index else index.copy(roots = roots)
+        }
     }
 
     suspend fun entryFor(path: String): GameImportRecord? =
         load().entries.firstOrNull { it.path == path }
 
     suspend fun upsert(record: GameImportRecord) {
-        val index = load()
-        val entries = index.entries.filterNot { it.path == record.path } + record
-        save(index.copy(entries = entries, lastScanAt = System.currentTimeMillis()))
+        update { index ->
+            val entries = index.entries.filterNot { it.path == record.path } + record
+            index.copy(entries = entries, lastScanAt = System.currentTimeMillis())
+        }
     }
 
     /** 批量写入，并清掉扫描结果中已不存在的路径 */
     suspend fun replaceAll(records: List<GameImportRecord>, keepPaths: Set<String>) {
-        val index = load()
-        val merged = index.entries.filter { it.path in keepPaths }
-            .associateBy { it.path }
-            .toMutableMap()
-        records.forEach { merged[it.path] = it }
-        save(index.copy(entries = merged.values.toList(), lastScanAt = System.currentTimeMillis()))
+        update { index ->
+            val merged = index.entries.filter { it.path in keepPaths }
+                .associateBy { it.path }
+                .toMutableMap()
+            records.forEach { merged[it.path] = it }
+            index.copy(entries = merged.values.toList(), lastScanAt = System.currentTimeMillis())
+        }
     }
 
     suspend fun remove(path: String) {
-        val index = load()
-        if (index.entries.none { it.path == path }) return
-        save(index.copy(entries = index.entries.filterNot { it.path == path }))
+        update { index ->
+            if (index.entries.none { it.path == path }) {
+                index
+            } else {
+                index.copy(entries = index.entries.filterNot { it.path == path })
+            }
+        }
     }
 
     /** 资源目录改名后同步记录里的 assetId，避免下次扫描把它当成「待导入」 */
     suspend fun renameAsset(kind: GameAssetKind, oldId: String, newId: String) {
-        val index = load()
-        var changed = false
-        val entries = index.entries.map { entry ->
-            if (entry.kind == kind.key && entry.assetId == oldId) {
-                changed = true
-                entry.copy(assetId = newId)
-            } else {
-                entry
+        update { index ->
+            var changed = false
+            val entries = index.entries.map { entry ->
+                if (entry.kind == kind.key && entry.assetId == oldId) {
+                    changed = true
+                    entry.copy(assetId = newId)
+                } else {
+                    entry
+                }
             }
+            if (changed) index.copy(entries = entries) else index
         }
-        if (changed) save(index.copy(entries = entries))
     }
 
     /** 资源目录被删除/改名后，清掉指向它的记录（避免索引残留「已导入」幽灵条目） */
     suspend fun removeByAsset(kind: GameAssetKind, assetId: String) {
-        val index = load()
-        val remaining = index.entries.filterNot { it.kind == kind.key && it.assetId == assetId }
-        if (remaining.size == index.entries.size) return
-        save(index.copy(entries = remaining))
+        update { index ->
+            val remaining = index.entries.filterNot { it.kind == kind.key && it.assetId == assetId }
+            if (remaining.size == index.entries.size) index else index.copy(entries = remaining)
+        }
     }
 
     /** 清空条目（保留根目录记忆） */
     suspend fun clearEntries() {
-        val index = load()
-        save(index.copy(entries = emptyList(), lastScanAt = 0L))
+        update { index -> index.copy(entries = emptyList(), lastScanAt = 0L) }
     }
 
     suspend fun importedEntries(): List<GameImportRecord> = load().entries.filter { it.isImported }
@@ -201,6 +232,18 @@ class GameImportIndex @Inject constructor(
                     parsed.copy(version = GameImportIndexData.CURRENT_VERSION)
                 }
             }
+            // 解析失败：先把坏文件改名留档。否则下一次 save 会把它彻底覆盖，
+            // 用户几百条导入记录就真的没有找回的余地了（手工修 JSON 也还能救一半）。
+            runCatching {
+                val corrupt = File(file.parentFile, "$FILE_NAME.corrupt")
+                if (corrupt.exists() && !corrupt.delete()) {
+                    Log.w(TAG, "旧备份 ${corrupt.name} 删不掉，本次不覆盖")
+                } else if (!file.renameTo(corrupt)) {
+                    Log.w(TAG, "无法备份损坏索引：${file.name}")
+                } else {
+                    Log.w(TAG, "损坏索引已留档到 ${corrupt.name}")
+                }
+            }.onFailure { Log.w(TAG, "备份损坏索引失败：${it.message}") }
         }
         return migrateLegacy()
     }
@@ -274,13 +317,32 @@ class GameImportIndex @Inject constructor(
         runCatching {
             val file = indexFile()
             val tmp = File(file.parentFile, "$FILE_NAME.tmp")
-            tmp.writeText(json.encodeToString(GameImportIndexData.serializer(), data))
-            // Android(Linux) 上 rename 会原子替换已存在的目标文件；
-            // 先 delete 再 rename 会在两步之间留下「整份索引消失」的崩溃窗口
-            if (!tmp.renameTo(file)) {
-                // 极少数文件系统不支持覆盖 rename 时退化为读写
-                file.writeText(tmp.readText())
-                tmp.delete()
+            FileOutputStream(tmp).use { out ->
+                out.write(json.encodeToString(GameImportIndexData.serializer(), data).toByteArray())
+                out.flush()
+                // 先 fsync 再改名：否则断电/进程被杀时可能留下「文件名对、内容是半截」的索引，
+                // 而它会被下一次启动当成唯一真相读进来（接着整份记录被清空重建）
+                out.fd.sync()
+            }
+            // Files.move + REPLACE_EXISTING：Android/Linux 保持「原子替换已存在目标」；
+            // Windows 的 java.io.File.renameTo 不支持覆盖已存在目标（返回 false），
+            // 而这里的退化路径在本进程里等于静默丢写——必须走 NIO 的覆盖语义。
+            // ATOMIC_MOVE 尽力而为：不支持原子的文件系统退化为普通覆盖移动（仍是单次系统调用）。
+            val tmpPath = tmp.toPath()
+            val targetPath = file.toPath()
+            try {
+                java.nio.file.Files.move(
+                    tmpPath, targetPath,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(
+                    tmpPath, targetPath,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (e: IOException) {
+                throw IOException("索引替换失败：${tmp.name} -> ${file.name}", e)
             }
         }.onFailure { Log.w(TAG, "写入索引失败：${it.message}") }
     }

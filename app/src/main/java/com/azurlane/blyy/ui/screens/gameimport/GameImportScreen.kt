@@ -147,9 +147,12 @@ fun GameImportScreen(
         }
     }
 
-    // 提示横幅 8 秒自动收起
-    LaunchedEffect(state.batchMessage) {
-        if (state.batchMessage != null) {
+    // 提示横幅 8 秒自动收起；带「撤销」的横幅不自动收起 —— 撤销必须由用户主动点，
+    // 否则按钮可能在用户抬手前就消失了。
+    // key 用 messageSeq 而不是文案：连续两条「已导入 1 个资源」是不同事件，按文案做 key
+    // 时新横幅会继承上一条的剩余倒计时（表现为闪一下就没了）。
+    LaunchedEffect(state.messageSeq, state.batchAction) {
+        if (state.batchMessage != null && state.batchAction == null) {
             delay(8000)
             viewModel.onIntent(GameImportIntent.ConsumeMessage)
         }
@@ -219,6 +222,12 @@ fun GameImportScreen(
                 }
             )
 
+            // 设备提示 / 结果横幅 / 错误横幅：Tab 之外统一渲染，资源库里操作也有反馈
+            GameImportStatusBar(
+                state = state,
+                onIntent = { viewModel.onIntent(it) }
+            )
+
             when (state.tab) {
                 GameImportTab.BUNDLES -> BundlesTab(
                     state = state,
@@ -227,7 +236,9 @@ fun GameImportScreen(
                     searchQuery = searchQuery,
                     onSearchChange = { searchQuery = it },
                     onImport = { entry -> viewModel.onIntent(GameImportIntent.ImportEntry(entry)) },
-                    onImportAll = { viewModel.onIntent(GameImportIntent.ImportPending) },
+                    onImportAll = { paths ->
+                        viewModel.onIntent(GameImportIntent.ImportPending(paths))
+                    },
                     onOpen = { entry ->
                         val name = viewModel.displayNameOfEntry(entry)
                         if (entry.kind == GameAssetKind.LIVE2D) onOpenLive2d(entry.assetId, name)

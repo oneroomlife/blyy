@@ -79,12 +79,41 @@ object CompressedTextureDecoder {
     /** 超过这个像素数就按目标尺寸直接解码（4M 像素 ≈ 16MB 的 IntArray） */
     private const val LARGE_TEXTURE_PIXELS = 4_194_304L
 
+    /**
+     * glGetError 清错循环的上限。
+     *
+     * 上下文丢失 / 驱动异常时 `glGetError` 会稳定返回同一个错误码，原来的 `while` 没有上限，
+     * 一旦设备处于这种状态就会在 IO 线程上空转（表现为「导入卡住、CPU 占满」）。
+     */
+    private const val MAX_ERROR_DRAIN = 16
+
+    /**
+     * 探测不可用时最多重试几次。
+     *
+     * 「拿不到 GLES3 上下文」往往是暂时的（后台线程 / EGL 被占），但每次探测都要建一遍
+     * 上下文，不能在每张贴图上都重试；失败三次后按「不支持」处理，重启应用会重新开始。
+     */
+    private const val MAX_PROBE_ATTEMPTS = 3
+
     @Volatile
     private var astcSupported: Boolean? = null
 
-    /** 已探测到的 ASTC 块尺寸（4/5/6/8/10/12）；null = 还没探测 */
+    /** 已探测到的 ASTC 块尺寸（4/5/6/8/10/12）；null = 还没探测 / 探测不可用 */
     @Volatile
     private var astcBlockSizes: Set<Int>? = null
+
+    /**
+     * 是否已经拿到确定的探测结果（成功得到块尺寸集合）。
+     *
+     * 探测失败时 [astcBlockSizes] 仍是 null，但会累计 [astcBlockProbeAttempts]，
+     * 达到 [MAX_PROBE_ATTEMPTS] 后视为「本进程内确定不可用」，不再重试。
+     */
+    @Volatile
+    private var astcBlockProbeAttempted = false
+
+    /** 已尝试探测的次数（含失败），用于给「探测不可用」一个有界的重试预算 */
+    @Volatile
+    private var astcBlockProbeAttempts = 0
 
     /**
      * Unity `TextureFormat` → GL 内部格式。
@@ -165,23 +194,60 @@ object CompressedTextureDecoder {
      *
      * 做法：建一个 1x1 的离屏上下文，对每种块尺寸上传**一个块**（16 字节），
      * 看 GL 是否报错。结果缓存，代价只有几毫秒。
+     *
+     * 探测本身失败（拿不到 GLES3 上下文）时返回空集 —— 这是安全的一侧：调用方只拿它判断
+     * 「能不能硬件解码」，空集就等于「走软件解码」。需要区分「探测不可用」的界面提示请用
+     * [astcBlockSupport]。
      */
-    fun supportedAstcBlockSizes(): Set<Int> {
-        astcBlockSizes?.let { return it }
-        val probed = runCatching { probeAstcBlocks() }.getOrDefault(emptySet())
+    fun supportedAstcBlockSizes(): Set<Int> = astcBlockSupport().orEmpty()
+
+    /**
+     * 设备实际接受的 ASTC 块尺寸；**null = 探测本身不可用**，不是「一个都不支持」。
+     *
+     * 为什么要区分：`emptySet()` 意味着上下文建起来了、但每块上传都被拒绝（低端 GPU /
+     * 模拟器），可以断言「这台机器不支持该块尺寸」；null 意味着连 GLES3 上下文都没拿到
+     * （后台线程、EGL 被占、驱动异常），此时任何结论都不可靠，界面提示应写成「暂无法确认」，
+     * 而不是把责任推给 GPU。
+     *
+     * 结果与 [supportedAstcBlockSizes] 共享缓存，只会真正探测一次。
+     *
+     * 探测失败（返回 null）不会标记为「已完成」：重试预算 [MAX_PROBE_ATTEMPTS] 用完之前，
+     * 后续调用会再试一次 —— 否则一次后台线程探测失败会让整个进程都按「不支持」软解到重启。
+     */
+    @Synchronized
+    fun astcBlockSupport(): Set<Int>? {
+        if (astcBlockProbeAttempted || astcBlockProbeAttempts >= MAX_PROBE_ATTEMPTS) {
+            return astcBlockSizes
+        }
+        astcBlockProbeAttempts++
+        val probed = runCatching { probeAstcBlocks() }.getOrNull()
+        if (probed == null) {
+            Log.w(
+                TAG,
+                "ASTC 能力探测不可用（第 $astcBlockProbeAttempts/$MAX_PROBE_ATTEMPTS 次尝试），" +
+                    "本次按软件解码处理"
+            )
+            return null
+        }
         astcBlockSizes = probed
+        astcBlockProbeAttempted = true
         return probed
     }
 
     /**
      * 该 Unity 贴图格式在当前设备上能否解码。
      *
-     * ASTC 一律返回 true：硬件不支持对应块尺寸时自动走 [AstcDecoder] 软件解码，
-     * 所以「设备只支持 ASTC 4x4」不再等于「SD / 过场图解不出来」。
+     * - ASTC（Unity 48..59）：恒为 true —— 硬件不支持对应块尺寸时自动走 [AstcDecoder]
+     *   软件解码，所以「设备只支持 ASTC 4x4」不再等于「SD / 过场图解不出来」。
+     * - ETC1 / ETC2：目前只有 GL 通路（没有软件兜底），必须真的有 GLES3 上下文。
+     *
+     * 注意：这与「走哪条路径」无关，只回答「不会必然失败」。
      */
     fun canDecode(unityFormat: Int): Boolean {
         if (unityFormat == 4) return true
-        return glFormatOf(unityFormat) != null
+        val internal = glFormatOf(unityFormat) ?: return false
+        if (astcBlockOf(internal) != null) return true
+        return isSupported()
     }
 
     /** ASTC 内部格式 → 块尺寸；非 ASTC 返回 null */
@@ -198,7 +264,20 @@ object CompressedTextureDecoder {
     /** 硬件是否真的接受该 ASTC 块尺寸（不接受就走软件解码，别让 GL 白失败一次） */
     fun hardwareSupportsAstc(blockSide: Int): Boolean = blockSide in supportedAstcBlockSizes()
 
-    private fun probeAstcBlocks(): Set<Int> {
+    /**
+     * 清空历史 GL 错误码。
+     *
+     * 带 [MAX_ERROR_DRAIN] 上限：上下文丢失时 `glGetError` 会稳定返回同一个错误码，
+     * 无上限的循环会让调用线程永久空转。
+     */
+    private fun drainGlErrors() {
+        var drained = 0
+        while (GLES20.glGetError() != GLES20.GL_NO_ERROR && drained++ < MAX_ERROR_DRAIN) {
+            // 丢掉前面残留的错误码即可
+        }
+    }
+
+    private fun probeAstcBlocks(): Set<Int>? {
         val formats = linkedMapOf(
             4 to GL_ASTC_4X4,
             5 to GL_ASTC_5X5,
@@ -213,9 +292,9 @@ object CompressedTextureDecoder {
         val accepted = LinkedHashSet<Int>()
         try {
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-            if (display == EGL14.EGL_NO_DISPLAY) return emptySet()
+            if (display == EGL14.EGL_NO_DISPLAY) return null
             val ver = IntArray(2)
-            if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) return emptySet()
+            if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) return null
             val configs = arrayOfNulls<EGLConfig>(1)
             val num = IntArray(1)
             val attribs = intArrayOf(
@@ -223,28 +302,27 @@ object CompressedTextureDecoder {
                 EGL14.EGL_NONE
             )
             if (!EGL14.eglChooseConfig(display, attribs, 0, configs, 0, 1, num, 0) || num[0] == 0) {
-                return emptySet()
+                return null
             }
             context = EGL14.eglCreateContext(
                 display, configs[0], EGL14.EGL_NO_CONTEXT,
                 intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 3, EGL14.EGL_NONE), 0
             )
-            if (context == EGL14.EGL_NO_CONTEXT) return emptySet()
+            if (context == EGL14.EGL_NO_CONTEXT) return null
             surface = EGL14.eglCreatePbufferSurface(
                 display, configs[0],
                 intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0
             )
-            if (surface == EGL14.EGL_NO_SURFACE) return emptySet()
-            if (!EGL14.eglMakeCurrent(display, surface, surface, context)) return emptySet()
+            if (surface == EGL14.EGL_NO_SURFACE) return null
+            if (!EGL14.eglMakeCurrent(display, surface, surface, context)) return null
 
             val ids = IntArray(1)
+            val oneBlock = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
             formats.forEach { (block, gl) ->
                 GLES20.glGenTextures(1, ids, 0)
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
-                val oneBlock = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
-                while (GLES20.glGetError() != GLES20.GL_NO_ERROR) {
-                    // 清历史错误码
-                }
+                // 清历史错误码：上下文丢失时 glGetError 会一直返回同一个错误，必须设上限
+                drainGlErrors()
                 GLES30.glCompressedTexImage2D(
                     GLES20.GL_TEXTURE_2D, 0, gl, block, block, 0, 16, oneBlock
                 )
@@ -344,8 +422,10 @@ object CompressedTextureDecoder {
         }
         return try {
             decodeWithGl(data, width, height, internalFormat, maxSize)
-        } catch (t: Throwable) {
-            // 驱动报错 / 上下文被回收 / 后台线程拿不到 GLES3：CPU 兜底
+        } catch (t: Exception) {
+            // 驱动报错 / 上下文被回收 / 后台线程拿不到 GLES3：CPU 兜底。
+            // 只吞 Exception：OOM、StackOverflow 这类 Error 直接上抛 —— 在内存已经吃紧时
+            // 再走一遍更吃内存的软件路径，只会把真正的 OOM 变成一次误导性的二次失败。
             Log.w(
                 TAG,
                 "GL 解码 ASTC ${astcBlock.first}x${astcBlock.second} 失败，回退软件解码：${t.message}"
@@ -406,16 +486,24 @@ object CompressedTextureDecoder {
             )
         } catch (e: IllegalArgumentException) {
             throw IOException(e.message ?: "ASTC 软件解码失败", e)
+        } catch (e: IllegalStateException) {
+            // AstcDecoder 对截断 / 损坏的块抛 IllegalStateException；调用方按 IOException 组织文案，
+            // 不转成 IOException 会冒成「导入崩溃」而不是「这张图坏了」。
+            throw IOException(e.message ?: "ASTC 数据不完整，无法解码", e)
         }
         val decodedW = if (decodeAtTarget) outW else width
         val decodedH = if (decodeAtTarget) outH else height
-        var bitmap = Bitmap.createBitmap(argb, decodedW, decodedH, Bitmap.Config.ARGB_8888)
-        if (needScale && !decodeAtTarget) {
-            val scaled = Bitmap.createScaledBitmap(bitmap, outW, outH, true)
-            if (scaled !== bitmap) bitmap.recycle()
-            bitmap = scaled
+        return try {
+            var bitmap = Bitmap.createBitmap(argb, decodedW, decodedH, Bitmap.Config.ARGB_8888)
+            if (needScale && !decodeAtTarget) {
+                val scaled = Bitmap.createScaledBitmap(bitmap, outW, outH, true)
+                if (scaled !== bitmap) bitmap.recycle()
+                bitmap = scaled
+            }
+            bitmap
+        } catch (e: IllegalArgumentException) {
+            throw IOException(e.message ?: "ASTC 解码结果无法生成位图（${decodedW}x$decodedH）", e)
         }
-        return bitmap
     }
 
     /** GL 路径：离屏 EGL + 压缩纹理上传 + glReadPixels */
@@ -540,9 +628,9 @@ object CompressedTextureDecoder {
             var lastError = 0
             var uploaded = false
             for ((index, size) in attempts.withIndex()) {
-                while (GLES20.glGetError() != GLES20.GL_NO_ERROR) {
-                    // 清空历史错误码
-                }
+                // 清空历史错误码。必须设上限：上下文丢失时 glGetError 会稳定返回同一个
+                // 错误码，无上限的 while 会让 IO 线程永久空转（导入卡死、CPU 满载）。
+                drainGlErrors()
                 data.position(0)
                 GLES30.glCompressedTexImage2D(
                     GLES20.GL_TEXTURE_2D, 0, internalFormat,

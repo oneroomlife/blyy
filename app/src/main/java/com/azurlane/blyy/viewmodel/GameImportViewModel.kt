@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.util.Live2dNameResolver
 import com.azurlane.blyy.util.Live2dSkinNameRegistry
+import com.azurlane.blyy.util.gameimport.DeviceCapabilityNotice
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.util.gameimport.GameAssetKind
 import com.azurlane.blyy.util.gameimport.GameAssetLibrary
@@ -50,7 +51,15 @@ sealed interface GameImportIntent {
     data class ImportEntry(val entry: GameBundleEntry) : GameImportIntent
 
     /** 导入全部未导入/有更新的资源包 */
-    data object ImportPending : GameImportIntent
+    /**
+     * 「全部导入」。
+     *
+     * @param paths 当前界面上可见的待导入条目路径（已应用类型与搜索过滤）。
+     *   传空列表表示「没有可见范围信息」，退回按类型过滤的旧行为。
+     *   不带范围的话，用户在搜索框里筛出 3 个资源、按「全部导入 3」，
+     *   实际会把整类几千个包都搬一遍。
+     */
+    data class ImportPending(val paths: List<String> = emptyList()) : GameImportIntent
 
     /** 取消批量导入（当前文件完成后停止） */
     data object CancelImport : GameImportIntent
@@ -84,8 +93,27 @@ sealed interface GameImportIntent {
     /** 重命名已导入资源 */
     data class RenameAsset(val kind: GameAssetKind, val id: String, val newName: String) : GameImportIntent
 
-    /** 关闭提示横幅 */
+    /**
+     * 关闭批量/操作结果横幅。
+     *
+     * 不再顺带清 [State.error]：错误横幅与操作结果横幅是两条独立消息，关一条不该把
+     * 另一条也吞掉（典型场景：扫描失败的原因被一条「已导入 1 个资源」的倒计时顺手清掉）。
+     */
     data object ConsumeMessage : GameImportIntent
+
+    /** 关闭错误横幅 */
+    data object DismissError : GameImportIntent
+
+    /**
+     * 「不再提示」：记住这条设备提示，之后不再显示。
+     *
+     * 传 [DeviceCapabilityNotice.code] 而不是一个布尔值 —— 不同提示各自记忆，
+     * 关掉「GPU 不支持 ASTC 6x6」不会顺手把将来新增的其它提示一起静默掉。
+     */
+    data class DismissDeviceNotice(val code: String) : GameImportIntent
+
+    /** 撤销「不再提示」（横幅上那枚「撤销」按钮），被隐藏的设备提示重新出现 */
+    data object RestoreDeviceNotices : GameImportIntent
 
     /**
      * 把已导入的 SD 小人直接设为「今日秘书舰」。
@@ -120,6 +148,14 @@ class GameImportViewModel @Inject constructor(
         val fraction: Float,
         val message: String
     )
+
+    /**
+     * 横幅右侧的可选操作按钮。
+     *
+     * 只存 [intent] 不存 lambda：lambda 每次重组都是新实例，State 的相等判断会永远为 false，
+     * Compose 也就无法跳过这张卡片的重组。
+     */
+    data class BannerAction(val label: String, val intent: GameImportIntent)
 
     data class State(
         val shellState: ShellState = ShellState.UNKNOWN,
@@ -165,6 +201,21 @@ class GameImportViewModel @Inject constructor(
         val progress: ImportProgress? = null,
         /** 批量导入结果文案 */
         val batchMessage: String? = null,
+        /**
+         * 横幅上的操作按钮，与 [batchMessage] 同生共死。
+         *
+         * 不要单独赋值：残留的按钮会让「上一条消息的撤销」挂在新文案上。所有文案都走
+         * `showBanner(...)` 一起设置。
+         */
+        val batchAction: BannerAction? = null,
+        /**
+         * 横幅序号：每写一条横幅 +1。
+         *
+         * 自动收起的计时器以它为 key —— 只按文案做 key 时，两条文案完全相同的横幅
+         * （连续两次单条导入都是「已导入 1 个资源」）不会重启计时，新横幅会继承上一条的
+         * 剩余时间，表现为「刚出现就被关掉」。
+         */
+        val messageSeq: Int = 0,
         val error: String? = null,
         val lastScanAt: Long = 0L,
         /** 舰名拼音映射（就绪后显示名自动升级为中文） */
@@ -179,10 +230,12 @@ class GameImportViewModel @Inject constructor(
         /**
          * 设备解码能力提示（如「GPU 只支持 ASTC 4x4」）。
          *
-         * 过场图与 SD 小人的贴图是 ASTC 6x6，设备不支持时导入必然失败，
-         * 提前说明比让用户对着「导入失败」猜要好。
+         * 过场图与 SD 小人的贴图是 ASTC 6x6，设备不支持时解码会自动改走 CPU 软解
+         * （见 `CompressedTextureDecoder.decodeAstcSoftware`）——不会再失败，只是慢。
+         * 用户点「不再提示」后这里为 null，并且记忆落盘
+         * （`PlayerSettingsDataStore.gameImportDismissedNotices`）。
          */
-        val deviceWarning: String? = null,
+        val deviceNotice: DeviceCapabilityNotice? = null,
         /**
          * 资源库内容的版本号（只在 [assets] 真正变化时自增）。
          *
@@ -283,6 +336,22 @@ class GameImportViewModel @Inject constructor(
     /** 预热任务运行期间又有新请求时置位，结束后补跑一次 */
     private var skinNameWarmupPending = false
 
+    /** 已被「不再提示」关掉的设备提示 code（以 DataStore 为准，UI 不直接读） */
+    @Volatile
+    private var dismissedNoticeCodes: Set<String> = emptySet()
+
+    /**
+     * ASTC 块尺寸探测结果。
+     *
+     * null 有两种含义（还没探测 / 探测不可用），必须配合 [deviceProbeDone] 才能判断，
+     * 否则「探测失败」会被当成「还没探测」反复重算提示。
+     */
+    @Volatile
+    private var astcBlocks: Set<Int>? = null
+
+    @Volatile
+    private var deviceProbeDone = false
+
     private val permissionListener: (Int, Int) -> Unit = { _, grantResult ->
         viewModelScope.launch {
             refreshShellStateNow()
@@ -324,6 +393,13 @@ class GameImportViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            // 「不再提示」的记忆：读出后重算一次提示（探测可能先完成，也可能晚于这里）
+            settings.gameImportDismissedNotices.collect { codes ->
+                dismissedNoticeCodes = codes
+                publishDeviceNotice()
+            }
+        }
+        viewModelScope.launch {
             // 本地资源库先动（纯本地 IO，量很小），列表头部的「已导入 N」才有数
             refreshLibrary()
             // 再把上次扫描的快照铺到界面上（不依赖 Shizuku，本地磁盘即可），
@@ -348,12 +424,14 @@ class GameImportViewModel @Inject constructor(
             GameImportIntent.RefreshShell -> refreshShellState()
             GameImportIntent.RequestPermission -> requestPermission()
             is GameImportIntent.ImportEntry -> importEntries(listOf(intent.entry))
-            GameImportIntent.ImportPending -> importEntries(
+            is GameImportIntent.ImportPending -> importEntries(
                 // 只处理「从未导入」和「上次失败」的条目；
                 // CHANGED（已导入但源包/管线更新过）是可选更新，
                 // 不纳入「全部导入」，避免重复搬运几十 GB 数据。
+                // 再按界面上的可见范围收窄：搜索框筛出 3 条时，「全部导入 3」只能导这 3 条。
                 _state.value.filteredEntries.filter {
-                    it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
+                    (it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED) &&
+                        (intent.paths.isEmpty() || it.path in intent.paths)
                 }
             )
             GameImportIntent.CancelImport -> {
@@ -367,8 +445,11 @@ class GameImportViewModel @Inject constructor(
             is GameImportIntent.DeleteAssets -> deleteAssets(intent.keys)
             is GameImportIntent.RenameAsset -> renameAsset(intent.kind, intent.id, intent.newName)
             GameImportIntent.ConsumeMessage -> _state.update {
-                it.copy(batchMessage = null, error = null)
+                it.copy(batchMessage = null, batchAction = null)
             }
+            GameImportIntent.DismissError -> _state.update { it.copy(error = null) }
+            is GameImportIntent.DismissDeviceNotice -> dismissDeviceNotice(intent.code)
+            GameImportIntent.RestoreDeviceNotices -> restoreDeviceNotices()
             is GameImportIntent.SetAsSecretary -> setAsSecretary(intent.kind, intent.id)
         }
     }
@@ -384,7 +465,11 @@ class GameImportViewModel @Inject constructor(
         val resourceId = "game/$id"
         secretaryManager.setSdResourceId(resourceId)
         _state.update {
-            it.copy(batchMessage = "已设为今日秘书舰：${displayNameFor(kind, id)}（可到「今日秘书舰 → 秘书舰设置」调整皮肤/大小）")
+            it.copy(
+                batchMessage = "已设为今日秘书舰：${displayNameFor(kind, id)}（可到「今日秘书舰 → 秘书舰设置」调整皮肤/大小）",
+                batchAction = null,
+                messageSeq = it.messageSeq + 1
+            )
         }
     }
 
@@ -722,23 +807,75 @@ class GameImportViewModel @Inject constructor(
     // ------------------------------------------------------------------ 扫描
 
     /**
+     * 统一的横幅写法：文案与操作按钮必须成对设置。
+     *
+     * 分开赋值会让「撤销」按钮残留在下一条消息上（点下去撤销的是另一件事），
+     * 所以所有写横幅的地方都走这里；[action] 默认 null 就是「没有按钮」。
+     */
+    private fun showBanner(message: String?, action: BannerAction? = null) {
+        _state.update {
+            it.copy(batchMessage = message, batchAction = action, messageSeq = it.messageSeq + 1)
+        }
+    }
+
+    /**
+     * 按「探测结果 + 已关闭的提示」重算顶部设备提示。
+     *
+     * 两个输入都可能后到（探测在 IO 线程、关闭集合来自 DataStore），所以谁先到都调用一次；
+     * 逻辑幂等，重复调用不会让提示闪一下。
+     */
+    private fun publishDeviceNotice() {
+        if (!deviceProbeDone) return
+        val notice = DeviceCapabilityNotice.of(astcBlocks)
+            ?.takeIf { it.code !in dismissedNoticeCodes }
+        _state.update { if (it.deviceNotice == notice) it else it.copy(deviceNotice = notice) }
+    }
+
+    /**
+     * 「不再提示」：先改内存立刻隐藏，再落盘记忆。
+     *
+     * 顺序是有意的：点击必须马上有反馈；写盘失败最坏是「下次进来又看到一遍」，
+     * 不能让用户对着没反应的按钮再点一次。隐藏后给一条带「撤销」的横幅，误触能立刻恢复。
+     */
+    private fun dismissDeviceNotice(code: String) {
+        if (code.isBlank()) return
+        dismissedNoticeCodes = dismissedNoticeCodes + code
+        publishDeviceNotice()
+        showBanner("已隐藏设备解码提示", BannerAction("撤销", GameImportIntent.RestoreDeviceNotices))
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { settings.dismissGameImportNotice(code) }
+                .onFailure { Log.w(TAG, "记住「不再提示」失败：$code", it) }
+        }
+    }
+
+    /** 撤销「不再提示」：清掉记忆并让提示立刻回来（横幅上的「撤销」走这里） */
+    private fun restoreDeviceNotices() {
+        dismissedNoticeCodes = emptySet()
+        publishDeviceNotice()
+        showBanner("已恢复设备解码提示")
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { settings.restoreGameImportNotices() }
+                .onFailure { Log.w(TAG, "撤销「不再提示」失败", it) }
+        }
+    }
+
+    /**
      * 探测 GPU 实际支持的 ASTC 块尺寸并生成提示。
      *
      * 屏幕上的「过场图 / SD 小人」都用 ASTC 6x6；模拟器与部分低端 GPU 只实现 4x4。
      * 这类设备现在会自动走 CPU 软件解码（见 `CompressedTextureDecoder.decodeAstcSoftware`），
      * **不再导入失败**，所以这里只提示「会用软件解码、首次稍慢」，不再是错误警告。
+     *
+     * 探测本身失败（拿不到 GLES3 上下文）与「设备确实不支持」是两件事，交给
+     * [DeviceCapabilityNotice.of] 分别给文案，别把探测失败说成 GPU 的锅。
      */
     private fun refreshDeviceCapability() {
         viewModelScope.launch(Dispatchers.IO) {
-            val blocks = runCatching {
-                com.azurlane.blyy.util.unity.CompressedTextureDecoder.supportedAstcBlockSizes()
-            }.getOrDefault(emptySet())
-            val warning = when {
-                6 in blocks -> null
-                else -> "当前 GPU 未硬件支持 ASTC 6x6：SD 小人与过场图会自动改用 CPU 解码" +
-                    "（画质一致，单张大图解码会慢一些）"
-            }
-            _state.update { it.copy(deviceWarning = warning) }
+            astcBlocks = runCatching {
+                com.azurlane.blyy.util.unity.CompressedTextureDecoder.astcBlockSupport()
+            }.getOrNull()
+            deviceProbeDone = true
+            publishDeviceNotice()
         }
     }
 
@@ -991,7 +1128,9 @@ class GameImportViewModel @Inject constructor(
                             null
                         } else {
                             buildBatchMessage(success.size, failed, cancelRequested)
-                        }
+                        },
+                        batchAction = null,
+                        messageSeq = it.messageSeq + 1
                     )
                 }
                 // 协程可能已被取消，finally 里直接 suspend 会立刻抛 CancellationException；
@@ -1053,6 +1192,8 @@ class GameImportViewModel @Inject constructor(
             _state.update {
                 it.copy(
                     batchMessage = if (ok) "已删除「$label」" else "删除失败：$label",
+                    batchAction = null,
+                    messageSeq = it.messageSeq + 1,
                     assets = if (ok) {
                         it.assets.toMutableMap().apply {
                             put(kind, it.assets[kind].orEmpty().filterNot { asset -> asset.id == id })
@@ -1095,7 +1236,9 @@ class GameImportViewModel @Inject constructor(
                         if (failed.isNotEmpty()) {
                             append("，${failed.size} 个失败（${failed.first()}）")
                         }
-                    }
+                    },
+                    batchAction = null,
+                    messageSeq = it.messageSeq + 1
                 )
             }
             refreshLibrary()
@@ -1111,7 +1254,11 @@ class GameImportViewModel @Inject constructor(
                 index.renameAsset(kind, id, target)
             }
             _state.update {
-                it.copy(batchMessage = error?.let { reason -> "重命名失败：$reason" } ?: "已重命名")
+                it.copy(
+                    batchMessage = error?.let { reason -> "重命名失败：$reason" } ?: "已重命名",
+                    batchAction = null,
+                    messageSeq = it.messageSeq + 1
+                )
             }
             refreshLibrary()
         }

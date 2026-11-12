@@ -396,15 +396,23 @@ class GameBundleScanner @Inject constructor(
             }
         }
         tListAll = android.os.SystemClock.elapsedRealtime()
-        val listed: List<Pair<ListingJob, List<String>>> = coroutineScope {
+        // null = 列举失败（服务端进程刚重启 / Binder 被杀），与「目录确实是空的」是两回事
+        val listed: List<Pair<ListingJob, List<String>?>> = coroutineScope {
             jobs.map { job ->
                 async(Dispatchers.IO) {
                     val tList = android.os.SystemClock.elapsedRealtime()
-                    val lines = runCatching { listAllPages(job.root) }.getOrNull().orEmpty()
+                    // 这里绝不能 orEmpty()：失败被折叠成空列表后，下面的清理逻辑会把该根下
+                    // 所有记录判成「文件已删除」，一次 Shizuku 回收就可能清空整份索引。
+                    val lines = runCatching { listAllPages(job.root) }.getOrNull()
                     Log.d(
                         TAG,
-                        "扫描阶段[列举 ${job.kind.key}${if (job.tag.isEmpty()) "" else "/${job.tag}"}] " +
-                            "${lines.size} 行 ${android.os.SystemClock.elapsedRealtime() - tList}ms"
+                        buildString {
+                            append("扫描阶段[列举 ${job.kind.key}")
+                            if (job.tag.isNotEmpty()) append("/${job.tag}")
+                            append("] ")
+                            append(if (lines == null) "失败" else "${lines.size} 行")
+                            append(" ${android.os.SystemClock.elapsedRealtime() - tList}ms")
+                        }
                     )
                     job to lines
                 }
@@ -413,10 +421,19 @@ class GameBundleScanner @Inject constructor(
         tListDone = android.os.SystemClock.elapsedRealtime()
         Log.d(TAG, "扫描阶段[并发列举] 完成 ${tListDone - tListAll}ms")
 
+        val failedRoots = listed.filter { it.second == null }.map { it.first.root }
+        if (failedRoots.isNotEmpty()) {
+            Log.w(
+                TAG,
+                "有 ${failedRoots.size} 个根列举失败，本次不做索引清理、不落盘扫描缓存：" +
+                    failedRoots.joinToString()
+            )
+        }
+
         for ((kind, root) in roots) {
             for ((job, lines) in listed.filter { it.first.kind == kind }) {
                 // 一遍扫描同时产出「候选包」与「文件名索引」（立绘需要后者挑附属包）
-                val parsed = parseListing(lines, kind, needNameIndex = kind == GameAssetKind.PAINTING)
+                val parsed = parseListing(lines.orEmpty(), kind, needNameIndex = kind == GameAssetKind.PAINTING)
                 val candidates = parsed.candidates
                 onProgress(entries.size + candidates.size)
                 val nameIndex = parsed.nameIndex
@@ -460,22 +477,26 @@ class GameBundleScanner @Inject constructor(
         }
 
 
-        // 清理已不存在的路径记录（只清理本次扫描覆盖的根下的记录）
-        runCatching {
-            val scannedRoots = roots.values.toList() +
-                roots.values.flatMap { root ->
-                    roots.keys.flatMap { kind -> kind.siblingDirs.map { siblingDirPath(root, it) } }
+        // 清理已不存在的路径记录（只清理本次扫描覆盖的根下的记录）。
+        // 任一根列举失败时整段跳过：此时 entries 只是「部分结果」，拿它算 stale 会把没扫到的
+        // 记录当成已删除，于是「Shizuku 掉一次 → 导入记录全没了，下次还得重导一遍」。
+        if (failedRoots.isEmpty()) {
+            runCatching {
+                val scannedRoots = roots.values.toList() +
+                    roots.values.flatMap { root ->
+                        roots.keys.flatMap { kind -> kind.siblingDirs.map { siblingDirPath(root, it) } }
+                    }
+                val keep = known.keys.filter { path ->
+                    scannedRoots.none { path.startsWith("$it/") }
+                }.toSet() + entries.map { it.path }
+                val stale = known.keys - keep
+                if (stale.isNotEmpty()) {
+                    index.replaceAll(
+                        records = emptyList(),
+                        keepPaths = keep
+                    )
+                    Log.i(TAG, "清理失效索引 ${stale.size} 条")
                 }
-            val keep = known.keys.filter { path ->
-                scannedRoots.none { path.startsWith("$it/") }
-            }.toSet() + entries.map { it.path }
-            val stale = known.keys - keep
-            if (stale.isNotEmpty()) {
-                index.replaceAll(
-                    records = emptyList(),
-                    keepPaths = keep
-                )
-                Log.i(TAG, "清理失效索引 ${stale.size} 条")
             }
         }
 
@@ -487,11 +508,14 @@ class GameBundleScanner @Inject constructor(
         val sorted = entries.sortedWith(
             compareBy({ GameAssetKind.ordered.indexOf(it.kind) }, { it.displayName.lowercase() })
         )
-        // 落盘快照：下次进页面先把这份结果铺到界面上，不必等 Shizuku 重新列举
-        val tCache = android.os.SystemClock.elapsedRealtime()
-        runCatching { scanCache.save(roots, sorted) }
-            .onFailure { Log.w(TAG, "写扫描缓存失败", it) }
-        Log.d(TAG, "扫描阶段[写缓存] ${sorted.size} 条 ${android.os.SystemClock.elapsedRealtime() - tCache}ms")
+        // 落盘快照：下次进页面先把这份结果铺到界面上，不必等 Shizuku 重新列举。
+        // 列举有失败时同样跳过 —— 残缺快照比没有快照更糟（界面上会「少一批资源」且看不出原因）。
+        if (failedRoots.isEmpty()) {
+            val tCache = android.os.SystemClock.elapsedRealtime()
+            runCatching { scanCache.save(roots, sorted) }
+                .onFailure { Log.w(TAG, "写扫描缓存失败", it) }
+            Log.d(TAG, "扫描阶段[写缓存] ${sorted.size} 条 ${android.os.SystemClock.elapsedRealtime() - tCache}ms")
+        }
         sorted
     }
 

@@ -3,7 +3,7 @@ package com.azurlane.blyy.ui.screens.gameimport
 /*
  * 游戏资源导入的两个 Tab 实现及其卡片/横幅 — 自 GameImportScreen.kt 机械拆分而来，
  * 纯移动零逻辑改动。BundlesTab / LibraryTab 保持 internal 供主屏调用，
- * ShellStateCard / DeviceWarningCard / KindFilterRow / BundleEntryCard / LibrarySelectionBar /
+ * ShellStateCard / DeviceNoticeCard / KindFilterRow / BundleEntryCard / LibrarySelectionBar /
  * AssetCard / BannerTone / MessageBanner 为私有助手随迁。
  */
 import androidx.compose.foundation.BorderStroke
@@ -103,6 +103,7 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.ui.theme.LocalIsDark
 import com.azurlane.blyy.ui.theme.LocalSemanticColors
+import com.azurlane.blyy.util.gameimport.DeviceCapabilityNotice
 import com.azurlane.blyy.util.gameimport.GameAssetInfo
 import com.azurlane.blyy.util.gameimport.GameAssetKind
 import com.azurlane.blyy.util.gameimport.GameBundleEntry
@@ -114,6 +115,59 @@ import com.azurlane.blyy.viewmodel.GameImportTab
 import com.azurlane.blyy.viewmodel.GameImportViewModel
 import kotlinx.coroutines.delay
 
+// ---------------------------------------------------------------------------- 顶部状态区
+
+/**
+ * 顶部状态区：设备提示 + 批量结果横幅 + 错误横幅。
+ *
+ * 放在 Tab 之外渲染：删除、批量删除、重命名都发生在「资源库」里，横幅若只挂在资源包列表的
+ * LazyColumn 里，用户在库里操作完看不到任何反馈，而且一滚动就跟着滚走。
+ */
+@Composable
+internal fun GameImportStatusBar(
+    state: GameImportViewModel.State,
+    onIntent: (GameImportIntent) -> Unit
+) {
+    val notice = state.deviceNotice
+    val message = state.batchMessage
+    val error = state.error
+    if (notice == null && message == null && error == null) return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = AppSpacing.Screen.Horizontal,
+                end = AppSpacing.Screen.Horizontal,
+                top = AppSpacing.Sm
+            ),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+    ) {
+        if (notice != null) {
+            DeviceNoticeCard(
+                notice = notice,
+                onDismiss = { onIntent(GameImportIntent.DismissDeviceNotice(notice.code)) }
+            )
+        }
+        if (message != null) {
+            val action = state.batchAction
+            MessageBanner(
+                message = message,
+                tone = if (message.contains("失败")) BannerTone.Warning else BannerTone.Success,
+                onDismiss = { onIntent(GameImportIntent.ConsumeMessage) },
+                actionLabel = action?.label,
+                onAction = action?.let { act -> { onIntent(act.intent) } }
+            )
+        }
+        if (error != null) {
+            MessageBanner(
+                message = error,
+                tone = BannerTone.Warning,
+                onDismiss = { onIntent(GameImportIntent.DismissError) }
+            )
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------- 资源包分区
 
 @Composable
@@ -124,7 +178,7 @@ internal fun BundlesTab(
     searchQuery: String,
     onSearchChange: (String) -> Unit,
     onImport: (GameBundleEntry) -> Unit,
-    onImportAll: () -> Unit,
+    onImportAll: (List<String>) -> Unit,
     onOpen: (GameBundleEntry) -> Unit,
     onSetSecretary: (GameBundleEntry) -> Unit
 ) {
@@ -133,16 +187,17 @@ internal fun BundlesTab(
     // CHANGED 表示「已导入但源包/管线更新过」，属于可选更新，
     // 不能算进待导入数量——否则用户已经导入过的资源会一直显示导入按钮。
     //
-    // 两个计数都走 remember：8000 条规模下遍历一次不便宜，而它们在任何一次重组
-    // （进度刷新、搜索输入、类型切换）里都会被重新读一遍。
-    val pendingInScope = remember(state.entriesRevision, state.kindFilter) {
-        state.filteredEntries.count {
+    // 计数口径必须与列表里真正看得见的条目一致（类型 + 搜索），否则会出现
+    // 「搜索「企业」只列出 3 个，按钮却写 800 个」。键用 entries 列表实例：
+    // 父级只在筛选条件变化时才重新生成它，同实例比较是 O(1)。
+    val pendingEntries = remember(entries) {
+        entries.filter {
             it.state == GameBundleEntry.State.NEW || it.state == GameBundleEntry.State.FAILED
         }
     }
     // 可更新数量（单独提示，不占「导入」按钮名额）
-    val updatableInScope = remember(state.entriesRevision, state.kindFilter) {
-        state.filteredEntries.count { it.state == GameBundleEntry.State.CHANGED }
+    val updatableInScope = remember(entries) {
+        entries.count { it.state == GameBundleEntry.State.CHANGED }
     }
     // 显示名与排序都由 ViewModel 在后台算好（state.entryNames / state.sortedEntries）：
     // 卡片直接查表，组合期不再逐条反查舰名、也不再跑 ICU 排序（滚动更顺、切排序不顿）
@@ -161,9 +216,6 @@ internal fun BundlesTab(
         if (state.shellNeedsAttention) {
             item(key = "shell") { ShellStateCard(state, viewModel) }
         }
-        state.deviceWarning?.let { warning ->
-            item(key = "device-warning") { DeviceWarningCard(warning) }
-        }
 
         if (progress != null) {
             item(key = "progress") {
@@ -174,26 +226,7 @@ internal fun BundlesTab(
             }
         }
 
-        state.batchMessage?.let { message ->
-            item(key = "batch") {
-                MessageBanner(
-                    message = message,
-                    tone = if (message.contains("失败")) BannerTone.Warning else BannerTone.Success,
-                    onDismiss = { viewModel.onIntent(GameImportIntent.ConsumeMessage) }
-                )
-            }
-        }
-
-        state.error?.let { error ->
-            item(key = "error") {
-                MessageBanner(
-                    message = error,
-                    tone = BannerTone.Warning,
-                    onDismiss = { viewModel.onIntent(GameImportIntent.ConsumeMessage) }
-                )
-            }
-        }
-
+        // 设备提示 / 结果横幅 / 错误横幅统一由 GameImportStatusBar 在 Tab 之外渲染
         item(key = "filters") { KindFilterRow(state = state, viewModel = viewModel) }
 
         item(key = "sort") {
@@ -207,9 +240,13 @@ internal fun BundlesTab(
         item(key = "actions") {
             Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
                 BlyyButton(
-                    text = if (pendingInScope > 0) "全部导入 $pendingInScope" else "全部已导入",
-                    onClick = onImportAll,
-                    enabled = !state.busy && pendingInScope > 0,
+                    text = if (pendingEntries.isNotEmpty()) {
+                        "全部导入 ${pendingEntries.size}"
+                    } else {
+                        "全部已导入"
+                    },
+                    onClick = { onImportAll(pendingEntries.map { it.path }) },
+                    enabled = !state.busy && pendingEntries.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (updatableInScope > 0) {
@@ -369,35 +406,60 @@ private fun ShellStateCard(
 }
 
 /**
- * 设备能力提示（GPU 不支持 ASTC 6x6 时）。
+ * 设备能力提示（GPU 不支持 ASTC 6x6 / 暂时读不到 GL 能力时）。
  *
- * 不阻断操作：用户仍可导入，只是这类资源会在解码阶段失败——先把原因摆在明面上。
+ * 不阻断操作：这类资源会自动改走 CPU 软解，只是慢一点——把原因摆在明面上即可。
+ * 允许「不再提示」：同一句话每次进页面都顶在列表最前面，比不知道原因更烦；隐藏后由
+ * ViewModel 给一条带「撤销」的横幅兜住误触。
  */
 @Composable
-private fun DeviceWarningCard(text: String) {
+private fun DeviceNoticeCard(notice: DeviceCapabilityNotice, onDismiss: () -> Unit) {
     val accent = MaterialTheme.colorScheme.tertiary
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(AppSpacing.Corner.Md),
         color = accent.copy(alpha = 0.12f),
-        border = androidx.compose.foundation.BorderStroke(AppSpacing.Border.Thin, accent.copy(alpha = 0.35f))
+        border = BorderStroke(AppSpacing.Border.Thin, accent.copy(alpha = 0.35f))
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+        Column(
+            modifier = Modifier.padding(
+                start = AppSpacing.Md,
+                end = AppSpacing.Xs,
+                top = AppSpacing.Sm,
+                bottom = AppSpacing.Xs
+            )
         ) {
-            Icon(
-                Icons.Rounded.WarningAmber,
-                contentDescription = null,
-                tint = accent,
-                modifier = Modifier.size(18.dp)
-            )
-            Text(
-                text,
-                style = AppTypography.LabelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)
+            ) {
+                Icon(
+                    Icons.Rounded.WarningAmber,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier
+                        .padding(top = 2.dp)
+                        .size(18.dp)
+                )
+                Text(
+                    notice.text,
+                    style = AppTypography.LabelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            // 「不再提示」独占一行右对齐：文案本身就长，塞进同一行会把它挤成三四行
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onDismiss,
+                    contentPadding = PaddingValues(horizontal = AppSpacing.Sm)
+                ) {
+                    Text("不再提示", style = AppTypography.LabelSmall)
+                }
+            }
         }
     }
 }
@@ -1166,7 +1228,13 @@ private fun AssetCard(
 private enum class BannerTone { Success, Warning }
 
 @Composable
-private fun MessageBanner(message: String, tone: BannerTone, onDismiss: () -> Unit) {
+private fun MessageBanner(
+    message: String,
+    tone: BannerTone,
+    onDismiss: () -> Unit,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
+) {
     val semantics = LocalSemanticColors.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1205,6 +1273,23 @@ private fun MessageBanner(message: String, tone: BannerTone, onDismiss: () -> Un
                 },
                 modifier = Modifier.weight(1f)
             )
+            // 撤销入口：横幅自动收起前给用户一次反悔的机会（例如误点「不再提示」）
+            if (actionLabel != null && onAction != null) {
+                TextButton(
+                    onClick = onAction,
+                    contentPadding = PaddingValues(horizontal = AppSpacing.Sm),
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Text(
+                        actionLabel,
+                        style = AppTypography.LabelSmall,
+                        color = when (tone) {
+                            BannerTone.Success -> semantics.onSuccessContainer
+                            BannerTone.Warning -> semantics.onWarningContainer
+                        }
+                    )
+                }
+            }
             IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
                 Icon(
                     Icons.Rounded.Close,

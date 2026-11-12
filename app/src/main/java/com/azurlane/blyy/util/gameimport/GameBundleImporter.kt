@@ -203,7 +203,15 @@ class GameBundleImporter @Inject constructor(
             val backup = File(library.stagingDir(kind), "$assetId.replaced")
             if (target.exists()) {
                 runCatching { backup.deleteRecursively() }
-                if (!target.renameTo(backup)) target.deleteRecursively()
+                if (!target.renameTo(backup)) {
+                    // 同分区 rename 失败通常意味着目录被占用 / 权限问题：此时直接删旧资产是
+                    // 不可恢复的。宁可在暂存阶段就失败（旧资产与索引都还完好），也不要「备份
+                    // 没做成、原件已经没了」。
+                    throw IOException(
+                        "无法备份旧资源（${target.name}），已中止本次导入以免丢失原资源；" +
+                            "请确认没有其他应用正在读取该目录后重试"
+                    )
+                }
             }
             try {
                 if (!staging.renameTo(target)) {
