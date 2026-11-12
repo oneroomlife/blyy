@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.hilt)
@@ -5,6 +7,18 @@ plugins {
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
 }
+
+/**
+ * 发布签名：从 keystore.properties（已 gitignore）读取，缺失时回退到环境变量。
+ * 密钥库 D:/Android/1 为 PKCS12，alias key0。
+ */
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun signingProp(key: String, fallback: String?): String? =
+    keystoreProps.getProperty(key) ?: System.getenv(key) ?: fallback
 
 android {
     namespace = "com.azurlane.blyy"
@@ -15,13 +29,27 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 1
-        versionName = "3.0.0"
+        versionName = "3.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            // 绝对路径直接用；keystore.properties 里统一写正斜杠
+            storeFile = rootProject.file(signingProp("storeFile", "D:/Android/1")!!)
+            storePassword = signingProp("storePassword", null)
+            keyAlias = signingProp("keyAlias", "key0")
+            keyPassword = signingProp("keyPassword", null)
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
