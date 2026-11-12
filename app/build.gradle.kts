@@ -34,22 +34,31 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // 凭据齐全才创建簓名：CI（无 keystore.properties/环境变量）不注册 signingConfig，
+    // release 走 AGP 默认未签名路径（产出 *-unsigned.apk），构建不再红
+    val hasSigningCredentials = signingProp("storePassword", null) != null &&
+        signingProp("keyPassword", null) != null
+
     signingConfigs {
-        create("release") {
-            // 绝对路径直接用；keystore.properties 里统一写正斜杠
-            storeFile = rootProject.file(signingProp("storeFile", "D:/Android/1")!!)
-            storePassword = signingProp("storePassword", null)
-            keyAlias = signingProp("keyAlias", "key0")
-            keyPassword = signingProp("keyPassword", null)
-            enableV1Signing = true
-            enableV2Signing = true
-            enableV3Signing = true
+        if (hasSigningCredentials) {
+            create("release") {
+                // 绝对路径直接用；keystore.properties 里统一写正斜杠
+                storeFile = rootProject.file(signingProp("storeFile", "D:/Android/1")!!)
+                storePassword = signingProp("storePassword", null)
+                keyAlias = signingProp("keyAlias", "key0")
+                keyPassword = signingProp("keyPassword", null)
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (hasSigningCredentials) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
