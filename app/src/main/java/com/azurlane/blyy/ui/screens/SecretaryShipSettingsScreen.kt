@@ -203,9 +203,12 @@ fun SecretaryShipSettingsScreen(
                         icon = Icons.Rounded.TouchApp,
                         title = "触摸穿透",
                         description = if (secretaryState.overlayTouchPassthrough) {
-                            "已开启：触摸事件穿透到下层应用，SD 小人不可交互（仅桌面悬浮窗生效）"
+                            "已开启：点击与拖动穿透到下层应用，SD 小人不拦截触摸。" +
+                                "Android 12 及以上要求窗口遮挡不透明度不超过 80% 才允许跨应用穿透，" +
+                                "而 SD 小人的 GPU 渲染图层会额外计入遮挡，因此开启后小人会明显透出下层画面" +
+                                "（关闭即恢复不透明）"
                         } else {
-                            "关闭：SD 小人正常响应点击、拖动等交互（桌面悬浮窗生效；应用内始终可交互）"
+                            "关闭：SD 小人正常响应点击、拖动等交互；不透明显示，不穿透到下层应用"
                         },
                         checked = secretaryState.overlayTouchPassthrough,
                         onCheckedChange = onToggleOverlayTouchPassthrough

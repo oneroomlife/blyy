@@ -1,6 +1,7 @@
 package com.azurlane.blyy.ui.components
 
 import kotlin.math.abs
+import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
@@ -163,6 +164,138 @@ object OverlayGeometry {
             val w = containerH * aspect
             RectFLike((containerW - w) / 2f, 0f, (containerW + w) / 2f, containerH)
         }
+    }
+
+    // ── 跨应用触摸穿透（Android 12+ untrusted touch）──────────────────────────
+    //
+    // Android 12（API 31）起，一次触摸若要「穿过」某个窗口落到别的应用，
+    // InputDispatcher 会先看窗口的 InputWindowInfo：只要该窗口不可信
+    //（不是无障碍/输入法等系统窗口，且不属于接收方 UID），
+    // 且合成不透明度超过阈值，事件就被静默丢弃。
+    // 悬浮窗的常规做法（FLAG_NOT_TOUCHABLE）只是让窗口不接收事件，
+    // 并不能让事件通过系统这一关 —— 这就是「穿透只在应用内生效」的根因来源。
+    //
+    // 阈值来自窗口级 LayoutParams.alpha（不是 View alpha），
+    // 多窗口重叠按 1 - Π(1-αᵢ) 合成。
+
+    /** Android 12 上 `InputManager.getMaximumObscuringOpacityForTouch()` 的取值 */
+    const val DEFAULT_MAX_OBSCURING_OPACITY = 0.8f
+
+    /**
+     * 阈值余量。
+     *
+     * 系统侧是不透明度与阈值直接比较（float），贴着阈值容易被浮点误差判成超限，
+     * 且不同厂商 ROM 可能把阈值下调；留 0.01 的余量成本极低（视觉上看不出）。
+     */
+    const val OBSCURING_ALPHA_SAFETY_MARGIN = 0.01f
+
+    /** 穿透不透明度下限：再低画面就几乎看不见了，属于错误入参的兜底 */
+    private const val MIN_TAP_THROUGH_ALPHA = 0.01f
+
+    /**
+     * 算出「允许触摸穿透」的窗口不透明度。
+     *
+     * 关键点：InputDispatcher 统计的不透明度是**同一 UID 在该触点上所有遮挡图层**的合成值，
+     * 不只是我们那个 Window。`SurfaceView`（本项目里 SD 小人用的 GLSurfaceView）会额外
+     * 生成一条 BLAST 子图层，且它继承父窗口的 alpha —— 于是窗口 0.79 会被算成
+     * `1-(1-0.79)² = 0.96`，超过 0.80 阈值，整条触摸照样被丢：
+     *
+     * ```
+     * W InputDispatcher: Untrusted touch due to occlusion by <pkg>/<uid>
+     *                    (obscuring opacity = 0.96, maximum allowed = 0.80)
+     *   * alpha=0.79 window={SurfaceView[](BLAST)#1116}
+     *   * alpha=0.79 window={<pkg>}   ← 主窗口
+     * ```
+     *
+     * 所以必须按「实际贡献的图层数」摊薄：要求 `1-(1-a)^L ≤ 阈值`，
+     * 解得 `a = 1 - (1-阈值)^(1/L)`。L=1 时退回 `阈值-余量`（0.79），
+     * L=2 时为 0.5417（合成 0.79），L=3 时为 0.4152。
+     *
+     * @param maxObscuringOpacity 系统阈值（非法值回退 [DEFAULT_MAX_OBSCURING_OPACITY]）
+     * @param safetyMargin 余量（非法值按 0 处理）
+     * @param obscuringLayerCount 该触点上本应用贡献的遮挡图层数（1 = 仅窗口本身）
+     * @return ≤ 阈值的 alpha；阈值本身 ≥1 表示系统无限制，返回 1.0
+     */
+    fun tapThroughWindowAlpha(
+        maxObscuringOpacity: Float = DEFAULT_MAX_OBSCURING_OPACITY,
+        safetyMargin: Float = OBSCURING_ALPHA_SAFETY_MARGIN,
+        obscuringLayerCount: Int = 1
+    ): Float {
+        val max = if (maxObscuringOpacity.isFinite() && maxObscuringOpacity > 0f) {
+            maxObscuringOpacity
+        } else {
+            DEFAULT_MAX_OBSCURING_OPACITY
+        }
+        // 阈值 ≥1：系统不限制遮挡（Android 12 以下 / 阈值被放宽），无需降低不透明度
+        if (max >= 1f) return 1f
+        val margin = if (safetyMargin.isFinite() && safetyMargin > 0f) safetyMargin else 0f
+        val target = (max - margin).coerceAtLeast(MIN_TAP_THROUGH_ALPHA)
+        val layers = obscuringLayerCount.coerceAtLeast(1)
+        if (layers == 1) return target
+        // 1-(1-a)^L = target  =>  a = 1 - (1-target)^(1/L)
+        val remaining = (1f - target).coerceIn(MIN_TAP_THROUGH_ALPHA, 1f)
+        return (1f - remaining.pow(1f / layers)).coerceIn(MIN_TAP_THROUGH_ALPHA, 1f)
+    }
+
+    /**
+     * 多个窗口在同一触点上的合成遮蔽不透明度：`1 - Π(1 - αᵢ)`。
+     *
+     * 非法 alpha（NaN/∞/负数）按 0 处理，>1 按 1 处理。
+     */
+    fun combinedObscuringOpacity(alphas: List<Float>): Float {
+        var clear = 1f // Π(1-α)
+        for (raw in alphas) {
+            val a = when {
+                !raw.isFinite() || raw <= 0f -> 0f
+                raw >= 1f -> 1f
+                else -> raw
+            }
+            clear *= (1f - a)
+        }
+        return (1f - clear).coerceIn(0f, 1f)
+    }
+
+    /**
+     * 这些窗口叠在同一触点上时，触摸是否会被系统判为「不可信」而丢弃。
+     *
+     * @param alphas 覆盖该触点的所有窗口 alpha（含本应用的多个悬浮窗）
+     */
+    fun blocksTouchThrough(
+        alphas: List<Float>,
+        maxObscuringOpacity: Float = DEFAULT_MAX_OBSCURING_OPACITY
+    ): Boolean {
+        val max = if (maxObscuringOpacity.isFinite() && maxObscuringOpacity > 0f) {
+            maxObscuringOpacity
+        } else {
+            DEFAULT_MAX_OBSCURING_OPACITY
+        }
+        return combinedObscuringOpacity(alphas) > max + 1e-4f
+    }
+
+    /**
+     * 决定辅助（气泡/提示）窗口的 y 坐标，尽量不与主窗口重叠。
+     *
+     * 原因：两个窗口叠在一起时合成 alpha 会超过阈值
+     *（0.79 + 0.79 → 0.956 > 0.8），重叠区域从此不再穿透。
+     * 优先级：主窗上方 → 主窗下方 → 屏幕顶部（实在放不下才接受重叠）。
+     *
+     * @param auxHeight 辅助窗口高度（未知时传 0）
+     */
+    fun resolveAuxiliaryY(mainTop: Int, mainHeight: Int, auxHeight: Int, screenHeight: Int): Int {
+        val screen = screenHeight.coerceAtLeast(0)
+        if (auxHeight <= 0) return mainTop.coerceIn(0, screen)
+        val above = mainTop - auxHeight
+        if (above >= 0) return above
+        val below = mainTop + mainHeight.coerceAtLeast(0)
+        if (below >= 0 && below + auxHeight <= screen) return below
+        // 上下都放不下（小屏 + 大窗）：退回顶部，此时必然与主窗重叠，交给上层告警
+        return 0
+    }
+
+    /** 辅助窗口是否与主窗口的纵向区间相交（用于重叠告警） */
+    fun auxiliaryOverlapsMain(mainTop: Int, mainHeight: Int, auxTop: Int, auxHeight: Int): Boolean {
+        if (auxHeight <= 0 || mainHeight <= 0) return false
+        return auxTop < mainTop + mainHeight && auxTop + auxHeight > mainTop
     }
 
     /** 纯 Kotlin 矩形（避免 android.graphics.RectF 的 Android 依赖，可 JVM 直测） */

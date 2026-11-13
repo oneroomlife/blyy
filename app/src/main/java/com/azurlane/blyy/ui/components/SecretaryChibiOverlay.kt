@@ -211,7 +211,13 @@ fun SecretaryChibiOverlay(
      * 系统悬浮窗分支：true → 主窗口追加 `FLAG_NOT_TOUCHABLE`，事件直接落到下层应用；
      * 同时 GLSurfaceView 的 `touchEnabled` 也置 false 作为窗口级 flags 未生效时的兜底。
      *
-     * 应用内分支（`isSystemOverlay=false`）**不再响应**这个开关：应用内没有窗口级
+     * ⚠ 只有 flags 还不够：Android 12（API 31）起，触摸要穿过本应用窗口落到**其他**
+     * 应用时，系统还要求该窗口的合成不透明度 ≤
+     * `InputManager.getMaximumObscuringOpacityForTouch()`（0.8），否则 InputDispatcher
+     * 直接丢弃事件。窗口级 alpha 由 `SecretaryOverlayService.windowAlphaFor` 负责下调，
+     * 这里只处理视图层的另一半（不消费手势）。
+     *
+     * 应用内分支（`isSystemOverlay=false`）**不响应**这个开关：应用内没有窗口级
      * `FLAG_NOT_TOUCHABLE`，而 AndroidView 即使不消费事件也仍是 Compose 命中测试里
      * 最上层的节点，下层页面依旧拿不到手势，做不到真正的穿透，所以应用内保持可交互。
      */

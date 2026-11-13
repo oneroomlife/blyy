@@ -1,8 +1,10 @@
 package com.azurlane.blyy.ui.components
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -267,5 +269,159 @@ class OverlayGeometryTest {
             assertEquals(110, w)
             assertEquals(165, h)
         }
+    }
+
+    // ── 跨应用穿透：窗口不透明度 ──────────────────────────────────────────────
+
+    @Test
+    fun `穿透窗口 alpha 取系统阈值减余量`() {
+        // Android 12 阈值 0.8 → 0.79；必须严格小于阈值，否则事件被 InputDispatcher 丢弃
+        val alpha = OverlayGeometry.tapThroughWindowAlpha()
+        assertEquals(0.79f, alpha, 1e-6f)
+        assertTrue(alpha < OverlayGeometry.DEFAULT_MAX_OBSCURING_OPACITY)
+        assertFalse(
+            OverlayGeometry.blocksTouchThrough(listOf(alpha))
+        )
+    }
+
+    @Test
+    fun `系统无限制时穿透窗口保持完全不透明`() {
+        assertEquals(1f, OverlayGeometry.tapThroughWindowAlpha(1f), 1e-6f)
+        assertEquals(1f, OverlayGeometry.tapThroughWindowAlpha(2f), 1e-6f)
+    }
+
+    @Test
+    fun `非法阈值与余量回退到默认值`() {
+        for (bad in listOf(0f, -0.5f, Float.NaN, Float.NEGATIVE_INFINITY)) {
+            assertEquals(0.79f, OverlayGeometry.tapThroughWindowAlpha(bad), 1e-6f)
+            // 余量非法按 0 处理 → 正好落在阈值上，仍不触发超限判定
+            assertEquals(0.8f, OverlayGeometry.tapThroughWindowAlpha(0.8f, bad), 1e-6f)
+        }
+    }
+
+    @Test
+    fun `余量过大会被压到下限`() {
+        // 阈值 0.8、余量 2.0 → 结果夹到 0.01，不会出现负 alpha
+        assertEquals(0.01f, OverlayGeometry.tapThroughWindowAlpha(0.8f, 2f), 1e-6f)
+    }
+
+    // ── 跨应用穿透：按图层数摊薄（SurfaceView 子图层）────────────────────────
+
+    @Test
+    fun `两个遮挡图层时 alpha 降到 1 减根号 0_21`() {
+        // SD 小人用 GLSurfaceView 渲染：窗口 + BLAST 子图层各占一层，
+        // 都取 0.79 时合成 1-(0.21^2)=0.9559 > 0.80 → 实测被 InputDispatcher 丢弃
+        val alpha = OverlayGeometry.tapThroughWindowAlpha(obscuringLayerCount = 2)
+        assertEquals(0.5417f, alpha, 1e-3f)
+        // 两个图层各自 0.5417 → 合成 1-(0.4583^2) = 0.79，刚好在阈值内
+        assertEquals(
+            0.79f,
+            OverlayGeometry.combinedObscuringOpacity(listOf(alpha, alpha)),
+            1e-3f
+        )
+        assertFalse(OverlayGeometry.blocksTouchThrough(listOf(alpha, alpha)))
+        // 反证：若仍按单层 0.79 渲染，两层合成会超限
+        assertTrue(OverlayGeometry.blocksTouchThrough(listOf(0.79f, 0.79f)))
+    }
+
+    @Test
+    fun `三个遮挡图层时 alpha 继续下降且合成仍合规`() {
+        val alpha = OverlayGeometry.tapThroughWindowAlpha(obscuringLayerCount = 3)
+        // a = 1 - (1-0.79)^(1/3) = 1 - 0.5944 = 0.4056，合成仍为 0.79
+        assertEquals(0.4056f, alpha, 1e-3f)
+        val combined = OverlayGeometry.combinedObscuringOpacity(List(3) { alpha })
+        assertTrue(combined <= OverlayGeometry.DEFAULT_MAX_OBSCURING_OPACITY)
+        assertFalse(OverlayGeometry.blocksTouchThrough(List(3) { alpha }))
+        // 层数越多单层越透：保证单调性，避免回归成"层数不生效"
+        assertTrue(alpha < OverlayGeometry.tapThroughWindowAlpha(obscuringLayerCount = 2))
+    }
+
+    @Test
+    fun `图层数非法值按单层处理`() {
+        assertEquals(0.79f, OverlayGeometry.tapThroughWindowAlpha(obscuringLayerCount = 0), 1e-6f)
+        assertEquals(0.79f, OverlayGeometry.tapThroughWindowAlpha(obscuringLayerCount = -3), 1e-6f)
+    }
+
+    @Test
+    fun `系统无限制时任意图层数都保持完全不透明`() {
+        assertEquals(1f, OverlayGeometry.tapThroughWindowAlpha(1f, obscuringLayerCount = 4), 1e-6f)
+        assertEquals(1f, OverlayGeometry.tapThroughWindowAlpha(2f, obscuringLayerCount = 2), 1e-6f)
+    }
+
+    @Test
+    fun `多窗口合成不透明度按 1 减连乘计算`() {
+        assertEquals(0f, OverlayGeometry.combinedObscuringOpacity(emptyList()), 1e-6f)
+        assertEquals(0.79f, OverlayGeometry.combinedObscuringOpacity(listOf(0.79f)), 1e-6f)
+        // 两个 0.79 叠加 = 1-(0.21*0.21) = 0.9559
+        assertEquals(0.9559f, OverlayGeometry.combinedObscuringOpacity(listOf(0.79f, 0.79f)), 1e-4f)
+    }
+
+    @Test
+    fun `非法 alpha 按无遮挡或全遮挡处理`() {
+        // NaN / 负数 / 0 视为完全透明，不影响合成分解
+        assertEquals(0.5f, OverlayGeometry.combinedObscuringOpacity(listOf(0.5f, Float.NaN, -1f, 0f)), 1e-6f)
+        // >1 收敛到 1（全遮挡）
+        assertEquals(1f, OverlayGeometry.combinedObscuringOpacity(listOf(1.7f)), 1e-6f)
+    }
+
+    @Test
+    fun `合成不透明度超阈值即判定触摸被拦`() {
+        // 穿透态单窗口：放行
+        assertFalse(OverlayGeometry.blocksTouchThrough(listOf(0.79f)))
+        assertFalse(OverlayGeometry.blocksTouchThrough(emptyList()))
+        // 满 alpha：拦
+        assertTrue(OverlayGeometry.blocksTouchThrough(listOf(1f)))
+        // 穿透态主窗 + 同 alpha 气泡重叠：拦（这正是气泡必须避开主窗的原因）
+        assertTrue(OverlayGeometry.blocksTouchThrough(listOf(0.79f, 0.79f)))
+        // 关闭穿透但仍需保证纯展示窗口合规：单窗口 0.79 放行
+        assertFalse(OverlayGeometry.blocksTouchThrough(listOf(0.79f), 0.8f))
+    }
+
+    // ── 辅助窗口避让 ──────────────────────────────────────────────────────────
+
+    @Test
+    fun `辅助窗口优先放在主窗上方`() {
+        // 主窗 y=800 h=400，气泡高 100 → 800-100=700，与主窗不相交
+        val y = OverlayGeometry.resolveAuxiliaryY(mainTop = 800, mainHeight = 400, auxHeight = 100, screenHeight = 2400)
+        assertEquals(700, y)
+        assertFalse(OverlayGeometry.auxiliaryOverlapsMain(800, 400, y, 100))
+    }
+
+    @Test
+    fun `顶部空间不足时辅助窗口改放主窗下方`() {
+        // 主窗贴顶（y=50 h=400），上方只剩 50 < 100 → 下方 450，450+100 ≤ 2400
+        val y = OverlayGeometry.resolveAuxiliaryY(mainTop = 50, mainHeight = 400, auxHeight = 100, screenHeight = 2400)
+        assertEquals(450, y)
+        assertFalse(OverlayGeometry.auxiliaryOverlapsMain(50, 400, y, 100))
+    }
+
+    @Test
+    fun `上下都放不下时退回顶部并接受重叠`() {
+        // 主窗贴顶且几乎占满屏幕：上方 50 < 100，下方 2380+100 超出屏幕 → 只能退回 0
+        val y = OverlayGeometry.resolveAuxiliaryY(mainTop = 50, mainHeight = 2330, auxHeight = 100, screenHeight = 2400)
+        assertEquals(0, y)
+        assertTrue(OverlayGeometry.auxiliaryOverlapsMain(50, 2330, y, 100))
+    }
+
+    @Test
+    fun `上方正好放得下时不做重叠`() {
+        // above = 100-100 = 0：恰好贴屏幕顶端放下，不算重叠
+        val y = OverlayGeometry.resolveAuxiliaryY(mainTop = 100, mainHeight = 400, auxHeight = 100, screenHeight = 2400)
+        assertEquals(0, y)
+        assertFalse(OverlayGeometry.auxiliaryOverlapsMain(100, 400, y, 100))
+    }
+
+    @Test
+    fun `辅助窗口高度未知时沿用主窗顶部`() {
+        assertEquals(300, OverlayGeometry.resolveAuxiliaryY(300, 400, 0, 2400))
+        // 主窗顶部越界时夹回屏幕内
+        assertEquals(0, OverlayGeometry.resolveAuxiliaryY(-120, 400, 0, 2400))
+        assertEquals(2400, OverlayGeometry.resolveAuxiliaryY(9999, 400, 0, 2400))
+    }
+
+    @Test
+    fun `重叠判定忽略零高度`() {
+        assertFalse(OverlayGeometry.auxiliaryOverlapsMain(100, 400, 0, 0))
+        assertFalse(OverlayGeometry.auxiliaryOverlapsMain(100, 0, 0, 50))
     }
 }

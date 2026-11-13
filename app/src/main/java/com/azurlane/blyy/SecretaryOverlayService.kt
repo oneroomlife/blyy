@@ -12,10 +12,14 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.RectF
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import android.view.Gravity
+import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import java.util.concurrent.atomic.AtomicBoolean
 import androidx.compose.animation.AnimatedVisibility
@@ -31,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -50,7 +55,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.abs
@@ -125,6 +133,17 @@ class SecretaryOverlayService : Service() {
      */
     @Volatile private var mainWindowDetached = false
 
+    /**
+     * 主窗口是否真的挂在 WindowManager 上（对外可见）。
+     *
+     * 与 [mainWindowDetached] 互为反面，但语义不同：这里用于告诉 UI 层
+     * 「悬浮窗现在看得见吗」。旧实现只在 Service onCreate/onDestroy 发布
+     * overlayRunning，窗口被移除或 addView 失败时对外仍是「已开启」——
+     * [com.azurlane.blyy.ui.AppRoot] 因此把应用内小人也隐藏掉，
+     * 用户看到的是「哪儿都没有小人」。
+     */
+    @Volatile private var overlayWindowVisible = false
+
     // ── 辅助窗口（气泡/拖动提示）──
     private var auxComposeView: ComposeView? = null
     private var auxLayoutParams: WindowManager.LayoutParams? = null
@@ -166,12 +185,47 @@ class SecretaryOverlayService : Service() {
         private const val MIN_TOUCH_SIDE_DP = 48f
 
         /**
+         * 主窗口 addView 的最大尝试次数。
+         *
+         * 内容恢复时窗口可能撞上 WindowManager 的瞬时异常
+         *（BadTokenException / "view already added"——转屏、解锁、
+         * 权限页返回的瞬间都可能出现），单次失败就放弃会让窗口永久缺席。
+         */
+        private const val ATTACH_RETRY_COUNT = 3
+
+        /** 看门狗对账周期：窗口缺席且内容就绪时按此间隔尝试重挂 */
+        private const val WATCHDOG_INTERVAL_MS = 3000L
+
+        /**
          * 窗口宽/高相对屏幕尺寸的上限比例。
          *
          * 放大到 3 倍时窗口可能超过屏幕，必须夹取到可用区域内，
          * 否则 WindowManager 会把窗口裁掉或顶到屏幕外。
          */
         private const val MAX_WINDOW_SCREEN_RATIO = 0.98f
+
+        /**
+         * Android 12+ 取不到系统阈值时的兜底上限（[InputManager.getMaximumObscuringOpacityForTouch]
+         * 在 Android 12 上为 0.8）。
+         */
+        private const val FALLBACK_MAX_OBSCURING_OPACITY = 0.8f
+
+        /**
+         * 辅助气泡窗口的遮挡图层数。
+         *
+         * 它是纯 Compose 文本气泡，没有 SurfaceView，所以只有窗口本身这一层。
+         * 若将来给它加 SurfaceView/视频渲染，这里必须同步 +1。
+         */
+        private const val AUXILIARY_OBSCURING_LAYERS = 1
+
+        /**
+         * 组合完成后再对账 alpha 的延迟。
+         *
+         * SD 小人的 GLSurfaceView 是 Compose 组合后才挂进视图树的：addView 那一刻
+         * 图层数还是 1（alpha=0.79），子图层出现后合并不透明度会变成 0.96 并被系统拦下，
+         * 因此必须在首帧之后重算一次（0.54）。
+         */
+        private const val LAYER_RECHECK_DELAY_MS = 300L
 
         private val isRunning = AtomicBoolean(false)
         fun isServiceRunning(): Boolean = isRunning.get()
@@ -180,12 +234,17 @@ class SecretaryOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         isRunning.set(true)
-        secretaryManager.updateOverlayRunning(true)
+        // 不在这里发布 overlayRunning=true：以「窗口是否真的挂上」为准，
+        // 见 [publishOverlayWindowVisible]。服务活着但窗口没挂上时，
+        // 应用内小人与悬浮窗必须至少有一个可见。
         Log.d(TAG, "onCreate: 服务创建")
         startForegroundServiceNotification()
         // 窗口创建移入协程：先读取上次保存的位置再 addView，
         // 小人直接出现在用户上次摆放的位置（而非先出现在默认位再跳转）
         serviceScope.launch { showOverlay() }
+        // 【与组合生命周期解耦的观察链】内容有无 / 穿透开关由 Service 级协程驱动，
+        // 不再依赖 ComposeView 内部的 LaunchedEffect（见 startOverlayStateObservers）
+        startOverlayStateObservers()
     }
 
     /**
@@ -241,25 +300,143 @@ class SecretaryOverlayService : Service() {
         }
 
     /**
-     * 把当前穿透状态重放到 `lp.flags` 并同步到窗口。
+     * 系统允许的「最大遮蔽不透明度」——Android 12 起穿透触摸的硬门槛。
+     *
+     * 【行为变更】Android 12（API 31）引入 untrusted touch：
+     * 触摸要**穿过**一个窗口落到另一个应用时，若该窗口不是可信窗口，
+     * InputDispatcher 会直接丢弃事件。豁免条件只有三条：
+     * 1) 同 UID（= 应用内，这就是"穿透只在应用内生效"的原因）；
+     * 2) 窗口 alpha ≤ [InputManager.getMaximumObscuringOpacityForTouch]（当前 0.8）；
+     * 3) 系统可信浮层（无障碍/输入法）。
+     *
+     * 因此 `FLAG_NOT_TOUCHABLE` 只是必要条件：窗口还必须"足够透明"。
+     * 注意阈值来自窗口级 alpha（[WindowManager.LayoutParams.alpha]），
+     * 改 View/compose 的 alpha 无效——InputDispatcher 读的是 InputWindowInfo，
+     * 它由 WindowState 依据 `LayoutParams.alpha` 填充。
+     *
+     * 多窗口在同一触点重叠时按 1 - Π(1-αᵢ) 合成，所以主窗与气泡窗不能叠在一起
+     *（见 [OverlayGeometry.resolveAuxiliaryY]）。
+     */
+    private val maxObscuringOpacityForTouch: Float by lazy {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            // Android 12 之前没有 untrusted touch 限制，窗口可以完全不透明
+            1f
+        } else {
+            runCatching {
+                (getSystemService(Context.INPUT_SERVICE) as? InputManager)
+                    ?.maximumObscuringOpacityForTouch
+            }.getOrNull()
+                ?.takeIf { it.isFinite() && it > 0f }
+                ?: FALLBACK_MAX_OBSCURING_OPACITY
+        }
+    }
+
+    /**
+     * 主窗口的窗口级 alpha。
+     *
+     * - 穿透关闭：1.0（完全不透明，视觉最佳）
+     * - 穿透开启：按「本应用在该触点上贡献的遮挡图层数」摊薄，
+     *   否则跨应用触摸会被 InputDispatcher 丢弃，表现为"穿透只在应用内生效"
+     *
+     * 【为什么不能只写 0.79】SD 小人用 `SpineSdGlSurfaceView`（GLSurfaceView）渲染，
+     * 它会额外生成一条 BLAST 子图层，遮挡统计里继承父窗口 alpha，于是
+     * `1-(1-0.79)² = 0.96 > 0.80`，触摸照样被丢。实测日志：
+     *
+     * ```
+     * W InputDispatcher: Untrusted touch due to occlusion by <pkg>/<uid>
+     *                    (obscuring opacity = 0.96, maximum allowed = 0.80)
+     *   * alpha=0.79 window={SurfaceView[](BLAST)#1116}
+     *   * alpha=0.79 window={<pkg>}
+     * ```
+     *
+     * 所以 alpha 必须由 [countObscuringLayers] 算出的图层数决定（2 层 → 0.54）。
+     * 代价是小人更透一些——这是系统防 tapjacking 的强制取舍，没有别的开关可以绕开。
+     */
+    private fun windowAlphaFor(passthrough: Boolean, obscuringLayerCount: Int): Float = when {
+        !passthrough -> 1f
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S -> 1f
+        else -> OverlayGeometry.tapThroughWindowAlpha(
+            maxObscuringOpacity = maxObscuringOpacityForTouch,
+            obscuringLayerCount = obscuringLayerCount
+        )
+    }
+
+    /** 主窗口（含其子视图）在 InputDispatcher 里贡献的遮挡图层数。 */
+    private fun mainWindowObscuringLayers(): Int = countObscuringLayers(composeView)
+
+    /**
+     * 统计一棵视图树在遮挡计算里占几层。
+     *
+     * 普通 View 与父窗口共用同一个 Surface → 1 层；`SurfaceView`（含 GLSurfaceView）
+     * 拥有独立 Surface，在 InputDispatcher 里是**单独一条遮挡条目**（即使
+     * `NO_INPUT_CHANNEL`、touchableRegion 为空、并不接收触摸），并且在遮挡统计时
+     * 继承父窗口的 alpha。所以图层数 = 1 + 树里的 SurfaceView 数量。
+     *
+     * 递归遍历成本极低（视图树只有个位数节点），每次应用 alpha 时现算，
+     * 避免缓存与组合/销毁竞态。
+     */
+    private fun countObscuringLayers(root: View?): Int {
+        if (root == null) return 1
+        var surfaceViewCount = 0
+        fun walk(view: View) {
+            if (view is SurfaceView) surfaceViewCount++
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) walk(view.getChildAt(index))
+            }
+        }
+        walk(root)
+        return 1 + surfaceViewCount
+    }
+
+    /**
+     * 把穿透真值同时写进 `lp.flags` 与 `lp.alpha`（唯一入口，避免只改一半）。
+     *
+     * flags 与 alpha 必须成对更新：只加 FLAG_NOT_TOUCHABLE 而不降 alpha，
+     * 在 Android 12+ 上等价于"没穿透"（事件被系统拦下）；只降 alpha 不加 flag，
+     * 则窗口仍然吃掉触摸。两者缺一不可。
+     */
+    private fun applyWindowTouchAttributes(lp: WindowManager.LayoutParams) {
+        lp.flags = windowFlagsFor(touchPassthrough)
+        lp.alpha = windowAlphaFor(touchPassthrough, mainWindowObscuringLayers())
+    }
+
+    /**
+     * 把当前穿透状态（flags + 窗口 alpha）重放到窗口。
      *
      * 幂等且可重复调用：addView 之前、updateViewLayout 之后、转屏重建、
-     * re-add 前都可以安全调用；`lp.flags` 已正确时不触发多余布局。
+     * re-add 前都可以安全调用；`lp` 已正确时不触发多余布局。
      *
      * 这是修复「触摸穿透偶发失效」的关键——旧实现只在
      * `LaunchedEffect(overlayTouchPassthrough)` 一处写 flags，
      * 窗口被移除后重新 addView（僵尸窗口修复）、转屏、缩放重建时
-     * 都会回到不带 FLAG_NOT_TOUCHABLE 的默认状态。
+     * 都会回到不带 FLAG_NOT_TOUCHABLE / 满 alpha 的默认状态。
      */
     private fun applyWindowFlags(forceUpdate: Boolean = false) {
         val lp = overlayLayoutParams ?: return
-        val desired = windowFlagsFor(touchPassthrough)
-        if (!forceUpdate && lp.flags == desired) return
-        lp.flags = desired
+        val desiredFlags = windowFlagsFor(touchPassthrough)
+        val desiredAlpha = windowAlphaFor(touchPassthrough, mainWindowObscuringLayers())
+        if (!forceUpdate && lp.flags == desiredFlags && lp.alpha == desiredAlpha) return
+        lp.flags = desiredFlags
+        lp.alpha = desiredAlpha
+        Log.d(TAG, "applyWindowFlags: flags=0x${desiredFlags.toString(16)} alpha=$desiredAlpha")
         val view = composeView ?: return
         if (mainWindowDetached) return
         runCatching { windowManager?.updateViewLayout(view, lp) }
             .onFailure { Log.w(TAG, "applyWindowFlags: updateViewLayout 失败（穿透=$touchPassthrough）", it) }
+    }
+
+    /**
+     * 组合首帧之后重新对账 flags + alpha。
+     *
+     * SD 小人的 GLSurfaceView 是 Compose 组合完成、下一帧才挂进视图树的：
+     * addView 那一刻 [countObscuringLayers] 只看到 1 层（alpha=0.79），
+     * 子图层出现后合成不透明度变成 0.96 又会被系统拦下，所以必须在首帧后重算（0.54）。
+     * [applyWindowFlags] 自带比较，图层数没变时不会触发多余布局。
+     */
+    private fun scheduleTouchAttributeRecheck() {
+        val view = composeView ?: return
+        view.post { applyWindowFlags() }
+        view.postDelayed({ applyWindowFlags() }, LAYER_RECHECK_DELAY_MS)
     }
 
     /**
@@ -336,6 +513,11 @@ class SecretaryOverlayService : Service() {
                 PixelFormat.TRANSLUCENT
             )
             params.gravity = Gravity.TOP or Gravity.START
+            // 【跨应用穿透的前提】窗口 alpha 必须一并按穿透开关落地：
+            // Android 12+ 只放行 alpha ≤ 0.8 的窗口把触摸交给下层应用，
+            // 满 alpha + FLAG_NOT_TOUCHABLE 的事件会被 InputDispatcher 直接丢弃
+            // （只在本应用内生效，正是用户报的"桌面/其他应用穿不过去"）。
+            params.alpha = windowAlphaFor(touchPassthrough, mainWindowObscuringLayers())
             val (posX, posY) = resolveWindowPosition(overlayWidthPx, overlayHeightPx)
             params.x = posX
             params.y = posY
@@ -345,6 +527,15 @@ class SecretaryOverlayService : Service() {
             lifecycleOwner?.attachToDecor()
 
             composeView = ComposeView(this).apply {
+                // 【核心修复】默认策略是 DisposeOnDetachedFromWindowOrReleasedFromPool：
+                // [removeMainWindowTemporarily] 里的一次 removeView 就会把整棵组合销毁，
+                // setContent 内的 LaunchedEffect(hasChibiContent) 随之消失，内容恢复后
+                // 再没有任何路径去重新 addView —— 窗口从此永久缺席。
+                // 这正是「悬浮窗只在应用内生效，回桌面/切其他应用就没了」的根因之一。
+                // 改为随 LifecycleOwner（Service 持有）销毁，窗口增删不再影响组合。
+                setViewCompositionStrategy(
+                    ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed
+                )
                 setViewTreeLifecycleOwner(lifecycleOwner!!)
                 setViewTreeSavedStateRegistryOwner(lifecycleOwner!!)
                 setViewTreeViewModelStoreOwner(lifecycleOwner!!)
@@ -516,8 +707,24 @@ class SecretaryOverlayService : Service() {
             handler.passthrough = touchPassthrough
             composeView?.setOnTouchListener(handler)
 
-            windowManager?.addView(composeView, params)
-            Log.d(TAG, "showOverlay: 主窗口添加成功 (尺寸=${overlayWidthPx}x${overlayHeightPx}px, pos=($posX,$posY))")
+            // 【先看内容再建窗】内容未就绪时不要 addView：旧实现先挂窗口、
+            // 再因 hasChibiContent=false 立刻 removeView —— 既闪一下，
+            // 又走了销毁组合的那条路径。
+            if (hasRenderableContent()) {
+                windowManager?.addView(composeView, params)
+                mainWindowDetached = false
+                publishOverlayWindowVisible(true)
+                scheduleTouchAttributeRecheck()
+                Log.d(
+                    TAG,
+                    "showOverlay: 主窗口添加成功 (尺寸=${overlayWidthPx}x${overlayHeightPx}px, " +
+                        "pos=($posX,$posY)) passthrough=$touchPassthrough"
+                )
+            } else {
+                // 内容到位后由 [startOverlayStateObservers] 的观察者挂载
+                mainWindowDetached = true
+                Log.d(TAG, "showOverlay: 内容未就绪，延后建窗（等 SecretaryManager 上报 sdAvailable）")
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "showOverlay: 悬浮窗显示失败", e)
@@ -589,9 +796,9 @@ class SecretaryOverlayService : Service() {
             newSize = newHeight
         )
 
-        // 尺寸变化时一并重放 flags：updateViewLayout 以 lp 为准，
-        // 若 lp.flags 曾在别处被改回基础值，这里会立刻纠正
-        lp.flags = windowFlagsFor(touchPassthrough)
+        // 尺寸变化时一并重放 flags + 窗口 alpha：updateViewLayout 以 lp 为准，
+        // 若 lp 曾在别处被改回基础值，这里会立刻纠正
+        applyWindowTouchAttributes(lp)
         try {
             windowManager?.updateViewLayout(view, lp)
             Log.d(TAG, "updateMainWindowSize: sdScale=$sdScale → ${newWidth}x${newHeight}px, pos=(${lp.x},${lp.y})")
@@ -686,22 +893,42 @@ class SecretaryOverlayService : Service() {
     private suspend fun ensureMainWindowAttached() {
         val view = composeView ?: return
         val lp = overlayLayoutParams ?: return
-        if (!mainWindowDetached) return
+        if (!mainWindowDetached) {
+            // 已经在窗口上：顺手校正对外状态，避免状态被别的路径写脏
+            publishOverlayWindowVisible(true)
+            return
+        }
         mainWindowDetached = false
         // 服务存活期间的移除→恢复沿用原位置；首次显示（onCreate 时无内容）走持久化解析
         if (lp.width <= 0 || lp.height <= 0) {
             rebuildLayoutParamsFromPersisted(lp)
         }
-        // re-add 前重放 flags：窗口被移除期间穿透开关可能改过，
-        // 若沿用旧 lp.flags，re-add 后穿透会"失效"（历史 bug）
-        lp.flags = windowFlagsFor(touchPassthrough)
-        try {
-            windowManager?.addView(view, lp)
-            Log.d(TAG, "ensureMainWindowAttached: 主窗口重新挂载 pos=(${lp.x},${lp.y}) passthrough=$touchPassthrough")
-        } catch (e: Exception) {
-            Log.e(TAG, "ensureMainWindowAttached: addView failed", e)
-            mainWindowDetached = true
+        var attempt = 0
+        var lastError: Exception? = null
+        while (attempt < ATTACH_RETRY_COUNT) {
+            attempt++
+            // 每次 re-add 前都重放 flags + 窗口 alpha：窗口被移除期间穿透开关可能改过，
+            // 沿用旧 lp 会让穿透在 re-add 后失效（历史 bug；Android 12+ 还要求 alpha ≤ 0.8）
+            applyWindowTouchAttributes(lp)
+            try {
+                windowManager?.addView(view, lp)
+                publishOverlayWindowVisible(true)
+                scheduleTouchAttributeRecheck()
+                Log.d(
+                    TAG,
+                    "ensureMainWindowAttached: 主窗口重新挂载 attempt=$attempt " +
+                        "pos=(${lp.x},${lp.y}) passthrough=$touchPassthrough"
+                )
+                return
+            } catch (e: Exception) {
+                lastError = e
+                Log.w(TAG, "ensureMainWindowAttached: addView 失败 attempt=$attempt", e)
+                if (attempt < ATTACH_RETRY_COUNT) delay(200L * attempt)
+            }
         }
+        mainWindowDetached = true
+        publishOverlayWindowVisible(false)
+        Log.e(TAG, "ensureMainWindowAttached: 重试 $ATTACH_RETRY_COUNT 次仍失败", lastError)
     }
 
     /** 内容为空时移除主窗口（窗口/ComposeView/GL 资源全部释放，view 对象保留供恢复） */
@@ -709,6 +936,7 @@ class SecretaryOverlayService : Service() {
         val view = composeView ?: return
         if (mainWindowDetached) return
         mainWindowDetached = true
+        publishOverlayWindowVisible(false)
         try {
             windowManager?.removeView(view)
             Log.d(TAG, "removeMainWindowTemporarily: 主窗口移除（无内容）")
@@ -724,10 +952,95 @@ class SecretaryOverlayService : Service() {
         val (width, height) = computeWindowSize(savedScale)
         lp.width = width
         lp.height = height
-        lp.flags = windowFlagsFor(touchPassthrough)
+        applyWindowTouchAttributes(lp)
         val (posX, posY) = resolveWindowPosition(lp.width, lp.height)
         lp.x = posX
         lp.y = posY
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────
+    // 内容 / 穿透观察链（与 ComposeView 组合生命周期解耦）
+    // ───────────────────────────────────────────────────────────────────────────
+
+    /** 当前是否存在可渲染的秘书舰内容（与 setContent 内 hasChibiContent 判定一致） */
+    private fun hasRenderableContent(): Boolean {
+        val state = secretaryManager.state.value
+        return state.figureUrl.isNotEmpty() ||
+            state.webChibiUrl.isNotEmpty() ||
+            state.sdResourceId.isNotEmpty() ||
+            // 只有「游戏资源导入」的 SD 时同样要显示
+            state.sdAvailable
+    }
+
+    /**
+     * Service 级观察者：主窗口是否需要挂载、穿透开关是否变化，都由这里驱动。
+     *
+     * 【为什么必须放在 Service 层】旧实现把这两件事写在 ComposeView 的 setContent 里
+     *（LaunchedEffect(hasChibiContent) / LaunchedEffect(overlayTouchPassthrough)）。
+     * 组合一旦因 removeView 被销毁（默认 ViewCompositionStrategy），观察链就跟着消失：
+     * 内容恢复后没人重新挂窗口，穿透开关也再没人响应 —— 用户看到的就是
+     *「悬浮窗只在应用内生效，在桌面/其他应用里失效」。
+     *
+     * 观察者挂在 [serviceScope] 上，与视图增删完全无关，因此窗口被移除后依然存活，
+     * 只要内容回来就能把窗口重新挂上（配合 ATTACH_RETRY_COUNT 的重试）。
+     */
+    private fun startOverlayStateObservers() {
+        // 主窗口存在性
+        serviceScope.launch {
+            secretaryManager.state
+                .map { state ->
+                    state.figureUrl.isNotEmpty() ||
+                        state.webChibiUrl.isNotEmpty() ||
+                        state.sdResourceId.isNotEmpty() ||
+                        state.sdAvailable
+                }
+                .distinctUntilChanged()
+                .collect { present ->
+                    Log.d(TAG, "observeOverlayState: hasRenderableContent=$present, detached=$mainWindowDetached")
+                    if (present) {
+                        ensureMainWindowAttached()
+                    } else {
+                        removeMainWindowTemporarily()
+                    }
+                }
+        }
+        // 触摸穿透（窗口级 FLAG_NOT_TOUCHABLE + 手势处理器双保险）
+        serviceScope.launch {
+            secretaryManager.state
+                .map { state -> state.overlayTouchPassthrough }
+                .distinctUntilChanged()
+                .collect { passthrough ->
+                    updateMainWindowTouchMode(passthrough)
+                }
+        }
+        // 【看门狗】兜底自愈：WindowManager 可能在极端情况下自行移除窗口
+        //（转屏、锁屏解锁、系统内存回收），或者 addView 与内容就绪撞上竞态；
+        // 上面的观察者是 distinctUntilChanged，值不变不会重发信号，这里按周期对账。
+        serviceScope.launch {
+            while (true) {
+                delay(WATCHDOG_INTERVAL_MS)
+                if (mainWindowDetached && hasRenderableContent()) {
+                    Log.d(TAG, "watchdog: 窗口缺席但内容就绪，尝试重新挂载")
+                    ensureMainWindowAttached()
+                } else if (!mainWindowDetached) {
+                    // 图层数会随内容切换（静态图 ↔ Spine 的 GLSurfaceView）而变化：
+                    // 周期性对账 alpha，保证任何时候合并不透明度都在系统阈值以内
+                    applyWindowFlags()
+                }
+            }
+        }
+    }
+
+    /**
+     * 发布「悬浮窗是否真的在屏幕上」。
+     *
+     * 只在值变化时才写回 SecretaryManager，避免每帧刷新 UI 状态。
+     */
+    private fun publishOverlayWindowVisible(visible: Boolean) {
+        if (overlayWindowVisible == visible) return
+        overlayWindowVisible = visible
+        secretaryManager.updateOverlayRunning(visible)
+        Log.d(TAG, "publishOverlayWindowVisible: overlayRunning=$visible")
     }
 
     // ───────────────────────────────────────────────────────────────────────────
@@ -757,6 +1070,11 @@ class SecretaryOverlayService : Service() {
      * 辅助窗口使用 WRAP_CONTENT 自动适应内容尺寸，位置紧贴主窗口上方。
      * FLAG_LAYOUT_NO_LIMITS 允许窗口 y 为负（主窗口在屏幕顶部时辅助窗口上方溢出）。
      * FLAG_NOT_TOUCHABLE 确保辅助窗口完全不拦截触摸事件（纯展示，不需要交互）。
+     *
+     * 【窗口 alpha】辅助窗口**始终**是 FLAG_NOT_TOUCHABLE 的纯展示层，
+     * 因此它任何时刻都必须满足 Android 12+ 的穿透不透明度上限，
+     * 否则气泡/拖动提示那一小块区域会静默吞掉对下层应用的点击
+     *（穿透开关关闭时也一样——它本来就不接收触摸，却仍会遮挡）。
      */
     @Suppress("DEPRECATION")
     private fun showAuxiliaryWindow() {
@@ -783,6 +1101,8 @@ class SecretaryOverlayService : Service() {
             PixelFormat.TRANSLUCENT
         )
         params.gravity = Gravity.TOP or Gravity.START
+        // 纯展示窗口：始终按穿透合规的不透明度渲染（见 windowAlphaFor 注释）
+        params.alpha = windowAlphaFor(passthrough = true, obscuringLayerCount = AUXILIARY_OBSCURING_LAYERS)
 
         val view = ComposeView(this).apply {
             setViewTreeLifecycleOwner(owner)
@@ -871,15 +1191,38 @@ class SecretaryOverlayService : Service() {
 
         // 紧贴主窗口上方，水平居中
         val desiredX = mainLp.x + (mainLp.width - auxWidthPx) / 2
-        val desiredY = mainLp.y - auxHeightPx
         // x clamp：辅宽已知时限制在屏幕内（未知时中心定位，等待测量回调纠正）
         auxLp.x = if (auxWidthPx > 0) {
             desiredX.coerceIn(0, (dm.widthPixels - auxWidthPx).coerceAtLeast(0))
         } else {
             desiredX
         }
-        // y clamp：下限 0（屏幕顶部），气泡不消失到屏幕外（宁可压住小人头顶）
-        auxLp.y = desiredY.coerceAtLeast(0)
+        // y：优先贴主窗上方；顶部空间不足时改放主窗下方；都放不下才允许重叠（见纯函数注释）。
+        // 【为什么必须尽量不重叠】Android 12+ 同一触点被多个窗口遮挡时按
+        // 1-(1-a1)(1-a2) 合成不透明度，两个 0.79 叠加 = 0.956 > 0.8，
+        // 该点触摸会被系统判定为"不可信"直接丢弃 —— 穿透就此失效。
+        auxLp.y = OverlayGeometry.resolveAuxiliaryY(
+            mainTop = mainLp.y,
+            mainHeight = mainLp.height,
+            auxHeight = auxHeightPx,
+            screenHeight = dm.heightPixels
+        )
+
+        // 重叠告警：屏幕实在放不下时（小人几乎占满屏幕）只能压在一起，
+        // 该区域合成 alpha 超限，穿透会被系统拦掉 —— 留日志便于定位反馈
+        if (OverlayGeometry.auxiliaryOverlapsMain(
+                mainTop = mainLp.y,
+                mainHeight = mainLp.height,
+                auxTop = auxLp.y,
+                auxHeight = auxHeightPx
+            )
+        ) {
+            Log.w(
+                TAG,
+                "updateAuxiliaryPosition: 气泡与主窗重叠（y=${auxLp.y}, mainY=${mainLp.y}, " +
+                    "auxH=$auxHeightPx, mainH=${mainLp.height}），该区域穿透可能被系统拦下"
+            )
+        }
 
         try {
             windowManager?.updateViewLayout(auxView, auxLp)
@@ -930,10 +1273,16 @@ class SecretaryOverlayService : Service() {
         }
     }
 
+    /**
+     * 【保留悬浮窗】用户从最近任务划掉 App 时**不再**停止服务。
+     *
+     * 旧实现 stopSelf()：划掉任务 = 悬浮窗一起消失，配合"服务活着但窗口没挂上"
+     * 的组合销毁 bug，用户看到的就是「悬浮窗只在应用内生效」。
+     * 秘书舰属于屏幕常驻型功能（前台服务 + 常驻通知），划掉最近任务应当只关掉
+     * Activity，悬浮窗继续陪伴；要关闭请用通知里的「关闭悬浮窗」按钮。
+     */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        // 用户从最近任务划掉 App 时停止悬浮窗，避免无感知常驻
-        Log.d(TAG, "onTaskRemoved: 停止悬浮窗服务")
-        stopSelf()
+        Log.d(TAG, "onTaskRemoved: 保留悬浮窗（前台服务继续运行）")
         super.onTaskRemoved(rootIntent)
     }
 

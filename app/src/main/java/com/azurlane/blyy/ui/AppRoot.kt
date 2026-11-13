@@ -1020,9 +1020,12 @@ fun AppContent() {
                         sdResourceId = secretaryState.sdResourceId,
                         webChibiUrl = secretaryState.webChibiUrl,
                         hasSdBundle = secretaryState.sdAvailable,
-                        // 触摸穿透不再只对桌面悬浮窗生效：应用内小人同样响应这个开关。
-                        // 开启后 Spine 视图 touchEnabled=false、静态图不挂手势，
-                        // 触摸直接落到下层页面（历史实现硬编码可交互，开关只在桌面悬浮窗有用）。
+                        // 注意：这里**不**传 touchPassthrough。触摸穿透是给系统悬浮窗用的
+                        // （跨应用才需要"窗口不接收事件 + 窗口足够透明"两件事），而本分支只在
+                        // 悬浮窗未挂上时渲染，且小人是 AndroidView 里的 GLSurfaceView——
+                        // 即使它不消费事件，Compose 命中测试仍把它当最上层节点，下层页面
+                        // 拿不到手势。真正的应用内穿透要靠"抓帧换静帧"那套（见
+                        // SecretaryChibiOverlay 的 interactive 分支），与窗口级开关无关。
                     )
                 }
 
