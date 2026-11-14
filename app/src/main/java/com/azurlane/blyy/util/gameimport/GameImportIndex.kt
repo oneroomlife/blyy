@@ -324,25 +324,19 @@ class GameImportIndex @Inject constructor(
                 // 而它会被下一次启动当成唯一真相读进来（接着整份记录被清空重建）
                 out.fd.sync()
             }
-            // Files.move + REPLACE_EXISTING：Android/Linux 保持「原子替换已存在目标」；
-            // Windows 的 java.io.File.renameTo 不支持覆盖已存在目标（返回 false），
-            // 而这里的退化路径在本进程里等于静默丢写——必须走 NIO 的覆盖语义。
-            // ATOMIC_MOVE 尽力而为：不支持原子的文件系统退化为普通覆盖移动（仍是单次系统调用）。
-            val tmpPath = tmp.toPath()
-            val targetPath = file.toPath()
-            try {
-                java.nio.file.Files.move(
-                    tmpPath, targetPath,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
-                )
-            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
-                java.nio.file.Files.move(
-                    tmpPath, targetPath,
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
-                )
-            } catch (e: IOException) {
-                throw IOException("索引替换失败：${tmp.name} -> ${file.name}", e)
+            // rename(2) 在 Linux/Android 上原子覆盖已存在目标——tmp 与索引同目录、
+            // 必为同文件系统，这一步等价于 NIO 的 ATOMIC_MOVE + REPLACE_EXISTING，
+            // 且不受 java.nio.file（API 26+，minSdk 24 上根本不存在）限制。
+            // Windows 的 File.renameTo 不覆盖已存在目标（只有本机 JVM 单测会走到）：
+            // 先删旧索引再改名。改名间隙里索引短暂缺失是安全的——读侧把缺文件当
+            // 空索引重建，真正危险的是「文件名对、内容半截」，而 fsync 在上面已完成。
+            if (!tmp.renameTo(file)) {
+                if (file.exists() && !file.delete()) {
+                    throw IOException("索引旧文件删除失败：${file.name}")
+                }
+                if (!tmp.renameTo(file)) {
+                    throw IOException("索引替换失败：${tmp.name} -> ${file.name}")
+                }
             }
         }.onFailure { Log.w(TAG, "写入索引失败：${it.message}") }
     }
