@@ -32,7 +32,11 @@ object AppModule {
             "blhx_db"
         )
             // 显式注册已知升级路径，避免破坏性迁移清库
-            .addMigrations(DatabaseMigrations.MIGRATION_7_8, DatabaseMigrations.MIGRATION_8_9)
+            .addMigrations(
+                DatabaseMigrations.MIGRATION_7_8,
+                DatabaseMigrations.MIGRATION_8_9,
+                DatabaseMigrations.MIGRATION_9_10
+            )
             // 兜底收窄为「仅降级时破坏性重建」：升级路径一旦未来遗漏 Migration，
             // 宁可启动崩溃（开发期立刻暴露）也不要静默清空用户的收藏/生日/猜题历史；
             // 降级（回装旧版 APK）本身不受支持，允许重建。schema 快照已导出到
@@ -51,6 +55,12 @@ object AppModule {
     @Singleton
     fun provideGuessHistoryDao(db: AppDatabase): GuessHistoryDao {
         return db.guessHistoryDao()
+    }
+
+    @Provides
+    @Singleton
+    fun provideShipCacheDao(db: AppDatabase): com.azurlane.blyy.data.local.ShipCacheDao {
+        return db.shipCacheDao()
     }
 
     @Provides

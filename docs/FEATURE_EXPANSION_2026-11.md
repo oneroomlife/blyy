@@ -31,6 +31,17 @@
 
 > 迁移逻辑集中在 `PlayerSettingsDataStore.purgeLegacyLeaderboardData()`（幂等、启动执行），老用户升级后昵称不丢、缓存不残留。
 
+**第三轮落地（2026-11-15）：A3 / A1 / C5 / C1**
+
+| 项 | 原计划的缺口 | 实现 | 关键文件 |
+|---|---|---|---|
+| A3 数据落库 | 语音/立绘/档案只在内存与 5 分钟 HTML 缓存里，断网全空 | Room v10 新增 `ship_cache`（四段 JSON，按舰娘一行，部分更新）；`fetchVoices` / `fetchShipGallery` / `fetchCharacterInfo` 全部改为「网络优先 → 缓存兜底」；首启并入 `assets/blhx_seed_ships.json`（1004 条舰名+舰种，32 KB） | `data/model/ShipCache.kt`、`ShipCacheDao`、`DatabaseMigrations.MIGRATION_9_10`、`data/seed/ShipSeedInstaller.kt` |
+| A1 站内详情页 | 点 Wiki 跳外部浏览器 | 新页 `ship_detail`：属性/技能/装备/档案四分区；wiki 解析器容错（表格键值对 + 白名单 + 多路兜底），结果写入 `ship_cache.detailJson`；入口在船坞长按菜单与语音页右上角 | `util/wiki/WikiShipDetailParser.kt`、`ShipDetailRepository`、`ShipDetailScreen` |
+| C5 台词卡分享 | 「分享」只是复制链接 | 1080×1440 台词卡合成（Canvas + StaticLayout 自动缩字号），单图或图片+语音走系统分享面板；音频按需下载到 cache | `util/share/VoiceCardComposer.kt`、`VoiceShareLauncher.kt` |
+| C1 播放器产品化 | 无睡眠定时/倍速/会话恢复 | 睡眠定时（15–90 分钟，3 秒淡出后暂停）、倍速 0.75–1.5x 持久化、会话快照续播（24h 内）、语音内容类型改为 `USAGE_MEDIA + SPEECH` | `PlayerViewModel`、`PlayerSession`、`VoicePlayerBar`、`PlaybackService` |
+
+测试增量：`WikiShipDetailParserTest`（7 例，合成 HTML）、`WikiUrlsTest`（4 例）、`PersonalScoreBoardTest`/`BackupValidatorTest` 沿用。
+
 仍待处理：P1 全量（离线优先、god class 拆分、i18n、AI 流式等）—— 见 §4 与 §6 路线图；备份/恢复（P0-5）已于本轮补齐。
 
 ---

@@ -4,7 +4,15 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.azurlane.blyy.data.backup.ShipStateBackup
+import com.azurlane.blyy.data.model.GalleryCacheSnapshot
+import com.azurlane.blyy.data.model.ProfileCacheSnapshot
+import com.azurlane.blyy.data.model.ShipCache
+import com.azurlane.blyy.data.model.VoicesCacheSnapshot
+import com.azurlane.blyy.data.model.toCharacterInfo
+import com.azurlane.blyy.data.model.toLabeledUrls
+import com.azurlane.blyy.data.model.toProfileSnapshot
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
+import com.azurlane.blyy.data.local.ShipCacheDao
 import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.ShipCharacterInfo
@@ -17,6 +25,7 @@ import com.azurlane.blyy.util.SkinVoiceIndex
 import com.azurlane.blyy.data.model.StudentFilterData
 import com.azurlane.blyy.data.model.VoiceLine
 import com.azurlane.blyy.util.NetworkHelper
+import com.azurlane.blyy.util.wiki.WikiUrls
 import com.azurlane.blyy.util.VoiceBlockParser
 import com.azurlane.blyy.util.WebViewHtmlFetcher
 import com.azurlane.blyy.viewmodel.ArchiveType
@@ -66,16 +75,21 @@ data class VoicesData(
 @Singleton
 class ShipRepository @Inject constructor(
     private val shipDao: ShipDao,
+    private val shipCacheDao: ShipCacheDao,
     private val networkHelper: NetworkHelper,
     private val settings: PlayerSettingsDataStore,
     @ApplicationContext private val context: Context
 ) {
-    companion object {
-        private val WIKI_NAME_MAPPING = mapOf(
-            "DEAD" to "DEAD_MASTER",
-            "BLACK★ROCK" to "BLACK★ROCK_SHOOTER"
-        )
 
+    /**
+     * 本地缓存序列化器（v10 起语音/立绘/档案/详情落库）。
+     * 容错读取：旧版本写入的 JSON 缺字段时按默认值补齐，不因缓存损坏而崩溃。
+     */
+    private val cacheJson = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+    companion object {
         private const val GAMEKEE_STUDENT_LIST_URL =
             "https://www.gamekee.com/ba/second/23941"
         private const val GAMEKEE_BASE_URL = "https://www.gamekee.com"
@@ -314,27 +328,40 @@ class ShipRepository @Inject constructor(
         return res
     }
 
-    private fun normalizeShipName(shipName: String): String {
-        var processedName = shipName
-        if (processedName.contains(".改")) {
-            processedName = processedName.replace(".改", "")
-        } else if (processedName.contains("改")) {
-            processedName = processedName.replace("改", "")
-        } else if (processedName.contains("Kai")) {
-            processedName = processedName.replace("Kai", "")
+    /** 舰名归一化（`.改`/`Kai` 后缀与特例映射）统一由 [WikiUrls] 提供，避免四处各写一份 */
+    private fun normalizeShipName(shipName: String): String = WikiUrls.normalize(shipName)
+
+    private fun buildWikiUrl(shipName: String): String = WikiUrls.page(shipName)
+
+
+
+    /**
+     * 抓取舰娘语音（含皮肤立绘映射、Q 版小人 URL）。
+     *
+     * v10 起**先网络、后本地缓存**：网络失败时回落到 `ship_cache` 里上次成功的快照，
+     * 断网/弱网也能看到完整台词列表（这正是"冷启动必须联网"的根治点）。
+     * 缓存按 `(shipName, archiveType)` 隔离，DOCK 与 STUDENT 不会互相覆盖。
+     */
+    suspend fun fetchVoices(
+        shipName: String,
+        archiveType: String = "DOCK"
+    ): VoicesData = withContext(Dispatchers.IO) {
+        try {
+            val data = fetchVoicesFromNetwork(shipName)
+            cacheVoices(shipName, archiveType, data)
+            data
+        } catch (e: Exception) {
+            val cached = readCachedVoices(shipName, archiveType)
+            if (cached != null) {
+                Log.w(TAG, "fetchVoices 使用本地缓存（网络失败：${e.message}）")
+                cached
+            } else {
+                throw e
+            }
         }
-        return WIKI_NAME_MAPPING[processedName] ?: processedName
     }
 
-    private fun buildWikiUrl(shipName: String): String {
-        val wikiName = normalizeShipName(shipName)
-        val encodedName = Uri.encode(wikiName)
-        return "https://wiki.biligame.com/blhx/$encodedName"
-    }
-
-
-
-    suspend fun fetchVoices(shipName: String): VoicesData = withContext(Dispatchers.IO) {
+    private suspend fun fetchVoicesFromNetwork(shipName: String): VoicesData = withContext(Dispatchers.IO) {
         val url = buildWikiUrl(shipName)
         
         Log.d(TAG, "Fetching voices from: $url")
@@ -396,6 +423,94 @@ class ShipRepository @Inject constructor(
                 throw e
             }
         )
+    }
+
+    // ---------- v10：语音 / 立绘 / 档案的本地缓存 ----------
+
+    private suspend fun cacheVoices(shipName: String, archiveType: String, data: VoicesData) {
+        runCatching {
+            shipCacheDao.putVoices(
+                shipName = shipName,
+                archiveType = archiveType,
+                json = cacheJson.encodeToString(
+                    VoicesCacheSnapshot(
+                        voices = data.voices,
+                        defaultFigureUrl = data.defaultFigureUrl,
+                        skinFigureMap = data.skinFigureMap,
+                        defaultChibiUrl = data.defaultChibiUrl,
+                        fetchedAt = System.currentTimeMillis()
+                    )
+                )
+            )
+        }.onFailure { Log.w(TAG, "cacheVoices failed: ${it.message}") }
+    }
+
+    private suspend fun readCachedVoices(shipName: String, archiveType: String): VoicesData? {
+        val raw = runCatching { shipCacheDao.get(shipName, archiveType)?.voicesJson }.getOrNull()
+        if (raw.isNullOrBlank()) return null
+        val snapshot = runCatching {
+            cacheJson.decodeFromString<VoicesCacheSnapshot>(raw)
+        }.getOrNull() ?: return null
+        if (snapshot.voices.isEmpty()) return null
+        return VoicesData(
+            voices = snapshot.voices,
+            defaultFigureUrl = snapshot.defaultFigureUrl,
+            skinFigureMap = snapshot.skinFigureMap,
+            defaultChibiUrl = snapshot.defaultChibiUrl
+        )
+    }
+
+    private suspend fun cacheGallery(shipName: String, archiveType: String, gallery: ShipGallery) {
+        if (gallery.illustrations.isEmpty() && gallery.figures.isEmpty()) return
+        runCatching {
+            shipCacheDao.putGallery(
+                shipName = shipName,
+                archiveType = archiveType,
+                json = cacheJson.encodeToString(
+                    GalleryCacheSnapshot(
+                        shipName = gallery.shipName,
+                        illustrations = gallery.illustrations.toLabeledUrls(),
+                        figures = gallery.figures.toLabeledUrls(),
+                        fetchedAt = System.currentTimeMillis()
+                    )
+                )
+            )
+        }.onFailure { Log.w(TAG, "cacheGallery failed: ${it.message}") }
+    }
+
+    private suspend fun readCachedGallery(shipName: String, archiveType: String): ShipGallery? {
+        val raw = runCatching { shipCacheDao.get(shipName, archiveType)?.galleryJson }.getOrNull()
+        if (raw.isNullOrBlank()) return null
+        val snapshot = runCatching {
+            cacheJson.decodeFromString<GalleryCacheSnapshot>(raw)
+        }.getOrNull() ?: return null
+        if (snapshot.illustrations.isEmpty() && snapshot.figures.isEmpty()) return null
+        return ShipGallery(
+            shipName = snapshot.shipName.ifBlank { shipName },
+            illustrations = snapshot.illustrations.map { it.label to it.url },
+            figures = snapshot.figures.map { it.label to it.url }
+        )
+    }
+
+    private suspend fun cacheProfile(shipName: String, archiveType: String, info: ShipCharacterInfo) {
+        if (!info.hasAnyInfo()) return
+        runCatching {
+            shipCacheDao.putProfile(
+                shipName = shipName,
+                archiveType = archiveType,
+                json = cacheJson.encodeToString(info.toProfileSnapshot())
+            )
+        }.onFailure { Log.w(TAG, "cacheProfile failed: ${it.message}") }
+    }
+
+    private suspend fun readCachedProfile(shipName: String, archiveType: String): ShipCharacterInfo? {
+        val raw = runCatching { shipCacheDao.get(shipName, archiveType)?.profileJson }.getOrNull()
+        if (raw.isNullOrBlank()) return null
+        val snapshot = runCatching {
+            cacheJson.decodeFromString<ProfileCacheSnapshot>(raw)
+        }.getOrNull() ?: return null
+        val info = snapshot.toCharacterInfo(shipName)
+        return if (info.hasAnyInfo()) info else null
     }
 
     private fun extractSkinFigureMap(doc: org.jsoup.nodes.Document): Map<String, String> {
@@ -539,7 +654,26 @@ class ShipRepository @Inject constructor(
         )
     }
 
-    suspend fun fetchShipGallery(shipName: String): ShipGallery = withContext(Dispatchers.IO) {
+    /**
+     * 抓取立绘（皮肤图 + Q 版小人）。
+     *
+     * v10 起同样"网络优先、缓存兜底"：网络失败返回上次缓存；两者都没有时返回空对象
+     * （与旧行为一致，UI 会显示"暂无立绘"而不是崩溃）。
+     */
+    suspend fun fetchShipGallery(
+        shipName: String,
+        archiveType: String = "DOCK"
+    ): ShipGallery = withContext(Dispatchers.IO) {
+        val fresh = fetchShipGalleryFromNetwork(shipName)
+        if (fresh.illustrations.isNotEmpty() || fresh.figures.isNotEmpty()) {
+            cacheGallery(shipName, archiveType, fresh)
+            fresh
+        } else {
+            readCachedGallery(shipName, archiveType) ?: fresh
+        }
+    }
+
+    private suspend fun fetchShipGalleryFromNetwork(shipName: String): ShipGallery = withContext(Dispatchers.IO) {
         Log.d(TAG, "fetchShipGallery START for: $shipName")
         
         val url = buildWikiUrl(shipName)
@@ -657,7 +791,24 @@ class ShipRepository @Inject constructor(
         WidgetSync.enqueueUpdate(context)
     }
 
-    suspend fun fetchCharacterInfo(shipName: String): ShipCharacterInfo = withContext(Dispatchers.IO) {
+    /**
+     * 抓取角色档案（身份/性格/关键词/持有物/发色/瞳色/萌点）。
+     * 网络失败时回落缓存；都没有则返回空对象（hasAnyInfo() == false）。
+     */
+    suspend fun fetchCharacterInfo(
+        shipName: String,
+        archiveType: String = "DOCK"
+    ): ShipCharacterInfo = withContext(Dispatchers.IO) {
+        val fresh = fetchCharacterInfoFromNetwork(shipName)
+        if (fresh.hasAnyInfo()) {
+            cacheProfile(shipName, archiveType, fresh)
+            fresh
+        } else {
+            readCachedProfile(shipName, archiveType) ?: fresh
+        }
+    }
+
+    private suspend fun fetchCharacterInfoFromNetwork(shipName: String): ShipCharacterInfo = withContext(Dispatchers.IO) {
         val url = buildWikiUrl(shipName)
         
         Log.d(TAG, "Fetching character info from: $url")

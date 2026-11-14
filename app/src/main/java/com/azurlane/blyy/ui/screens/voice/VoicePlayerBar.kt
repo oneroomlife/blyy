@@ -10,6 +10,8 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,6 +42,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -116,6 +119,7 @@ internal fun GlassPlayerControlBar(
     var collapseToRight by remember { mutableStateOf(true) }
     var totalDragOffset by remember { mutableFloatStateOf(0f) }
     var showPlayLaterSheet by remember { mutableStateOf(false) }
+    var showSleepTimerSheet by remember { mutableStateOf(false) }
     
     val transition = updateTransition(targetState = isCollapsed to collapseToRight, label = "CollapseTransition")
     
@@ -207,7 +211,9 @@ internal fun GlassPlayerControlBar(
                         onPreviousClick = { onVoiceIntent(VoiceIntent.SkipPrevious) },
                         onNextClick = { onVoiceIntent(VoiceIntent.SkipNext) },
                         onModeClick = { playerViewModel.cyclePlayMode() },
-                        onListClick = { showPlayLaterSheet = true }
+                        onListClick = { showPlayLaterSheet = true },
+                        onSpeedClick = { playerViewModel.cycleSpeed() },
+                        onTimerClick = { showSleepTimerSheet = true }
                     )
                 }
             }
@@ -254,6 +260,109 @@ internal fun GlassPlayerControlBar(
             onRemoveItem = { playerViewModel.removeFromPlayLater(it.voiceUrl) },
             onClearAll = { playerViewModel.clearPlayLaterList() }
         )
+    }
+
+    if (showSleepTimerSheet) {
+        SleepTimerSheet(
+            remainingMs = playerState.sleepTimerRemainingMs,
+            onPick = { minutes ->
+                playerViewModel.startSleepTimer(minutes)
+                showSleepTimerSheet = false
+            },
+            onCancelTimer = {
+                playerViewModel.cancelSleepTimer()
+                showSleepTimerSheet = false
+            },
+            onDismiss = { showSleepTimerSheet = false }
+        )
+    }
+}
+
+/** 睡眠定时选择面板：常用档位 + 当前剩余时间 + 关闭 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SleepTimerSheet(
+    remainingMs: Long,
+    onPick: (Int) -> Unit,
+    onCancelTimer: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.Xl)
+                .padding(bottom = AppSpacing.Xxl)
+        ) {
+            Text(
+                text = "睡眠定时",
+                style = AppTypography.TitleMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(AppSpacing.Xs))
+            Text(
+                text = if (remainingMs > 0) {
+                    "剩余 ${formatSleepRemaining(remainingMs)}，到点会淡出后暂停"
+                } else {
+                    "到点先 3 秒淡出再暂停，不会突然静音"
+                },
+                style = AppTypography.BodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(AppSpacing.Md))
+            listOf(15, 30, 45, 60, 90).forEach { minutes ->
+                Surface(
+                    onClick = { onPick(minutes) },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Md),
+                    color = Color.Transparent
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = AppSpacing.Md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Bedtime,
+                            contentDescription = null,
+                            modifier = Modifier.size(AppSpacing.Icon.Md),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Md))
+                        Text(
+                            text = "$minutes 分钟后暂停",
+                            style = AppTypography.BodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+            if (remainingMs > 0) {
+                TextButton(
+                    onClick = onCancelTimer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("关闭定时")
+                }
+            }
+        }
+    }
+}
+
+/** 剩余毫秒 → "29:59" / "1:05:00" */
+private fun formatSleepRemaining(ms: Long): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0)
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        String.format(Locale.US, "%d:%02d:%02d", hours, minutes, seconds)
+    } else {
+        String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -398,7 +507,9 @@ internal fun ExpandedPlayerBar(
     onPreviousClick: () -> Unit,
     onNextClick: () -> Unit,
     onModeClick: () -> Unit,
-    onListClick: () -> Unit
+    onListClick: () -> Unit,
+    onSpeedClick: () -> Unit,
+    onTimerClick: () -> Unit
 ) {
     val hasContent = playerState.currentMediaItem != null
     val animatedAlpha by animateFloatAsState(
@@ -444,6 +555,33 @@ internal fun ExpandedPlayerBar(
                         onClick = onListClick
                     )
                 }
+
+                if (hasContent) {
+                    Spacer(modifier = Modifier.height(AppSpacing.Sm))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        PlayerMetaChip(
+                            icon = Icons.Rounded.Speed,
+                            label = formatSpeedLabel(playerState.playbackSpeed),
+                            active = kotlin.math.abs(playerState.playbackSpeed - 1f) > 0.001f,
+                            onClick = onSpeedClick
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        PlayerMetaChip(
+                            icon = Icons.Rounded.Bedtime,
+                            label = if (playerState.sleepTimerActive) {
+                                formatSleepRemaining(playerState.sleepTimerRemainingMs)
+                            } else {
+                                "定时"
+                            },
+                            active = playerState.sleepTimerActive,
+                            onClick = onTimerClick
+                        )
+                    }
+                }
             }
         }
     }
@@ -471,6 +609,76 @@ internal fun ExpandedPlayerBar(
             playerContent()
         }
     }
+}
+
+/**
+ * 播放器元信息胶囊（倍速 / 睡眠定时）。
+ *
+ * 设计意图：这两个是"低频但一找就要找得到"的开关，常驻在控制条下方一行，
+ * 不激活时低调（透明底 + 细描边），激活后主色描边 + 浅底，避免抢主控件的视觉权重。
+ */
+@Composable
+private fun PlayerMetaChip(
+    icon: ImageVector,
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(AppSpacing.Corner.Full),
+        color = if (active) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+        } else {
+            Color.Transparent
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (active) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+            }
+        ),
+        modifier = Modifier.height(28.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = AppSpacing.Sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = if (active) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            Spacer(modifier = Modifier.width(AppSpacing.Xxs))
+            Text(
+                text = label,
+                style = AppTypography.LabelSmall,
+                color = if (active) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        }
+    }
+}
+
+/** 0.75f → "0.75x"，1.0f → "1x"，1.5f → "1.5x" */
+private fun formatSpeedLabel(speed: Float): String {
+    val rounded = (speed * 100).roundToInt() / 100f
+    val number = if (rounded % 1f == 0f) {
+        rounded.toInt().toString()
+    } else {
+        rounded.toString().trimEnd('0').trimEnd('.')
+    }
+    return "${number}x"
 }
 
 @Composable

@@ -86,6 +86,8 @@ import com.azurlane.blyy.ui.components.BlyyHaptic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.azurlane.blyy.util.MediaDownloader
+import com.azurlane.blyy.util.share.VoiceCardComposer
+import com.azurlane.blyy.util.share.VoiceShareLauncher
 import org.intellij.lang.annotations.Language
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -103,6 +105,7 @@ fun VoiceScreen(
     onBack: () -> Unit,
     sharedTransitionScope: SharedTransitionScope,
     animatedContentScope: AnimatedContentScope,
+    onOpenDetail: (String, String) -> Unit = { _, _ -> },
     voiceViewModel: VoiceViewModel = hiltViewModel(),
     playerViewModel: PlayerViewModel = hiltViewModel(),
 ) {
@@ -116,6 +119,7 @@ fun VoiceScreen(
         onVoiceIntent = voiceViewModel::onIntent,
         playerViewModel = playerViewModel,
         onBack = onBack,
+        onOpenDetail = onOpenDetail,
         sharedTransitionScope = sharedTransitionScope,
         animatedContentScope = animatedContentScope,
         playbackError = playbackError,
@@ -133,6 +137,7 @@ fun VoiceScreenContent(
     onVoiceIntent: (VoiceIntent) -> Unit,
     playerViewModel: PlayerViewModel,
     onBack: () -> Unit,
+    onOpenDetail: (String, String) -> Unit = { _, _ -> },
     sharedTransitionScope: SharedTransitionScope,
     animatedContentScope: AnimatedContentScope,
     playbackError: String?,
@@ -201,6 +206,46 @@ fun VoiceScreenContent(
         clipboardManager.setText(AnnotatedString(shareText))
         Toast.makeText(context, "链接已复制", Toast.LENGTH_SHORT).show()
     }
+
+    /**
+     * 分享台词卡（图片 / 图片+语音）。
+     *
+     * 旧「分享」只把文本写进剪贴板；这里改成系统分享面板。
+     * 卡片在 IO 线程合成（1080×1440），生成失败与「无可用分享应用」都明确提示。
+     */
+    fun shareVoiceCard(voice: VoiceLine, withAudio: Boolean) {
+        scope.launch {
+            Toast.makeText(context, "正在生成台词卡…", Toast.LENGTH_SHORT).show()
+            val card = VoiceCardComposer.compose(
+                context = context,
+                shipName = voiceState.shipName,
+                dialogue = voice.dialogue,
+                sceneLabel = voice.scene,
+                avatarUrl = effectiveAvatarUrl
+            )
+            if (card == null) {
+                Toast.makeText(context, "台词卡生成失败，请重试", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val audioUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
+            val launched = if (withAudio) {
+                VoiceShareLauncher.shareCardWithAudio(
+                    context = context,
+                    card = card,
+                    audioUrl = audioUrl,
+                    shipName = voiceState.shipName,
+                    sceneName = voice.scene
+                )
+            } else {
+                VoiceShareLauncher.shareCard(context, card, voiceState.shipName)
+            }
+            if (launched) {
+                VoiceShareLauncher.pruneAudioCache(context)
+            } else {
+                Toast.makeText(context, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
     
     fun toggleFavorite(voice: VoiceLine) {
         val activeUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
@@ -236,7 +281,13 @@ fun VoiceScreenContent(
                 VoiceTopBar(
                     title = voiceState.shipName,
                     onBack = onBack,
-                    scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
+                    scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior(),
+                    onOpenDetail = {
+                        onOpenDetail(
+                            voiceState.shipName,
+                            if (voiceState.studentLink.isNotEmpty()) "STUDENT" else "DOCK"
+                        )
+                    }
                 )
             },
             bottomBar = {
@@ -358,6 +409,8 @@ fun VoiceScreenContent(
                             val onDownloadClick = remember(voice) { { downloadVoice(voice) } }
                             val onFavoriteClick = remember(voice) { { toggleFavorite(voice) } }
                             val onShareClick = remember(voice) { { shareVoice(voice) } }
+                            val onShareCardClick = remember(voice) { { shareVoiceCard(voice, withAudio = false) } }
+                            val onShareCardAudioClick = remember(voice) { { shareVoiceCard(voice, withAudio = true) } }
                             val onRowClick = remember(voice, globalIndex, playerState.playMode) {
                                 { onVoiceIntent(VoiceIntent.PlayVoiceAtIndex(globalIndex, playerState.playMode)) }
                             }
@@ -726,7 +779,9 @@ private fun VoiceItemRow(
     onClick: () -> Unit,
     onDownloadClick: () -> Unit,
     onFavoriteClick: () -> Unit,
-    onShareClick: () -> Unit
+    onShareClick: () -> Unit,
+    onShareCardClick: () -> Unit = {},
+    onShareCardAudioClick: () -> Unit = {}
 ) {
     val haptic = rememberBlyyHaptics()
     var showMenu by remember { mutableStateOf(false) }
@@ -903,6 +958,43 @@ private fun VoiceItemRow(
                     onShareClick()
                 }
             )
+            // 台词卡：图片可直接发到聊天/动态；带语音的版本走 ACTION_SEND_MULTIPLE
+            DropdownMenuItem(
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.Image,
+                            contentDescription = null,
+                            modifier = Modifier.size(AppSpacing.Icon.Md),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        Text("分享台词卡", style = AppTypography.BodyMedium)
+                    }
+                },
+                onClick = {
+                    showMenu = false
+                    onShareCardClick()
+                }
+            )
+            DropdownMenuItem(
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.GraphicEq,
+                            contentDescription = null,
+                            modifier = Modifier.size(AppSpacing.Icon.Md),
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        Text("分享台词卡 + 语音", style = AppTypography.BodyMedium)
+                    }
+                },
+                onClick = {
+                    showMenu = false
+                    onShareCardAudioClick()
+                }
+            )
         }
     }
 }
@@ -910,11 +1002,25 @@ private fun VoiceItemRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VoiceTopBar(title: String, onBack: () -> Unit, scrollBehavior: TopAppBarScrollBehavior) {
+private fun VoiceTopBar(
+    title: String,
+    onBack: () -> Unit,
+    scrollBehavior: TopAppBarScrollBehavior,
+    onOpenDetail: () -> Unit = {}
+) {
     BlyyTopBar(
         title = title,
         subtitle = "语音档案",
-        onBackClick = onBack
+        onBackClick = onBack,
+        actions = {
+            IconButton(onClick = onOpenDetail) {
+                Icon(
+                    imageVector = Icons.Rounded.Description,
+                    contentDescription = "舰娘档案",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
     )
 }
 

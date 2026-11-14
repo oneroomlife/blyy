@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- FileProvider 路径声明：
      1) cache/watermark_camera —— 系统相机通过授予的 content Uri 写入拍摄结果；
-     2) cache/diagnostics     —— 设置页「导出诊断包」分享 zip。 -->
+     2) cache/diagnostics     —— 设置页「导出诊断包」分享 zip；
+     3) cache/voice_cards     —— 台词卡分享（PNG）；
+     4) cache/share_audio     —— 台词卡 + 语音分享时的临时音频。 -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path
         name="watermark_camera"
@@ -9,4 +11,10 @@
     <cache-path
         name="diagnostics"
         path="diagnostics/" />
+    <cache-path
+        name="voice_cards"
+        path="voice_cards/" />
+    <cache-path
+        name="share_audio"
+        path="share_audio/" />
 </paths>

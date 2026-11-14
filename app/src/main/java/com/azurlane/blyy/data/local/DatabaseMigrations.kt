@@ -41,4 +41,38 @@ object DatabaseMigrations {
             db.execSQL("ALTER TABLE `ships` ADD COLUMN `birthday` TEXT NOT NULL DEFAULT ''")
         }
     }
+
+    /**
+     * v9 → v10：新增 ship_cache 表（舰娘抓取结果的本地缓存）。
+     *
+     * 纯建表，不动既有表；已有收藏/生日/历史全部保留。表结构必须与
+     * [com.azurlane.blyy.data.model.ShipCache] 的 Room 生成 schema 完全一致
+     * （列顺序无关，但列名/类型/默认值/主键/索引必须一致），否则 Room 会在
+     * 校验阶段抛 IllegalStateException。
+     */
+    val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // ⚠️ 这里的 DDL 必须与 Room 生成的 createSql **逐字对齐**（尤其是不要给
+            // NOT NULL 列加 DEFAULT：实体没有声明 @ColumnInfo(defaultValue)，Room 的
+            // TableInfo 校验会把 DB 里的 '' 默认值判定为 schema 不一致，启动直接抛
+            // "Migration didn't properly handle ship_cache"。）
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `ship_cache` (
+                    `shipName` TEXT NOT NULL,
+                    `archiveType` TEXT NOT NULL,
+                    `voicesJson` TEXT NOT NULL,
+                    `galleryJson` TEXT NOT NULL,
+                    `profileJson` TEXT NOT NULL,
+                    `detailJson` TEXT NOT NULL,
+                    `updatedAt` INTEGER NOT NULL,
+                    PRIMARY KEY(`shipName`, `archiveType`)
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_ship_cache_updatedAt` ON `ship_cache` (`updatedAt`)"
+            )
+        }
+    }
 }

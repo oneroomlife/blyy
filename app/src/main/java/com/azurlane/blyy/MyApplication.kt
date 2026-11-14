@@ -37,6 +37,9 @@ class MyApplication : Application(), ImageLoaderFactory {
     @Inject
     lateinit var backupManager: com.azurlane.blyy.data.backup.BackupManager
 
+    @Inject
+    lateinit var shipSeedInstaller: com.azurlane.blyy.data.seed.ShipSeedInstaller
+
     /**
      * 复用 Hilt 单例 OkHttpClient（AppModule 提供）。
      *
@@ -80,6 +83,11 @@ class MyApplication : Application(), ImageLoaderFactory {
             runCatching { playerSettings.migrateSecretsToEncrypted() }
                 .onSuccess { count -> if (count > 0) AppLog.i(TAG, "secrets encrypted: $count field(s)") }
                 .onFailure { AppLog.w(TAG, "secret migration failed", it) }
+
+            // 首启名录种子：表为空时导入 1004 条舰名/舰种，保证首装无网也能浏览船坞
+            runCatching { shipSeedInstaller.seedIfEmpty() }
+                .onSuccess { count -> if (count > 0) AppLog.i(TAG, "ship seed installed: $count") }
+                .onFailure { AppLog.w(TAG, "ship seed failed", it) }
 
             // 每日自动备份（24h 闸门在 BackupManager 内，冷启动触发，不引调度框架）
             runCatching { backupManager.autoBackupIfDue() }

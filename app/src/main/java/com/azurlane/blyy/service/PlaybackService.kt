@@ -119,7 +119,16 @@ class PlaybackService : MediaSessionService() {
             val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
 
             val p = ExoPlayer.Builder(this)
-                .setAudioAttributes(AudioAttributes.DEFAULT, true)
+                // 语音内容以 USAGE_MEDIA + CONTENT_TYPE_SPEECH 上报：
+                // ① 与其他音乐 App 的焦点竞争走同一规则（可被来电/导航压低或暂停）；
+                // ② 蓝牙/车机按"人声"选择 EQ 与路由，听台词比"未知内容类型"更合适。
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_SPEECH)
+                        .build(),
+                    true
+                )
                 .setHandleAudioBecomingNoisy(true)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .build()

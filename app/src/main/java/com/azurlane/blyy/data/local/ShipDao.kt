@@ -169,4 +169,8 @@ abstract class ShipDao {
 
     @Query("DELETE FROM ships WHERE archiveType = :archiveType")
     abstract suspend fun deleteByArchiveType(archiveType: String)
+
+    /** 某档案类型的舰娘数量（首启种子安装器的判空依据，见 ShipSeedInstaller） */
+    @Query("SELECT COUNT(*) FROM ships WHERE archiveType = :archiveType")
+    abstract suspend fun countByArchiveType(archiveType: String): Int
 }

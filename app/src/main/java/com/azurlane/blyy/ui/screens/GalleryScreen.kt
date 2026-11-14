@@ -114,6 +114,8 @@ fun GalleryScreen(
      * null=设置尚未加载完成：切换器跳过首组合（不播动画），避免冷启动重播收拢动画
      */
     showArchiveSwitcher: Boolean? = true,
+    /** 长按菜单「档案」：进入站内舰娘详情页 */
+    onOpenShipDetail: (Ship) -> Unit = {},
     onScrollStateChange: (isScrolling: Boolean) -> Unit = { _ -> }
 ) {
     val context = LocalContext.current
@@ -530,6 +532,7 @@ fun GalleryScreen(
             onDismiss = { contextMenuShip = null },
             onOpenGallery = { onShowGallery(ship) },
             onOpenWiki = { openWiki(ship) },
+            onOpenDetail = { onOpenShipDetail(ship) },
             onToggleOath = {
                 onIntent(GalleryIntent.ToggleFavorite(ship))
                 Toast.makeText(

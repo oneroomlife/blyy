@@ -10,6 +10,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import com.azurlane.blyy.data.local.PlayLaterItem
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
+import com.azurlane.blyy.data.model.PlayerSession
 import com.azurlane.blyy.service.PlaybackServiceConnection
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -44,10 +46,16 @@ data class PlayerUiState(
     val favorites: Set<String> = emptySet(),
     val playLaterList: List<PlayLaterItem> = emptyList(),
     val isPlayingFromQueue: Boolean = false,
-    val currentlyPlayingQueueItemUrl: String? = null
+    val currentlyPlayingQueueItemUrl: String? = null,
+    /** 播放倍速（0.5x–2.0x，持久化在 DataStore） */
+    val playbackSpeed: Float = 1f,
+    /** 睡眠定时剩余毫秒；0 = 未开启 */
+    val sleepTimerRemainingMs: Long = 0L
 ) {
     val progress: Float
         get() = if (duration > 0) currentPosition.toFloat() / duration else 0f
+
+    val sleepTimerActive: Boolean get() = sleepTimerRemainingMs > 0
 }
 
 @HiltViewModel
@@ -73,6 +81,13 @@ class PlayerViewModel @Inject constructor(
     private var controller: MediaController? = null
 
     private var progressJob: Job? = null
+
+    /** 睡眠定时倒计时任务（同一时间只允许一个） */
+    private var sleepTimerJob: Job? = null
+
+    /** 冷启动读到的上次会话；在 MediaController 就绪后按需恢复 */
+    @Volatile
+    private var restoredSession: PlayerSession? = null
 
     /** ViewModel 是否已销毁 — 防止销毁后 listener 才被挂到共享 MediaController 上造成泄漏 */
     private var cleared = false
@@ -104,12 +119,19 @@ class PlayerViewModel @Inject constructor(
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             android.util.Log.d("PlayerViewModel", "onIsPlayingChanged: $isPlaying")
             _uiState.update { it.copy(isPlaying = isPlaying) }
-            if (isPlaying) startProgressUpdateLoop() else stopProgressUpdateLoop()
+            if (isPlaying) {
+                startProgressUpdateLoop()
+            } else {
+                stopProgressUpdateLoop()
+                // 暂停是"听到哪了"的关键节点，强制落盘一次
+                saveSession(force = true)
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             android.util.Log.d("PlayerViewModel", "onMediaItemTransition: mediaItem=$mediaItem, reason=$reason")
             _uiState.update { it.copy(currentMediaItem = mediaItem, currentPosition = 0L) }
+            saveSession(force = true)
             controller?.let { player ->
                 updateDuration(player)
 
@@ -160,6 +182,25 @@ class PlayerViewModel @Inject constructor(
                 _uiState.update { it.copy(playLaterList = playLater) }
             }
         }
+
+        // 倍速：持久化偏好，进入页面即恢复（控制器就绪后也会再应用一次）
+        viewModelScope.launch {
+            settingsDataStore.playbackSpeed.collect { speed ->
+                _uiState.update { it.copy(playbackSpeed = speed) }
+                controller?.setPlaybackSpeed(speed)
+            }
+        }
+
+        // 会话快照：只读一次，等控制器就绪后决定是否恢复
+        viewModelScope.launch {
+            val raw = settingsDataStore.playerSession.first()
+            if (raw.isNotBlank()) {
+                restoredSession = runCatching {
+                    kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                        .decodeFromString<PlayerSession>(raw)
+                }.getOrNull()?.takeIf { it.isRestorable() }
+            }
+        }
     }
 
     private fun initializeSession() {
@@ -187,6 +228,9 @@ class PlayerViewModel @Inject constructor(
                 )
             }
             updateMediaState(c)
+            // 控制器就绪后：应用持久化倍速 + 按需恢复上次会话（只做一次）
+            c.setPlaybackSpeed(_uiState.value.playbackSpeed)
+            restoreSessionIfIdle(c)
         }, MoreExecutors.directExecutor())
     }
 
@@ -229,6 +273,9 @@ class PlayerViewModel @Inject constructor(
                                 savedPosition = position
                             )
                         }
+                        // 播放中每 5 秒落一次会话（saveSession 内部节流），
+                        // 保证"杀进程后回来接着听"的进度不会停留在很久以前
+                        saveSession()
                     }
                 }
                 delay(500)
@@ -473,6 +520,139 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    // ─────────────────── 播放器产品化：倍速 / 睡眠定时 / 会话快照 ───────────────────
+
+    private val sessionJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    /**
+     * 冷启动恢复播放位置。
+     *
+     * 只在「控制器没有任何曲目」时执行（即用户是从桌面点进来听语音，而不是刚点了某句台词），
+     * 且**不自动播放**——恢复的是"听到哪了"，播放由用户决定。
+     */
+    private fun restoreSessionIfIdle(player: MediaController) {
+        val session = restoredSession ?: return
+        restoredSession = null // 每个 ViewModel 实例只恢复一次
+        if (player.currentMediaItem != null || player.isPlaying) return
+        if (session.url.isBlank()) return
+        runCatching {
+            player.setMediaItem(
+                MediaItem.Builder()
+                    .setMediaId(session.url)
+                    .setUri(session.url)
+                    .build()
+            )
+            player.repeatMode = Player.REPEAT_MODE_OFF
+            player.shuffleModeEnabled = false
+            player.prepare()
+            if (session.positionMs > 0) player.seekTo(session.positionMs)
+        }.onFailure { android.util.Log.w("PlayerViewModel", "restore session failed", it) }
+
+        _uiState.update {
+            it.copy(
+                currentMediaItem = player.currentMediaItem,
+                currentPosition = session.positionMs,
+                savedPosition = session.positionMs,
+                isPlayingFromQueue = session.fromQueue,
+                currentlyPlayingQueueItemUrl = session.queueItemUrl.ifBlank { null }
+            )
+        }
+    }
+
+    /** 轮换倍速：0.75x → 1x → 1.25x → 1.5x → 0.75x（台词精听场景够用，避免长列表） */
+    fun cycleSpeed() {
+        val steps = listOf(0.75f, 1f, 1.25f, 1.5f)
+        val current = _uiState.value.playbackSpeed
+        val next = steps.firstOrNull { it > current + 0.001f } ?: steps.first()
+        setSpeed(next)
+    }
+
+    fun setSpeed(speed: Float) {
+        val clamped = speed.coerceIn(PlayerSettingsDataStore.SPEED_MIN, PlayerSettingsDataStore.SPEED_MAX)
+        _uiState.update { it.copy(playbackSpeed = clamped) }
+        controller?.setPlaybackSpeed(clamped)
+        viewModelScope.launch { settingsDataStore.setPlaybackSpeed(clamped) }
+    }
+
+    /**
+     * 睡眠定时：到点先 3 秒淡出音量再暂停（直接 pause 会把人吵醒），
+     * 关闭/取消时把音量恢复到 1。
+     */
+    fun startSleepTimer(minutes: Int) {
+        if (minutes <= 0) {
+            cancelSleepTimer()
+            return
+        }
+        sleepTimerJob?.cancel()
+        val totalMs = minutes * 60_000L
+        _uiState.update { it.copy(sleepTimerRemainingMs = totalMs) }
+        sleepTimerJob = viewModelScope.launch {
+            var remaining = totalMs
+            while (isActive && remaining > 0) {
+                delay(1_000)
+                remaining -= 1_000
+                _uiState.update { it.copy(sleepTimerRemainingMs = remaining.coerceAtLeast(0)) }
+            }
+            if (remaining <= 0) fadeOutAndPause()
+        }
+    }
+
+    fun cancelSleepTimer() {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        controller?.volume = 1f
+        _uiState.update { it.copy(sleepTimerRemainingMs = 0L) }
+    }
+
+    private suspend fun fadeOutAndPause() {
+        val player = controller
+        if (player != null) {
+            val steps = 12
+            for (step in steps downTo 0) {
+                runCatching { player.volume = step / steps.toFloat() }
+                delay(250)
+            }
+            runCatching {
+                player.pause()
+                player.volume = 1f
+            }
+        }
+        _uiState.update { it.copy(sleepTimerRemainingMs = 0L) }
+        saveSession(force = true)
+    }
+
+    /** 会话落盘节流时间戳（避免每 500ms 进度回调都写 DataStore） */
+    private var lastSessionSaveAt = 0L
+
+    /**
+     * 保存「听到哪了」。force=true 用于切歌/暂停/退出这些关键节点，
+     * 普通调用受 5 秒节流保护。
+     */
+    private fun saveSession(force: Boolean = false) {
+        val player = controller ?: return
+        val item = player.currentMediaItem ?: return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastSessionSaveAt < 5_000) return
+        lastSessionSaveAt = now
+
+        val url = item.mediaId.ifBlank { item.localConfiguration?.uri?.toString().orEmpty() }
+        if (url.isBlank()) return
+        val session = PlayerSession(
+            url = url,
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+            fromQueue = _uiState.value.isPlayingFromQueue,
+            queueItemUrl = _uiState.value.currentlyPlayingQueueItemUrl.orEmpty(),
+            savedAt = now
+        )
+        viewModelScope.launch {
+            runCatching {
+                settingsDataStore.setPlayerSession(
+                    sessionJson.encodeToString(PlayerSession.serializer(), session)
+                )
+            }
+        }
+    }
+
     override fun onCleared() {
         android.util.Log.d("PlayerViewModel", "onCleared: removing listener, attached=$listenerAttached")
         // 与 initializeSession 中的挂载回调互斥：确保"挂载决策"与"卸载决策"串行化。
@@ -487,6 +667,8 @@ class PlayerViewModel @Inject constructor(
                 }, MoreExecutors.directExecutor())
             }
         }
+        saveSession(force = true)
+        sleepTimerJob?.cancel()
         controller = null
         stopProgressUpdateLoop()
         super.onCleared()

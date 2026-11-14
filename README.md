@@ -63,6 +63,8 @@
 - 播放模式：单曲循环 / 列表循环 / 随机播放
 - **稍后播放队列**：长按语音条目入队，支持队列管理与播放全部
 - Media3 ExoPlayer + MediaSession：锁屏控制、耳机线控、前台服务
+- **睡眠定时**（15/30/45/60/90 分钟，到点 3 秒淡出再暂停）、**倍速**（0.75x–1.5x）、**会话续播**（杀进程后回来接着听，24 小时内有效）
+- **台词卡分享**：一键生成 1080×1440 台词卡（立绘/头像 + 台词 + 舰名），可只发图片或连同语音一起发（系统分享面板）
 
 ### 🎭 秘书舰模式
 - 可拖动的舰娘小人悬浮窗（SYSTEM_ALERT_WINDOW），点击随机播放语音，拖拽位置自动记忆、重启后原地恢复
@@ -89,6 +91,11 @@
 - **扫描自动发现**：官服/渠道服/外服包名自动探测，扫描结果与导入状态持久化在索引里，**下次启动不重复解包**，管线升级时旧产物标记「有更新」
 - **兼容性兜底**：纯 Kotlin ASTC 软件解码器（1952 条黄金样本对拍），硬件不支持 6×6 ASTC 的模拟器/低端设备也能出图；Shizuku 通道四态探测，release 包 R8 裁剪问题已根治
 - **导出分享**：立绘/过场图一键导出到 `Downloads/BLYY/`
+
+### 📖 舰娘档案（站内详情页）
+- 从船坞长按菜单「档案」或语音页右上角进入，不再跳外部浏览器
+- 四个分区：属性（耐久/装甲/炮击/雷击/防空…）、技能（名称+描述）、装备（初始装备与获取方式）、档案（身份/性格/萌点/声优/画师）
+- 数据来自 wiki 抓取，**抓过一次即落库**（Room `ship_cache`），断网仍可查看；页面内可手动刷新与一键跳 Wiki 对原文
 
 ### 🎂 生日日历
 - 月历界面浏览全舰娘生日，今日寿星醒目展示
@@ -266,7 +273,7 @@
 | [Jetpack Compose](https://developer.android.com/jetpack/compose) | BOM | 声明式 UI 框架 + Navigation Compose |
 | [Material Design 3](https://m3.material.io/) | - | UI 设计系统 |
 | [Hilt](https://dagger.dev/hilt/) | 2.59.2 | 依赖注入（KSP 编译） |
-| [Room](https://developer.android.com/training/data-storage/room) | 2.8.4 | 本地数据库（舰娘/答题历史，v9 schema 导出） |
+| [Room](https://developer.android.com/training/data-storage/room) | 2.8.4 | 本地数据库（舰娘/答题历史/抓取缓存，v10 schema 导出） |
 | [DataStore Preferences](https://developer.android.com/topic/libraries/architecture/datastore) | 1.2.0 | 偏好与玩家设置存储 |
 | [Glance](https://developer.android.com/jetpack/compose/glance) | 1.1.1 | 桌面小组件（Compose 风格 API） |
 | [Android Keystore](https://developer.android.com/privacy-and-security/keystore) | 系统 API | 敏感字段静态加密（AI Key / UID / 服务器，AES-256-GCM） |

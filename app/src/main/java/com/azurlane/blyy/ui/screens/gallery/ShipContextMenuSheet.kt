@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.HeartBroken
 import androidx.compose.material.icons.rounded.Image
@@ -79,6 +80,7 @@ fun ShipContextMenuSheet(
     onDismiss: () -> Unit,
     onOpenGallery: () -> Unit,
     onOpenWiki: () -> Unit,
+    onOpenDetail: () -> Unit = {},
     onToggleOath: () -> Unit,
     onPickFigure: () -> Unit,
     onPickAlbum: () -> Unit,
@@ -121,6 +123,17 @@ fun ShipContextMenuSheet(
                         haptic(BlyyHaptic.Tick)
                         onDismiss()
                         onOpenGallery()
+                    }
+                )
+                QuickAction(
+                    icon = Icons.Rounded.Description,
+                    label = "档案",
+                    accent = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        haptic(BlyyHaptic.Tick)
+                        onDismiss()
+                        onOpenDetail()
                     }
                 )
                 QuickAction(

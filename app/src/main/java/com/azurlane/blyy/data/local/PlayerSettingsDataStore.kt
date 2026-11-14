@@ -57,6 +57,9 @@ class PlayerSettingsDataStore @Inject constructor(
     companion object {
         private const val TAG = "PlayerSettingsDataStore"
         private val PLAY_MODE_KEY = stringPreferencesKey("play_mode")
+        // 播放器产品化（v3.2）：倍速偏好 + 会话快照（杀进程后继续听）
+        private val PLAYBACK_SPEED_KEY = floatPreferencesKey("playback_speed")
+        private val PLAYER_SESSION_KEY = stringPreferencesKey("player_session")
         private val FAVORITES_KEY = stringPreferencesKey("favorites")
         private val PLAY_LATER_KEY = stringPreferencesKey("play_later_v2")
         private const val FIGURE_PREFIX = "fig_"
@@ -250,6 +253,10 @@ class PlayerSettingsDataStore @Inject constructor(
 
         /** 档案缓存过期时间：5 分钟（毫秒） */
         const val ARCHIVE_CACHE_EXPIRY_MS = 5 * 60 * 1000L
+
+        /** 播放倍速边界（播放器倍速选择器共用，避免 UI 与存储两套门槛） */
+        const val SPEED_MIN = 0.5f
+        const val SPEED_MAX = 2.0f
 
         /** 陀螺仪灵敏度百分比边界与默认值 */
         const val GYRO_GAIN_MIN = 40
@@ -693,6 +700,28 @@ class PlayerSettingsDataStore @Inject constructor(
         context.dataStore.edit { preferences: MutablePreferences ->
             preferences[PLAY_MODE_KEY] = mode.name
         }
+    }
+
+    // ── 播放器产品化：倍速 / 会话快照 ──
+
+    /** 播放倍速（0.5x – 2.0x，默认 1.0）。台词练习场景常用 0.75x。 */
+    val playbackSpeed: Flow<Float> = safeData.map { prefs ->
+        (prefs[PLAYBACK_SPEED_KEY] ?: 1f).coerceIn(SPEED_MIN, SPEED_MAX)
+    }
+
+    suspend fun setPlaybackSpeed(speed: Float) {
+        context.dataStore.edit { it[PLAYBACK_SPEED_KEY] = speed.coerceIn(SPEED_MIN, SPEED_MAX) }
+    }
+
+    /** 上次播放会话（JSON）；空串表示没有可恢复的会话 */
+    val playerSession: Flow<String> = safeData.map { it[PLAYER_SESSION_KEY] ?: "" }
+
+    suspend fun setPlayerSession(json: String) {
+        context.dataStore.edit { it[PLAYER_SESSION_KEY] = json }
+    }
+
+    suspend fun clearPlayerSession() {
+        context.dataStore.edit { it.remove(PLAYER_SESSION_KEY) }
     }
 
     suspend fun toggleFavorite(voiceUrl: String) {

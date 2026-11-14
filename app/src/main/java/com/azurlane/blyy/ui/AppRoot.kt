@@ -88,6 +88,7 @@ import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipRandomScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipSettingsScreen
 import com.azurlane.blyy.ui.screens.SettingsScreen
+import com.azurlane.blyy.ui.screens.ShipDetailScreen
 import com.azurlane.blyy.ui.screens.ShipGalleryScreen
 import com.azurlane.blyy.ui.screens.StudentGalleryScreen
 import com.azurlane.blyy.ui.screens.VoiceScreen
@@ -99,6 +100,7 @@ import com.azurlane.blyy.ui.screens.live2d.Live2dLibraryScreen
 import com.azurlane.blyy.ui.screens.live2d.Live2dViewerScreen
 import com.azurlane.blyy.ui.theme.AppAnimation
 import com.azurlane.blyy.util.AppUpdateChecker
+import com.azurlane.blyy.util.wiki.WikiUrls
 import com.azurlane.blyy.viewmodel.ArchiveType
 import com.azurlane.blyy.viewmodel.GalleryViewModel
 import com.azurlane.blyy.viewmodel.GuessShipViewModel
@@ -180,6 +182,7 @@ fun AppContent() {
             currentDestination?.route?.startsWith("avatar_") != true &&
             currentDestination?.route != "settings" &&
             currentDestination?.route != "backup_restore" &&
+            currentDestination?.route?.startsWith("ship_detail") != true &&
             currentDestination?.route?.startsWith("live2d") != true &&
             // 游戏资源导入：与 Live2D 皮肤库一致，整段功能页都不显示底部导航
             currentDestination?.route?.startsWith("gameimport") != true &&
@@ -479,7 +482,12 @@ fun AppContent() {
                             onScrollStateChange = { isScrolling ->
                                 isBottomBarVisible = !isScrolling
                             },
-                            showArchiveSwitcher = showArchiveSwitcher
+                            showArchiveSwitcher = showArchiveSwitcher,
+                            onOpenShipDetail = { ship ->
+                                navController.navigate(
+                                    "ship_detail/${Uri.encode(ship.name)}?archiveType=${ship.archiveType}"
+                                ) { launchSingleTop = true }
+                            }
                         )
                     }
                     composable(
@@ -509,6 +517,11 @@ fun AppContent() {
 
                         VoiceScreen(
                             onBack = { navController.popBackStack() },
+                            onOpenDetail = { name, archive ->
+                                navController.navigate(
+                                    "ship_detail/${Uri.encode(name)}?archiveType=$archive"
+                                ) { launchSingleTop = true }
+                            },
                             sharedTransitionScope = this@SharedTransitionLayout,
                             animatedContentScope = this,
                             voiceViewModel = viewModel
@@ -605,6 +618,11 @@ fun AppContent() {
 
                         VoiceScreen(
                             onBack = { navController.popBackStack() },
+                            onOpenDetail = { name, archive ->
+                                navController.navigate(
+                                    "ship_detail/${Uri.encode(name)}?archiveType=$archive"
+                                ) { launchSingleTop = true }
+                            },
                             sharedTransitionScope = this@SharedTransitionLayout,
                             animatedContentScope = this,
                             voiceViewModel = viewModel
@@ -694,6 +712,54 @@ fun AppContent() {
                                 // 返回相机页重拍；相机页不在栈中时兜底导航
                                 if (!navController.popBackStack("watermark_camera", false)) {
                                     navController.navigate("watermark_camera") { launchSingleTop = true }
+                                }
+                            }
+                        )
+                    }
+                    // 舰娘详情（站内档案）：替代"点 Wiki 跳浏览器"
+                    composable(
+                        route = "ship_detail/{shipName}?archiveType={archiveType}",
+                        arguments = listOf(
+                            navArgument("shipName") { type = NavType.StringType },
+                            navArgument("archiveType") {
+                                type = NavType.StringType
+                                defaultValue = "DOCK"
+                            }
+                        )
+                    ) { entry ->
+                        val detailName = entry.arguments?.getString("shipName").orEmpty()
+                        val detailArchive = entry.arguments?.getString("archiveType") ?: "DOCK"
+                        ShipDetailScreen(
+                            shipName = detailName,
+                            archiveType = detailArchive,
+                            onBack = { navController.popBackStack() },
+                            onOpenVoice = { name, avatar ->
+                                if (detailArchive == "STUDENT") {
+                                    navController.navigate(
+                                        "student_voice/${Uri.encode(name)}?avatarUrl=${Uri.encode(avatar)}&studentLink="
+                                    )
+                                } else {
+                                    navController.navigate(
+                                        "voice/${Uri.encode(name)}?avatarUrl=${Uri.encode(avatar)}"
+                                    )
+                                }
+                            },
+                            onOpenGallery = { name, avatar ->
+                                if (detailArchive == "STUDENT") {
+                                    navController.navigate(
+                                        "student_gallery/${Uri.encode(name)}?avatarUrl=${Uri.encode(avatar)}&studentLink="
+                                    )
+                                } else {
+                                    navController.navigate(
+                                        "gallery/${Uri.encode(name)}?avatarUrl=${Uri.encode(avatar)}"
+                                    )
+                                }
+                            },
+                            onOpenWiki = { name ->
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(WikiUrls.page(name)))
+                                    )
                                 }
                             }
                         )
