@@ -47,6 +47,8 @@ data class SecretaryManagerState(
     val sdScale: Float = 1.0f,
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
     val sdResourceId: String = "",
+    /** SD 小人渲染帧率（30=省电档，60=默认档；见 [com.azurlane.blyy.util.ChibiFrameRate]） */
+    val sdFrameRate: Int = com.azurlane.blyy.util.ChibiFrameRate.FPS_DEFAULT,
     /**
      * 当前秘书舰是否**能解析出 SD 资源**（pin 的资源，或按舰名命中的本地/游戏导入资源）。
      *
@@ -206,6 +208,11 @@ class SecretaryManager @Inject constructor(
                 // 会静默不渲染（看起来像「小人不显示」，但设置里仍显示"已选择"）。
                 refreshSdAvailability()
                 if (id.isNotBlank()) healDanglingSdResource(id)
+            }
+        }
+        scope.launch {
+            settingsDataStore.secretarySdFrameRate.collect { rate ->
+                updateState { it.copy(sdFrameRate = rate) }
             }
         }
         scope.launch {
@@ -646,6 +653,23 @@ class SecretaryManager @Inject constructor(
         scope.launch {
             withContext(NonCancellable) {
                 settingsDataStore.setSecretarySdScale(scale)
+            }
+        }
+    }
+
+    /**
+     * 设置 SD 小人渲染帧率（30 / 60）。
+     *
+     * 只影响出帧节拍（见 [com.azurlane.blyy.util.ChibiFrameRate]），不改变动画时长：
+     * 30fps 档下每帧 delta 翻倍，骨骼动画按真实时间推进，动作不会变慢。
+     * 悬浮窗与应用内共用同一档位，写入后由 collect 实时下发到正在运行的视图。
+     */
+    fun setSdFrameRate(frameRate: Int) {
+        val normalized = com.azurlane.blyy.util.ChibiFrameRate.normalize(frameRate)
+        updateState { it.copy(sdFrameRate = normalized) }
+        scope.launch {
+            withContext(NonCancellable) {
+                settingsDataStore.setSecretarySdFrameRate(normalized)
             }
         }
     }

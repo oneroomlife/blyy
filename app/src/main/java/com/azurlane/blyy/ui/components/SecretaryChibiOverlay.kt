@@ -223,6 +223,21 @@ fun SecretaryChibiOverlay(
      */
     touchPassthrough: Boolean = false,
     /**
+     * 渲染帧率档位（见 [com.azurlane.blyy.util.ChibiFrameRate]），默认 60fps、可选 30fps。
+     *
+     * 只影响出帧节拍，不影响动画本身的时长（动画时间由真实 delta 推进）。
+     * 两个分支（系统悬浮窗 / 应用内）共用同一档位，用户在设置页切换后实时生效。
+     */
+    frameRate: Int = com.azurlane.blyy.util.ChibiFrameRate.FPS_DEFAULT,
+    /**
+     * 渲染总开关（默认开启）。
+     *
+     * 系统悬浮窗的 LifecycleOwner 恒为 RESUMED，熄屏时拿不到 onPause，
+     * 因此由 `SecretaryOverlayService` 监听息屏广播后显式下发 false 来停帧。
+     * 应用内分支由 Activity 生命周期自然控制，通常保持 true。
+     */
+    renderingEnabled: Boolean = true,
+    /**
      * 可见内容宽高比（宽/高）回调。
      *
      * SpineSdView 在资源加载完成后按「真实可见范围」算出一个宽高比（见
@@ -378,6 +393,8 @@ fun SecretaryChibiOverlay(
                     // 穿透时 GLSurfaceView 不消费事件；窗口级 FLAG_NOT_TOUCHABLE
                     // 由 Service 施加，这里做双保险（flag 未及时重放时也不会误吞触摸）
                     touchEnabled = !touchPassthrough,
+                    targetFrameRate = frameRate,
+                    renderingEnabled = renderingEnabled,
                     onContentAspect = onContentAspect,
                     onTap = {
                         isTapped = true
@@ -648,6 +665,8 @@ fun SecretaryChibiOverlay(
                     // （应用内没有窗口级 FLAG_NOT_TOUCHABLE，AndroidView 即使不消费事件
                     //  也会占据 Compose 命中测试最上层，做不到真正穿透）
                     touchEnabled = true,
+                    targetFrameRate = frameRate,
+                    renderingEnabled = renderingEnabled,
                     onTap = {
                         isTapped = true
                         hapticFeedback(BlyyHaptic.Tick)

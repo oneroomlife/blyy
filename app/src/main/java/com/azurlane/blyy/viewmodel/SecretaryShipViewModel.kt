@@ -36,6 +36,8 @@ data class SecretaryShipState(
     val sdScale: Float = 1.0f,
     /** 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源） */
     val sdResourceId: String = "",
+    /** SD 小人渲染帧率（30=省电档，60=默认档） */
+    val sdFrameRate: Int = com.azurlane.blyy.util.ChibiFrameRate.FPS_DEFAULT,
     /** 当前秘书舰能否解析出 SD 资源（本地库 / 游戏导入），悬浮窗据此决定是否显示 */
     val sdAvailable: Boolean = false,
     /** wiki 网页端 Q版小人（SD 静态图）URL：本地 SD 资源未匹配时的回退显示图，
@@ -55,6 +57,7 @@ sealed class SecretaryShipIntent {
     data class SetSdSkin(val skin: String) : SecretaryShipIntent()
     data class SetSdScale(val scale: Float) : SecretaryShipIntent()
     data class SetSdResourceId(val resourceId: String) : SecretaryShipIntent()
+    data class SetSdFrameRate(val frameRate: Int) : SecretaryShipIntent()
     data class SetOverlayTouchPassthrough(val enabled: Boolean) : SecretaryShipIntent()
     object StartFlipAnimation : SecretaryShipIntent()
     object EndFlipAnimation : SecretaryShipIntent()
@@ -163,6 +166,7 @@ class SecretaryShipViewModel @Inject constructor(
             sdSkin = managerState.sdSkin,
             sdScale = managerState.sdScale,
             sdResourceId = managerState.sdResourceId,
+            sdFrameRate = managerState.sdFrameRate,
             sdAvailable = managerState.sdAvailable,
             webChibiUrl = managerState.webChibiUrl,
             overlayTouchPassthrough = managerState.overlayTouchPassthrough
@@ -188,6 +192,7 @@ class SecretaryShipViewModel @Inject constructor(
             is SecretaryShipIntent.SetSdSkin -> secretaryManager.setSdSkin(intent.skin)
             is SecretaryShipIntent.SetSdScale -> secretaryManager.setSdScale(intent.scale)
             is SecretaryShipIntent.SetSdResourceId -> secretaryManager.setSdResourceId(intent.resourceId)
+            is SecretaryShipIntent.SetSdFrameRate -> secretaryManager.setSdFrameRate(intent.frameRate)
             is SecretaryShipIntent.SetOverlayTouchPassthrough -> secretaryManager.setOverlayTouchPassthrough(intent.enabled)
             SecretaryShipIntent.StartFlipAnimation -> _isFlipping.value = true
             SecretaryShipIntent.EndFlipAnimation -> _isFlipping.value = false

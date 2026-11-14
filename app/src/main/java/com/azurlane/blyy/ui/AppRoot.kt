@@ -829,6 +829,9 @@ fun AppContent() {
                             },
                             onToggleOverlayTouchPassthrough = { enabled ->
                                 secretaryViewModel.onIntent(SecretaryShipIntent.SetOverlayTouchPassthrough(enabled))
+                            },
+                            onSetSdFrameRate = { frameRate ->
+                                secretaryViewModel.onIntent(SecretaryShipIntent.SetSdFrameRate(frameRate))
                             }
                         )
                     }
@@ -1020,6 +1023,8 @@ fun AppContent() {
                         sdResourceId = secretaryState.sdResourceId,
                         webChibiUrl = secretaryState.webChibiUrl,
                         hasSdBundle = secretaryState.sdAvailable,
+                        // 帧率档位与应用外的悬浮窗共用同一设置（用户只在设置页看到一处开关）
+                        frameRate = secretaryState.sdFrameRate,
                         // 注意：这里**不**传 touchPassthrough。触摸穿透是给系统悬浮窗用的
                         // （跨应用才需要"窗口不接收事件 + 窗口足够透明"两件事），而本分支只在
                         // 悬浮窗未挂上时渲染，且小人是 AndroidView 里的 GLSurfaceView——

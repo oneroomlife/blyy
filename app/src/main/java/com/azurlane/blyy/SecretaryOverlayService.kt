@@ -15,6 +15,7 @@ import android.graphics.RectF
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceView
@@ -162,6 +163,20 @@ class SecretaryOverlayService : Service() {
     /** 通知"关闭悬浮窗" action 的动态接收器（onDestroy 注销） */
     private var closeActionReceiver: BroadcastReceiver? = null
 
+    /**
+     * 屏幕是否处于交互状态（熄屏 = false）。
+     *
+     * 系统悬浮窗的 LifecycleOwner（[FloatingWindowLifecycleOwner]）恒为 RESUMED，
+     * 拿不到 Activity 的 onPause —— 熄屏后 GL 线程仍会被 vsync 唤醒出帧。
+     * 这里由息屏/亮屏广播维护，下发给 [SecretaryChibiOverlay] 的 renderingEnabled
+     * 停掉出帧循环。[SecretaryChibiOverlay] 侧只是停止 requestRender，
+     * EGL context 与纹理都不销毁，亮屏后一帧即恢复。
+     */
+    private val screenInteractiveState = mutableStateOf(true)
+
+    /** 息屏/亮屏广播接收器（onDestroy 注销） */
+    private var screenStateReceiver: BroadcastReceiver? = null
+
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
 
     companion object {
@@ -239,6 +254,10 @@ class SecretaryOverlayService : Service() {
         // 见 [publishOverlayWindowVisible]。服务活着但窗口没挂上时，
         // 应用内小人与悬浮窗必须至少有一个可见。
         Log.d(TAG, "onCreate: 服务创建")
+        // 先取当前真实状态：服务可能在熄屏时被拉起（开机自启/后台恢复），
+        // 此时不应先按「亮屏」渲染一帧再被广播纠正
+        screenInteractiveState.value = isScreenInteractive()
+        registerScreenStateReceiver()
         startForegroundServiceNotification()
         // 窗口创建移入协程：先读取上次保存的位置再 addView，
         // 小人直接出现在用户上次摆放的位置（而非先出现在默认位再跳转）
@@ -246,6 +265,52 @@ class SecretaryOverlayService : Service() {
         // 【与组合生命周期解耦的观察链】内容有无 / 穿透开关由 Service 级协程驱动，
         // 不再依赖 ComposeView 内部的 LaunchedEffect（见 startOverlayStateObservers）
         startOverlayStateObservers()
+    }
+
+    /** 当前屏幕是否处于交互状态（PowerManager 不可用时按「亮屏」处理，不影响功能） */
+    private fun isScreenInteractive(): Boolean =
+        runCatching {
+            (getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive ?: true
+        }.getOrDefault(true)
+
+    /**
+     * 注册息屏/亮屏广播（幂等）。
+     *
+     * 用 [ContextCompat.registerReceiver] 统一 API 分支：Android 14+ 对动态注册
+     * 后台广播强制要求 flag，缺了直接 SecurityException。个别 ROM 仍在后台限制
+     * 广播投递，注册失败只意味着「熄屏不停帧」（多耗电、不丢功能），记一条 warning。
+     */
+    private fun registerScreenStateReceiver() {
+        if (screenStateReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val interactive = when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON -> true
+                    Intent.ACTION_SCREEN_OFF -> false
+                    else -> return
+                }
+                updateScreenInteractive(interactive)
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        }
+        runCatching {
+            ContextCompat.registerReceiver(this, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }.onSuccess {
+            screenStateReceiver = receiver
+            Log.d(TAG, "registerScreenStateReceiver: 息屏/亮屏监听已注册")
+        }.onFailure {
+            Log.w(TAG, "registerScreenStateReceiver: 注册失败，息屏停帧不可用", it)
+        }
+    }
+
+    /** 更新屏幕交互状态；仅在真正变化时写 Compose State（避免无谓重组） */
+    private fun updateScreenInteractive(interactive: Boolean) {
+        if (screenInteractiveState.value == interactive) return
+        screenInteractiveState.value = interactive
+        Log.d(TAG, "updateScreenInteractive: interactive=$interactive")
     }
 
     /**
@@ -290,7 +355,14 @@ class SecretaryOverlayService : Service() {
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            // 【硬件加速】WindowManagerGlobal.addView 会给「无父窗口的独立窗口」自动补这一位
+            // （parentWindow == null && ApplicationInfo.FLAG_HARDWARE_ACCELERATED），
+            // 但它补的是调用方传进去的那个 LayoutParams 对象；而 [applyWindowFlags] 等路径
+            // 用 `lp.flags = windowFlagsFor(...)` **整体赋值**，会把这个位连同其它系统
+            // 补的位一起抹掉，窗口随即退化成软件绘制（GLSurfaceView 走 CPU 拷贝，掉帧、发烫）。
+            // 这里显式写进 base flags，让每次重放都保持硬件加速。
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
 
     /** 按穿透状态算出完整 flags（幂等纯函数） */
     private fun windowFlagsFor(passthrough: Boolean): Int =
@@ -641,6 +713,10 @@ class SecretaryOverlayService : Service() {
                                 // 触摸穿透：Composable 内部把它接到 touchEnabled，
                                 // 与窗口级 FLAG_NOT_TOUCHABLE 双保险
                                 touchPassthrough = secretaryState.overlayTouchPassthrough,
+                                // 帧率档位：设置页切换后经 Manager → DataStore → State 实时下发
+                                frameRate = secretaryState.sdFrameRate,
+                                // 熄屏停帧：系统悬浮窗拿不到 onPause，只能由 Service 广播驱动
+                                renderingEnabled = screenInteractiveState.value,
                                 // 可见内容宽高比上报：Service 据此收紧窗口尺寸
                                 onContentAspect = { aspect -> contentAspectState.value = aspect },
                                 // 静态图分支交互上报：可交互矩形（窗口本地坐标）与分支模式。
@@ -1313,6 +1389,11 @@ class SecretaryOverlayService : Service() {
                 runCatching { unregisterReceiver(it) }
             }
             closeActionReceiver = null
+            // 注销息屏/亮屏接收器
+            screenStateReceiver?.let {
+                runCatching { unregisterReceiver(it) }
+            }
+            screenStateReceiver = null
             // 主动断开引用，加速 GC
             composeView = null
             overlayLayoutParams = null

@@ -10,6 +10,7 @@ import android.opengl.GLSurfaceView
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Choreographer
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.GestureDetector
@@ -53,6 +54,7 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
+import com.azurlane.blyy.util.ChibiFrameRate
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
@@ -133,6 +135,24 @@ fun SpineSdView(
      */
     contentAlpha: () -> Float = { 1f },
     /**
+     * 渲染帧率档位（见 [ChibiFrameRate]），默认 60fps、可选 30fps。
+     *
+     * 历史实现用 `RENDERMODE_CONTINUOUSLY` 无条件跟随屏幕刷新率出帧：悬浮窗常驻桌面时
+     * 这是纯耗电（骨骼 + 蒙皮每帧重算），而 SD 待机动画本身没有 60fps 以上的细节。
+     * 现在改为 vsync 驱动的按需出帧，目标帧率由本参数决定，运行中可实时切换。
+     */
+    targetFrameRate: Int = ChibiFrameRate.FPS_DEFAULT,
+    /**
+     * 渲染总开关（默认开启）。
+     *
+     * 置 false 时停止出帧，GL 线程进入等待，CPU/GPU 占用归零。用于「息屏」这类
+     * 宿主窗口不会收到 `onPause` 的场景——系统悬浮窗的 LifecycleOwner 恒为 RESUMED，
+     * 拿不到 Activity 的生命周期回调，只能由 Service 显式下发。
+     * 视图不可见（`onWindowVisibilityChanged`）与宿主生命周期暂停由组件内部自行处理，
+     * 无需调用方重复传参。
+     */
+    renderingEnabled: Boolean = true,
+    /**
      * 内容宽高比回调（w/h，基于「可见内容」而非骨骼 AABB）。
      *
      * 资源加载完成后在 UI 线程回调一次（皮肤切换/热重载后再次回调）。
@@ -165,6 +185,8 @@ fun SpineSdView(
                 onDragEnd = onDragEnd,
                 panZoomEnabled = panZoomEnabled,
                 contentAlpha = contentAlpha,
+                targetFrameRate = targetFrameRate,
+                renderingEnabled = renderingEnabled,
                 onContentAspect = onContentAspect
             ).also { viewRef.value = it }
         },
@@ -175,6 +197,9 @@ fun SpineSdView(
             view.contentAlpha = contentAlpha
             // 实时更新触摸开关（应用内触摸穿透模式切换）
             view.touchEnabled = touchEnabled
+            // 帧率档位与渲染开关：切换时立即改变出帧节拍 / 停帧，不重建 GLSurfaceView
+            view.targetFrameRate = targetFrameRate
+            view.renderingEnabled = renderingEnabled
             // 回调引用可能随重组变化（lambda 捕获了外部状态），保持最新
             view.onContentAspect = onContentAspect
             // 检测 Spine 资源路径变化（切换皮肤）：热重载，不重建 GLSurfaceView
@@ -238,7 +263,11 @@ private class SpineSdGlSurfaceView(
     /** 内容不透明度（0..1）：GL 侧顶点 alpha，用于退场淡出；每帧取值，故用函数而非快照 */
     contentAlpha: () -> Float = { 1f },
     /** 可见内容宽高比回调（GL 线程 → post 到 UI 线程） */
-    onContentAspect: ((Float) -> Unit)? = null
+    onContentAspect: ((Float) -> Unit)? = null,
+    /** 目标渲染帧率，见 [ChibiFrameRate] */
+    targetFrameRate: Int = ChibiFrameRate.FPS_DEFAULT,
+    /** 渲染总开关：false 时停止出帧（息屏 / 宿主不可见） */
+    renderingEnabled: Boolean = true
 ) : GLSurfaceView(ctx) {
 
     /**
@@ -272,6 +301,99 @@ private class SpineSdGlSurfaceView(
      * SurfaceControl 合成，只有 GL 侧顶点 alpha 才是跨版本可靠的真淡出。
      */
     @Volatile var contentAlpha: () -> Float = contentAlpha
+
+    /**
+     * 目标渲染帧率（可实时更新，见 [ChibiFrameRate]）。
+     *
+     * 出帧节拍由 [frameCallback] 按 vsync 驱动，这里只决定「每几个 vsync 出一次帧」。
+     * 切换档位后清空 [lastRenderNanos]，让新节拍从下一帧立刻生效，不必等一个旧周期。
+     */
+    @Volatile
+    var targetFrameRate: Int = ChibiFrameRate.normalize(targetFrameRate)
+        set(value) {
+            val normalized = ChibiFrameRate.normalize(value)
+            if (field == normalized) return
+            field = normalized
+            lastRenderNanos = 0L
+        }
+
+    /**
+     * 渲染总开关。false 时移除 vsync 回调、GL 线程休眠（不再 requestRender）。
+     *
+     * 与 [onPause] 的区别：[onPause] 是 GLSurfaceView 的线程级暂停（会丢弃 EGL surface），
+     * 这里只是「不出帧」，EGL context 与已上传纹理全部保留，恢复时无重建开销。
+     */
+    @Volatile
+    var renderingEnabled: Boolean = renderingEnabled
+        set(value) {
+            if (field == value) return
+            field = value
+            updateRenderLoop()
+        }
+
+    // ---------- vsync 驱动的按需出帧 ----------
+    //
+    // 原先 renderMode = RENDERMODE_CONTINUOUSLY，GL 线程无条件跟随屏幕刷新率绘制：
+    // 悬浮窗常驻桌面时即使小人静止也在跑骨骼 + 蒙皮，熄屏后同样满负荷（系统悬浮窗
+    // 的 LifecycleOwner 恒 RESUMED，拿不到 onPause）。改为 WHEN_DIRTY 后，由本 View
+    // 在 UI 线程按目标帧率调用 requestRender()，其余时间 GL 线程阻塞在条件变量上。
+    private val choreographer: Choreographer by lazy { Choreographer.getInstance() }
+    private var renderLoopActive = false
+
+    /** 上一次实际出帧的 vsync 时间戳；0 表示「无历史」，下一帧必须出 */
+    private var lastRenderNanos = 0L
+
+    /** 宿主生命周期是否已暂停（由 [onPause]/[onResume] 维护） */
+    private var pausedByLifecycle = false
+
+    /** 视图所在窗口是否可见（由 [onWindowVisibilityChanged] 维护） */
+    private var windowVisible = true
+
+    /**
+     * 屏幕是否点亮（由 [onScreenStateChanged] 维护）。
+     *
+     * 熄屏时系统不再产生 vsync，出帧回调本来就会停摆；但要真正做到「GL 线程休眠」，
+     * 必须在熄屏那一刻主动移除回调 —— 否则唤醒后可能积压一次补帧，且状态判断会失真。
+     * 这条路径对应用内小人、资产查看器与系统悬浮窗同时生效，不依赖 Service 广播。
+     */
+    private var screenOn = true
+
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!renderLoopActive) return
+            val interval = ChibiFrameRate.intervalNanos(targetFrameRate)
+            if (ChibiFrameRate.shouldRenderFrame(frameTimeNanos, lastRenderNanos, interval)) {
+                lastRenderNanos = frameTimeNanos
+                requestRender()
+            }
+            if (renderLoopActive) choreographer.postFrameCallback(this)
+        }
+    }
+
+    /** 是否需要出帧：可见 + 已挂载 + 未被生命周期暂停 + 开关打开 + 屏幕点亮 */
+    private fun shouldDriveRenderLoop(): Boolean =
+        renderingEnabled && !pausedByLifecycle && windowVisible && screenOn && isAttachedToWindow
+
+    /**
+     * 按当前状态启停出帧循环（幂等，UI 线程调用）。
+     *
+     * 任一前提被打破就彻底移除 vsync 回调（而不是在回调里空转），
+     * 这样熄屏后 UI 线程也不再每帧被唤醒，才是真正省电。
+     */
+    private fun updateRenderLoop() {
+        if (!shouldDriveRenderLoop()) {
+            if (renderLoopActive) {
+                renderLoopActive = false
+                choreographer.removeFrameCallback(frameCallback)
+            }
+            return
+        }
+        if (renderLoopActive) return
+        renderLoopActive = true
+        // 恢复出帧时重置时间基：否则可能因「距上次出帧不足一个间隔」而白等一帧
+        lastRenderNanos = 0L
+        choreographer.postFrameCallback(frameCallback)
+    }
 
     /**
      * GLSurfaceView 最新尺寸缓存（px），由 [onSizeChanged] 在 UI 线程更新，
@@ -331,6 +453,9 @@ private class SpineSdGlSurfaceView(
         super.onSizeChanged(w, h, oldw, oldh)
         liveWidth = w
         liveHeight = h
+        // 尺寸变化后主动补一帧：WHEN_DIRTY 模式下没有持续的绘制请求，
+        // 若恰好错过 vsync 回调，会有一帧停留在旧尺寸的画面（拉伸/错位）。
+        if (isAttachedToWindow) requestRender()
     }
 
     /**
@@ -350,7 +475,10 @@ private class SpineSdGlSurfaceView(
         holder.setFormat(PixelFormat.TRANSLUCENT)
         setZOrderOnTop(true)
         setRenderer(spineRenderer)
-        renderMode = RENDERMODE_CONTINUOUSLY
+        // 按需出帧：由 vsync 回调按目标帧率调用 requestRender()（见 frameCallback）。
+        // 不用 RENDERMODE_CONTINUOUSLY —— 那会让 GL 线程无条件跟随刷新率空转，
+        // 悬浮窗常驻桌面 / 熄屏时都是纯耗电。
+        renderMode = RENDERMODE_WHEN_DIRTY
 
         // 触摸处理：区分点击、快速拖动与长按拖动。
         // GLSurfaceView 设置 OnTouchListener 后会消费整个触摸序列，
@@ -570,7 +698,42 @@ private class SpineSdGlSurfaceView(
         return true
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        updateRenderLoop()
+    }
+
+    override fun onScreenStateChanged(screenState: Int) {
+        super.onScreenStateChanged(screenState)
+        screenOn = screenState == View.SCREEN_STATE_ON
+        updateRenderLoop()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        // 悬浮窗被系统策略隐藏（如 Settings 的 hideOverlayWindows）时会走到这里，
+        // 此时窗口不可见，没有必要继续出帧。
+        windowVisible = visibility == View.VISIBLE
+        updateRenderLoop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        pausedByLifecycle = false
+        updateRenderLoop()
+    }
+
+    override fun onPause() {
+        // 先停出帧回调，再走 GLSurfaceView 的线程暂停（后者会等待 GL 线程到安全点）
+        pausedByLifecycle = true
+        updateRenderLoop()
+        super.onPause()
+    }
+
     override fun onDetachedFromWindow() {
+        // 先摘掉 vsync 回调，避免 GL 线程已退出后仍有 requestRender 打进来
+        renderLoopActive = false
+        choreographer.removeFrameCallback(frameCallback)
         // 视图销毁时清理 Handler 回调，避免内存泄漏
         longPressRunnable?.let { longPressHandler.removeCallbacks(it) }
         longPressRunnable = null

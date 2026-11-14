@@ -34,6 +34,7 @@ import kotlinx.serialization.json.Json
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.azurlane.blyy.util.ChibiFrameRate
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
 
@@ -81,6 +82,8 @@ class PlayerSettingsDataStore @Inject constructor(
         private val SECRETARY_SD_SCALE_KEY = floatPreferencesKey("secretary_sd_scale")
         // 自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源）
         private val SECRETARY_SD_RESOURCE_ID_KEY = stringPreferencesKey("secretary_sd_resource_id")
+        // SD 小人渲染帧率（30=省电档，60=默认档；见 util/ChibiFrameRate）
+        private val SECRETARY_SD_FRAME_RATE_KEY = intPreferencesKey("secretary_sd_frame_rate")
         
         // 语音语言
         private val VOICE_LANGUAGE_KEY = stringPreferencesKey("voice_language")
@@ -310,6 +313,11 @@ class PlayerSettingsDataStore @Inject constructor(
 
     /** 秘书舰自定义 SD 资源 ID（空=跟随舰名匹配，非空=直接按 ID 加载该资源，解除舰名限制） */
     val secretarySdResourceId: Flow<String> = safeData.map { it[SECRETARY_SD_RESOURCE_ID_KEY] ?: "" }
+
+    /** 秘书舰 SD 小人渲染帧率（30 或 60；历史脏数据/未设置回落到 [ChibiFrameRate.FPS_DEFAULT]） */
+    val secretarySdFrameRate: Flow<Int> = safeData.map {
+        ChibiFrameRate.normalize(it[SECRETARY_SD_FRAME_RATE_KEY] ?: ChibiFrameRate.FPS_DEFAULT)
+    }
     
     // 悬浮窗状态
     val secretaryOverlayEnabled: Flow<Boolean> = safeData.map { it[SECRETARY_OVERLAY_ENABLED_KEY] ?: false }
@@ -498,6 +506,12 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setSecretarySdResourceId(resourceId: String) {
         context.dataStore.edit { prefs ->
             prefs[SECRETARY_SD_RESOURCE_ID_KEY] = resourceId
+        }
+    }
+
+    suspend fun setSecretarySdFrameRate(frameRate: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[SECRETARY_SD_FRAME_RATE_KEY] = ChibiFrameRate.normalize(frameRate)
         }
     }
     

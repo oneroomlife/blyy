@@ -97,6 +97,7 @@ import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.util.LocalSdResolver
 import com.azurlane.blyy.util.OrganizePhase
 import com.azurlane.blyy.util.OrganizeProgress
+import com.azurlane.blyy.util.ChibiFrameRate
 import com.azurlane.blyy.util.OrganizeResult
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_SLIDER_MIN
@@ -133,7 +134,9 @@ fun SecretaryShipSettingsScreen(
     /** 清除自定义 SD 资源选择，回退到舰名匹配 */
     onClearSdResource: () -> Unit = {},
     /** 切换悬浮窗触摸穿透开关回调 */
-    onToggleOverlayTouchPassthrough: (Boolean) -> Unit = {}
+    onToggleOverlayTouchPassthrough: (Boolean) -> Unit = {},
+    /** 切换 SD 小人渲染帧率（30 / 60）回调 */
+    onSetSdFrameRate: (Int) -> Unit = {}
 ) {
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -172,6 +175,12 @@ fun SecretaryShipSettingsScreen(
                             selectedSkin = secretaryState.sdSkin,
                             onSetSdSkin = onSetSdSkin,
                             sdResourceId = secretaryState.sdResourceId
+                        )
+                    }
+                    BlyyPanel {
+                        SdFrameRateSelector(
+                            frameRate = secretaryState.sdFrameRate,
+                            onSetSdFrameRate = onSetSdFrameRate
                         )
                     }
                     // SD 资源库入口：此前设置页只留了 onOpenSdGallery 回调却没有入口，
@@ -332,6 +341,57 @@ private fun SdScaleSlider(
                 thumbColor = MaterialTheme.colorScheme.primary,
                 activeTrackColor = MaterialTheme.colorScheme.primary
             )
+        )
+    }
+}
+
+/**
+ * SD 小人渲染帧率选择。
+ *
+ * 悬浮窗常驻桌面时，渲染是持续耗电的主要来源：原实现用 RENDERMODE_CONTINUOUSLY
+ * 无条件跟随屏幕刷新率出帧。这里让用户在「60fps 顺滑」与「30fps 省电」之间取舍，
+ * 切换即时生效（写入 DataStore → State 下行 → SpineSdView.update），无需重启。
+ *
+ * 30fps 档只降低出帧密度，动画仍按真实时间推进（每帧 delta 翻倍），动作不会变慢。
+ */
+@Composable
+private fun SdFrameRateSelector(
+    frameRate: Int,
+    onSetSdFrameRate: (Int) -> Unit
+) {
+    val normalized = ChibiFrameRate.normalize(frameRate)
+    Column(modifier = Modifier.padding(horizontal = AppSpacing.Lg)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("渲染帧率", style = AppTypography.BodySmall)
+            Text(
+                if (normalized == ChibiFrameRate.FPS_LOW) "30 fps" else "60 fps",
+                style = AppTypography.BodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(modifier = Modifier.height(AppSpacing.Sm))
+        Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
+            BlyyChip(
+                label = "60 fps 顺滑",
+                selected = normalized == ChibiFrameRate.FPS_DEFAULT,
+                onClick = { onSetSdFrameRate(ChibiFrameRate.FPS_DEFAULT) }
+            )
+            BlyyChip(
+                label = "30 fps 省电",
+                selected = normalized == ChibiFrameRate.FPS_LOW,
+                onClick = { onSetSdFrameRate(ChibiFrameRate.FPS_LOW) }
+            )
+        }
+        Text(
+            "30 fps 明显降低 GPU 占用与耗电，动画节奏不变；60 fps 更顺滑。",
+            style = AppTypography.BodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = AppSpacing.Xs)
         )
     }
 }
