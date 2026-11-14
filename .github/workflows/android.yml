@@ -62,7 +62,9 @@ jobs:
       uses: actions/upload-artifact@v6
       with:
         name: app-release
-        path: app/build/outputs/apk/release/app-release.apk
+        # CI 无签名凭据时 AGP 产出 app-release-unsigned.apk（本机有签名则是 app-release.apk），
+        # 固定文件名会在无签名环境报「No files were found」
+        path: app/build/outputs/apk/release/*.apk
 
     - name: Upload Test Results
       if: always()
