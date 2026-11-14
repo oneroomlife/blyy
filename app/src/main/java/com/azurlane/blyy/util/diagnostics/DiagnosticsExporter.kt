@@ -45,7 +45,9 @@ object DiagnosticsExporter {
             zip.put("logs.txt", AppLog.dump())
 
             CrashReporter.listCrashes(appContext).forEach { crash ->
-                zip.put("crashes/${crash.name}", crash.readText())
+                // 单个文件损坏/被占用时跳过，不让整包导出失败
+                val text = runCatching { crash.readText() }.getOrNull() ?: return@forEach
+                zip.put("crashes/${crash.name}", text)
             }
         }
 

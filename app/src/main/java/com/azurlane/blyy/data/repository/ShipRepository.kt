@@ -62,7 +62,9 @@ data class VoicesData(
     val voices: List<VoiceLine>,
     val defaultFigureUrl: String?,
     val skinFigureMap: Map<String, String>,
-    val defaultChibiUrl: String? = null
+    val defaultChibiUrl: String? = null,
+    /** true = 本次是网络失败后从 `ship_cache` 取到的快照（UI 需要如实告知） */
+    val fromCache: Boolean = false
 )
 
 /**
@@ -90,6 +92,15 @@ class ShipRepository @Inject constructor(
         encodeDefaults = true
     }
     companion object {
+        /**
+         * 单类缓存 JSON 的体积上限（字符数）。
+         *
+         * 正常舰娘：语音快照 3–40 KB、立绘 2–10 KB、详情 < 4 KB。
+         * 一旦 wiki 页面结构异常（把整页 HTML 当文本抓进来）就可能生成几 MB 的 JSON，
+         * 写进 SQLite 会拖慢每次读取（DataStore/Room 全量反序列化），因此设上限兜底。
+         */
+        private const val MAX_CACHE_JSON_CHARS = 256 * 1024
+
         private const val GAMEKEE_STUDENT_LIST_URL =
             "https://www.gamekee.com/ba/second/23941"
         private const val GAMEKEE_BASE_URL = "https://www.gamekee.com"
@@ -429,19 +440,20 @@ class ShipRepository @Inject constructor(
 
     private suspend fun cacheVoices(shipName: String, archiveType: String, data: VoicesData) {
         runCatching {
-            shipCacheDao.putVoices(
-                shipName = shipName,
-                archiveType = archiveType,
-                json = cacheJson.encodeToString(
-                    VoicesCacheSnapshot(
-                        voices = data.voices,
-                        defaultFigureUrl = data.defaultFigureUrl,
-                        skinFigureMap = data.skinFigureMap,
-                        defaultChibiUrl = data.defaultChibiUrl,
-                        fetchedAt = System.currentTimeMillis()
-                    )
+            val encoded = cacheJson.encodeToString(
+                VoicesCacheSnapshot(
+                    voices = data.voices,
+                    defaultFigureUrl = data.defaultFigureUrl,
+                    skinFigureMap = data.skinFigureMap,
+                    defaultChibiUrl = data.defaultChibiUrl,
+                    fetchedAt = System.currentTimeMillis()
                 )
             )
+            if (encoded.length > MAX_CACHE_JSON_CHARS) {
+                Log.w(TAG, "cacheVoices skipped: json too large (${encoded.length})")
+                return@runCatching
+            }
+            shipCacheDao.putVoices(shipName = shipName, archiveType = archiveType, json = encoded)
         }.onFailure { Log.w(TAG, "cacheVoices failed: ${it.message}") }
     }
 
@@ -456,25 +468,27 @@ class ShipRepository @Inject constructor(
             voices = snapshot.voices,
             defaultFigureUrl = snapshot.defaultFigureUrl,
             skinFigureMap = snapshot.skinFigureMap,
-            defaultChibiUrl = snapshot.defaultChibiUrl
+            defaultChibiUrl = snapshot.defaultChibiUrl,
+            fromCache = true
         )
     }
 
     private suspend fun cacheGallery(shipName: String, archiveType: String, gallery: ShipGallery) {
         if (gallery.illustrations.isEmpty() && gallery.figures.isEmpty()) return
         runCatching {
-            shipCacheDao.putGallery(
-                shipName = shipName,
-                archiveType = archiveType,
-                json = cacheJson.encodeToString(
-                    GalleryCacheSnapshot(
-                        shipName = gallery.shipName,
-                        illustrations = gallery.illustrations.toLabeledUrls(),
-                        figures = gallery.figures.toLabeledUrls(),
-                        fetchedAt = System.currentTimeMillis()
-                    )
+            val encoded = cacheJson.encodeToString(
+                GalleryCacheSnapshot(
+                    shipName = gallery.shipName,
+                    illustrations = gallery.illustrations.toLabeledUrls(),
+                    figures = gallery.figures.toLabeledUrls(),
+                    fetchedAt = System.currentTimeMillis()
                 )
             )
+            if (encoded.length > MAX_CACHE_JSON_CHARS) {
+                Log.w(TAG, "cacheGallery skipped: json too large (${encoded.length})")
+                return@runCatching
+            }
+            shipCacheDao.putGallery(shipName = shipName, archiveType = archiveType, json = encoded)
         }.onFailure { Log.w(TAG, "cacheGallery failed: ${it.message}") }
     }
 

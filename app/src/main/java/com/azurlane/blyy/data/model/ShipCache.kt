@@ -34,9 +34,4 @@ data class ShipCache(
     /** ShipDetail 的 JSON（属性/技能/装备/CV/画师） */
     val detailJson: String = "",
     val updatedAt: Long = 0L
-) {
-    fun hasVoices(): Boolean = voicesJson.isNotBlank()
-    fun hasGallery(): Boolean = galleryJson.isNotBlank()
-    fun hasProfile(): Boolean = profileJson.isNotBlank()
-    fun hasDetail(): Boolean = detailJson.isNotBlank()
-}
+)

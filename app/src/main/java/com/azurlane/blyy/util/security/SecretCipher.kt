@@ -5,6 +5,10 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import java.security.KeyStore
+import java.security.KeyStoreException
+import java.security.ProviderException
+import java.security.UnrecoverableKeyException
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -18,17 +22,17 @@ import javax.crypto.spec.GCMParameterSpec
  * （root、备份、`adb backup`、第三方文件管理器、云同步误传）都会直接泄露凭证。
  *
  * 设计约束（按重要性）：
- * 1. **绝不阻断功能**：Keystore 在部分定制 ROM / 无安全硬件的设备上可能抛
- *    `KeyStoreException` / `ProviderException`。此时 [encrypt] 降级为明文返回并记日志，
- *    应用照常可用——安全是增强，不是单点故障。
+ * 1. **绝不阻断功能**：Keystore 在部分定制 ROM / 无安全硬件的设备上可能抛异常。
+ *    此时 [encrypt] 降级为明文返回并记日志，应用照常可用——安全是增强，不是单点故障。
  * 2. **向后兼容**：历史上写入的是明文，[decrypt] 对不带 [PREFIX] 的值原样返回；
- *    下一次写入（[PlayerSettingsDataStore] 的 setter 或 [PlayerSettingsDataStore.migrateSecretsToEncrypted]）
- *    会把它换成密文，无需一次性迁移脚本，也不会因迁移失败丢数据。
- * 3. **可判定损坏**：解密失败返回空串而不是抛异常，调用方看到的是「未配置」——
- *    用户可以重新填 Key，而不是面对一个崩溃的 App。
+ *    下一次写入会把它换成密文，无需一次性迁移脚本，也不会因迁移失败丢数据。
+ * 3. **可判定损坏**：[tryDecrypt] 区分"未配置"与"解不开"，调用方据此决定是否保留原始密文。
+ *
+ * 性能：DataStore 每次写入都会让所有派生 Flow 重新发射，而 `ai_chat_sessions` 这类
+ * 几 KB 的 JSON 每次都跑一遍 Keystore AES-GCM 是纯浪费（播放会话每 5 秒写一次即触发）。
+ * 因此解密结果按**密文**做小容量 LRU 缓存（最多 8 条），密文不变就不重复解密。
  *
  * 密文格式：`enc1:` + Base64(iv(12B) + ciphertext + tag(16B))。
- * GCM 的 IV 每次加密随机生成（`setRandomizedEncryptionRequired(true)` 默认开启）。
  */
 object SecretCipher {
 
@@ -42,10 +46,17 @@ object SecretCipher {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val IV_BYTES = 12
     private const val TAG_BITS = 128
+    private const val DECRYPT_CACHE_SIZE = 8
 
-    /** Keystore 不可用时的熔断，避免每次读写都抛一次异常（异常栈有成本） */
+    /** Keystore 整体不可用（无安全硬件/Provider 异常）时的熔断，避免每次读写都抛异常 */
     @Volatile
     private var keystoreUnavailable = false
+
+    /** 密文 → 明文 的 LRU（accessOrder=true），避免同一段 JSON 被反复解密 */
+    private val decryptCache = object : LinkedHashMap<String, String>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > DECRYPT_CACHE_SIZE
+    }
 
     /** 判断一个已存值是否为本工具产出的密文 */
     fun isEncrypted(value: String?): Boolean = value != null && value.startsWith(PREFIX)
@@ -65,7 +76,19 @@ object SecretCipher {
             val packed = ByteArray(iv.size + cipherText.size)
             System.arraycopy(iv, 0, packed, 0, iv.size)
             System.arraycopy(cipherText, 0, packed, iv.size, cipherText.size)
-            PREFIX + Base64.encodeToString(packed, Base64.NO_WRAP)
+            val encoded = PREFIX + Base64.encodeToString(packed, Base64.NO_WRAP)
+            // 顺手把新密文写进解密缓存：写后立刻读取（DataStore 常见模式）就不用再解一次
+            synchronized(decryptCache) { decryptCache[encoded] = plain }
+            encoded
+        } catch (e: KeyStoreException) {
+            markUnavailable(e)
+            plain
+        } catch (e: UnrecoverableKeyException) {
+            markUnavailable(e)
+            plain
+        } catch (e: ProviderException) {
+            markUnavailable(e)
+            plain
         } catch (t: Throwable) {
             Log.w(TAG, "encrypt failed, fallback to plaintext", t)
             plain
@@ -74,7 +97,7 @@ object SecretCipher {
 
     /**
      * 解密。非 [PREFIX] 开头的值视为历史明文，原样返回。
-     * 解密失败返回空串（等价于"未配置"），并记一次日志。
+     * 解密失败返回空串（等价于"未配置"）。
      */
     fun decrypt(value: String?): String = tryDecrypt(value) ?: ""
 
@@ -88,7 +111,12 @@ object SecretCipher {
     fun tryDecrypt(value: String?): String? {
         if (value.isNullOrEmpty()) return ""
         if (!isEncrypted(value)) return value
+
+        synchronized(decryptCache) {
+            decryptCache[value]?.let { return it }
+        }
         if (keystoreUnavailable) return null
+
         return try {
             val packed = Base64.decode(value.removePrefix(PREFIX), Base64.NO_WRAP)
             if (packed.size <= IV_BYTES) return null
@@ -98,18 +126,26 @@ object SecretCipher {
                 obtainKey(),
                 GCMParameterSpec(TAG_BITS, packed, 0, IV_BYTES)
             )
-            String(cipher.doFinal(packed, IV_BYTES, packed.size - IV_BYTES), Charsets.UTF_8)
+            val plain = String(cipher.doFinal(packed, IV_BYTES, packed.size - IV_BYTES), Charsets.UTF_8)
+            synchronized(decryptCache) { decryptCache[value] = plain }
+            plain
+        } catch (e: AEADBadTagException) {
+            // 单条数据坏了（密钥被清/密文损坏），不影响其他字段，也不该熔断整个 Keystore
+            Log.w(TAG, "decrypt failed (bad tag), treat as unset")
+            null
+        } catch (e: KeyStoreException) {
+            markUnavailable(e)
+            null
+        } catch (e: UnrecoverableKeyException) {
+            markUnavailable(e)
+            null
+        } catch (e: ProviderException) {
+            markUnavailable(e)
+            null
         } catch (t: Throwable) {
-            // 密钥被清除（换机/恢复备份/系统重置 Keystore）时 GCM 校验必然失败
             Log.w(TAG, "decrypt failed", t)
             null
         }
-    }
-
-    /** 幂等：明文→密文，已加密或空值原样返回 */
-    fun encryptIfNeeded(value: String?): String {
-        if (value.isNullOrEmpty()) return value ?: ""
-        return if (isEncrypted(value)) value else encrypt(value)
     }
 
     /** 供设置页「导出诊断」使用：判断字段名是否需要打码 */
@@ -118,10 +154,20 @@ object SecretCipher {
         return SENSITIVE_HINTS.any { lower.contains(it) }
     }
 
+    /** 测试/排查用：当前是否处于 Keystore 熔断状态 */
+    fun isKeystoreUnavailable(): Boolean = keystoreUnavailable
+
     private val SENSITIVE_HINTS = listOf(
         "api_key", "apikey", "token", "secret", "password", "passwd",
         "uid", "server", "auth"
     )
+
+    private fun markUnavailable(error: Throwable) {
+        if (!keystoreUnavailable) {
+            keystoreUnavailable = true
+            Log.e(TAG, "AndroidKeyStore unavailable, sensitive fields fall back to plaintext", error)
+        }
+    }
 
     private fun obtainKey(): SecretKey {
         synchronized(this) {

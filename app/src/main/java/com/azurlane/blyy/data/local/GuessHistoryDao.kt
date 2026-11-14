@@ -46,6 +46,16 @@ abstract class GuessHistoryDao {
     abstract suspend fun insert(history: GuessHistory): Long
 
     /**
+     * 批量插入（备份恢复用）。
+     *
+     * 单条 insert 循环会为每一行开一次事务，500 条成绩就是 500 次磁盘 fsync；
+     * Room 的 `@Insert` 列表重载在**一个事务内**完成，恢复速度差一个数量级。
+     * 返回与入参等长的 rowId 列表：-1 表示命中唯一索引被跳过（已存在）。
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    abstract suspend fun insertAll(list: List<GuessHistory>): List<Long>
+
+    /**
      * 按 sessionId + mode 更新记录（用于"继续作答后再次退出"场景）
      * 仅更新成绩相关字段，保留原 id 和 sessionId
      * 返回受影响行数（0 表示无匹配记录，需走 insert 路径）

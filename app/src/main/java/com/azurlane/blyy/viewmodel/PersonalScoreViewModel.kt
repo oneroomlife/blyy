@@ -11,10 +11,12 @@ import com.azurlane.blyy.data.model.ScoreSummary
 import com.azurlane.blyy.data.repository.PersonalScoreRepository
 import com.azurlane.blyy.domain.PersonalScoreBoard
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -79,11 +81,15 @@ class PersonalScoreViewModel @Inject constructor(
             modeFilter = mode,
             difficultyFilter = difficulty
         )
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = PersonalScoreUiState()
-    )
+    }
+        // 排序/聚合/趋势都在这个 combine 里：几千局成绩时在主线程做是浪费，
+        // 统一丢到 Default 再交给 stateIn（UI 只消费结果）
+        .flowOn(Dispatchers.Default)
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = PersonalScoreUiState()
+        )
 
     fun setModeFilter(filter: ScoreModeFilter) {
         modeFilter.value = filter

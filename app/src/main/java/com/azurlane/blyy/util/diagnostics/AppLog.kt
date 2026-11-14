@@ -33,15 +33,28 @@ object AppLog {
     private val ring = ArrayDeque<String>(MAX_MEMORY_LINES)
     private val timeFormat = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)
 
+    /**
+     * 凭证脱敏规则。
+     *
+     * 诊断包是**用户主动分享出去**的：日志里一旦出现 `?api_key=xxx`、`Authorization: Bearer xxx`
+     * 或 `sk-...`，所谓"导出日志求助"就变成了把凭证贴到公开 Issue。
+     */
+    private val QUERY_SECRET = Regex("""(?i)((?:api[_-]?key|access[_-]?token|token|key))\s*=\s*[^&\s"',]+""")
+    private val BEARER = Regex("""(?i)bearer\s+[A-Za-z0-9._\-]+""")
+    private val SK_KEY = Regex("""\bsk-[A-Za-z0-9]{8,}""")
+
     @Volatile
     private var logDir: File? = null
 
-    /** 在 Application.onCreate 调用一次 */
+    /**
+     * 在 Application.onCreate 调用一次。
+     * 这里刻意**不写首行日志**：安装发生在主线程启动阶段，任何磁盘 IO 都会被
+     * StrictMode 记一笔；第一条真正的日志会在业务代码里自然产生。
+     */
     fun install(context: Context) {
         synchronized(lock) {
             logDir = File(context.applicationContext.filesDir, DIR_NAME).apply { mkdirs() }
             ring.clear()
-            append("I", TAG, "AppLog installed (v=${context.packageName})", null)
         }
     }
 
@@ -84,6 +97,8 @@ object AppLog {
     fun totalBytes(): Long = logDir?.listFiles()?.sumOf { it.length() } ?: 0L
 
     private fun append(level: String, tag: String, message: String, throwable: Throwable?) {
+        // 诊断包会被用户主动分享出去：先脱敏再落盘/进 logcat
+        val safeMessage = redact(message)
         val line = buildString {
             append(timeFormat.format(Date()))
             append(' ')
@@ -91,7 +106,7 @@ object AppLog {
             append('/')
             append(tag)
             append(": ")
-            append(message)
+            append(safeMessage)
             if (throwable != null) {
                 append(" | ")
                 append(throwable.javaClass.simpleName)
@@ -106,11 +121,19 @@ object AppLog {
         }
         // 同时进 logcat：接 debugger 时不丢上下文
         when (level) {
-            "E" -> Log.e(tag, message, throwable)
-            "W" -> Log.w(tag, message, throwable)
-            "D" -> Log.d(tag, message, throwable)
-            else -> Log.i(tag, message, throwable)
+            "E" -> Log.e(tag, safeMessage, throwable)
+            "W" -> Log.w(tag, safeMessage, throwable)
+            "D" -> Log.d(tag, safeMessage, throwable)
+            else -> Log.i(tag, safeMessage, throwable)
         }
+    }
+
+    /** 把三类常见凭证形态打码（查询参数 / Bearer 头 / sk- 前缀） */
+    private fun redact(raw: String): String {
+        var result = QUERY_SECRET.replace(raw, "$1=***")
+        result = BEARER.replace(result, "Bearer ***")
+        result = SK_KEY.replace(result, "sk-***")
+        return result
     }
 
     private fun writeToFile(line: String, throwable: Throwable?) {

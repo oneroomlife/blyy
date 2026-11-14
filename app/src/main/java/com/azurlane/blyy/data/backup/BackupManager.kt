@@ -114,7 +114,8 @@ class BackupManager @Inject constructor(
         runCatching {
             val payload = createPayload()
             val dir = localDir().apply { mkdirs() }
-            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(payload.createdAt))
+            // 带毫秒：自动备份与手动备份可能落在同一秒，同名会被静默覆盖
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date(payload.createdAt))
             val file = File(dir, "blyy-backup-$stamp.json")
             file.writeText(json.encodeToString(BackupPayload.serializer(), payload))
             pruneLocalFiles()
@@ -192,48 +193,56 @@ class BackupManager @Inject constructor(
         runCatching {
             val prefsApplied = settings.writeBackupPrefs(payload.preferences)
 
+            // 一次性读出全部舰娘做内存比对：逐条 getShipByName 是 N 次查询，
+            // 1000 个誓约就是 1000 次 SELECT；这里降到 1 次 + 仅对"需要变更"的行写库。
+            val existingShips = runCatching {
+                shipDao.getAllShips().first().associateBy { it.name to it.archiveType }
+            }.getOrDefault(emptyMap())
+
             var oathApplied = 0
             val pending = mutableListOf<ShipStateBackup>()
             payload.shipStates.forEach { state ->
                 if (!state.favorite) return@forEach
-                val exists = shipDao.getShipByName(state.name, state.archiveType) != null
-                if (exists) {
-                    shipDao.updateFavorite(state.name, state.archiveType, true)
-                    oathApplied++
-                } else {
-                    pending += state
+                val row = existingShips[state.name to state.archiveType]
+                when {
+                    row == null -> pending += state
+                    row.isFavorite -> oathApplied++ // 已是誓约状态，无需写库
+                    else -> {
+                        shipDao.updateFavorite(state.name, state.archiveType, true)
+                        oathApplied++
+                    }
                 }
             }
             if (pending.isNotEmpty()) {
                 settings.setPendingOathRestore(json.encodeToString<List<ShipStateBackup>>(pending))
             }
 
-            var scoresInserted = 0
-            var scoresSkipped = 0
-            payload.scores.forEach { score ->
-                val sessionId = score.sessionId.ifBlank { syntheticSessionId(score) }
-                if (guessHistoryDao.existsBySession(sessionId, score.mode)) {
-                    scoresSkipped++
-                } else {
-                    guessHistoryDao.insert(
-                        GuessHistory(
-                            mode = score.mode,
-                            difficulty = score.difficulty,
-                            totalQuestions = score.totalQuestions,
-                            correctAnswers = score.correctAnswers,
-                            totalScore = score.totalScore,
-                            hintsUsedTotal = score.hintsUsedTotal,
-                            skippedQuestions = score.skippedQuestions,
-                            totalPossibleScore = score.totalPossibleScore,
-                            timestamp = score.timestamp,
-                            accuracy = score.accuracy,
-                            averageScore = score.averageScore,
-                            sessionId = sessionId
-                        )
-                    )
-                    scoresInserted++
-                }
+            // 一次批量插入（单事务）：
+            // - 逐条 existsBySession + insert 是 2N 次查询/写入，500 条成绩会明显卡顿；
+            // - 唯一索引 (sessionId, mode) + IGNORE 天然去重，返回 -1 的行即"已存在被跳过"。
+            val toInsert = payload.scores.map { score ->
+                GuessHistory(
+                    mode = score.mode,
+                    difficulty = score.difficulty,
+                    totalQuestions = score.totalQuestions,
+                    correctAnswers = score.correctAnswers,
+                    totalScore = score.totalScore,
+                    hintsUsedTotal = score.hintsUsedTotal,
+                    skippedQuestions = score.skippedQuestions,
+                    totalPossibleScore = score.totalPossibleScore,
+                    timestamp = score.timestamp,
+                    accuracy = score.accuracy,
+                    averageScore = score.averageScore,
+                    sessionId = score.sessionId.ifBlank { syntheticSessionId(score) }
+                )
             }
+            val insertResults = if (toInsert.isEmpty()) {
+                emptyList()
+            } else {
+                guessHistoryDao.insertAll(toInsert)
+            }
+            val scoresInserted = insertResults.count { it > 0L }
+            val scoresSkipped = insertResults.count { it <= 0L }
 
             val result = RestoreResult(
                 shipsRestored = oathApplied,

@@ -335,6 +335,8 @@ class VoiceViewModel @OptIn(UnstableApi::class)
             _isLoading.value = true
             _error.value = null
             _studentLink.value = ""
+            // 重置缓存标记：否则切舰娘后会残留上一只的"从缓存加载"提示
+            _isCacheHit.value = false
 
             // Cancel previous figure sync collector to prevent leak
             figureSyncJob?.cancel()
@@ -345,9 +347,12 @@ class VoiceViewModel @OptIn(UnstableApi::class)
             }
 
             try {
-                val (voices, defaultFigureUrl, _) = getVoicesUseCase(shipName)
+                val data = getVoicesUseCase(shipName)
+                val voices = data.voices
                 _voices.value = voices
-                _figureUrl.value = defaultFigureUrl ?: ""
+                // 网络失败落到 ship_cache 时，UI 显示"从缓存加载"，避免把旧数据当新数据
+                _isCacheHit.value = data.fromCache
+                _figureUrl.value = data.defaultFigureUrl ?: ""
                 // Uri.encode 而非 URLEncoder.encode：后者会把空格编码为 "+"（表单编码），
                 // 出现在 URL 路径中会被服务器拒绝；Uri.encode 编码为 "%20" 才是路径编码
                 _wikiUrl.value = "https://wiki.biligame.com/blhx/${android.net.Uri.encode(shipName)}"

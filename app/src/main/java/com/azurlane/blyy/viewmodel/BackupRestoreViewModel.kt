@@ -156,6 +156,13 @@ class BackupRestoreViewModel @Inject constructor(
             _uiState.update { it.copy(busy = true) }
             try {
                 block()
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // 备份/恢复涉及文件系统与 DB：任何未预期异常都不能让 App 崩，
+                // 统一转成可读提示（底层实现已尽量用 Result，这里只是最后一道保险）
+                AppLog.e(TAG, "backup action failed", t)
+                error("操作失败：${t.message ?: t.javaClass.simpleName}")
             } finally {
                 _uiState.update { it.copy(busy = false) }
             }

@@ -22,16 +22,8 @@ abstract class ShipCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun upsert(cache: ShipCache)
 
-    /** 已缓存语音的舰娘名（用于诊断/统计） */
-    @Query("SELECT COUNT(*) FROM ship_cache WHERE archiveType = :archiveType AND voicesJson != ''")
-    abstract suspend fun countWithVoices(archiveType: String): Int
-
     @Query("DELETE FROM ship_cache")
     abstract suspend fun deleteAll()
-
-    /** 删除某档案类型的缓存（切换档案/清缓存时用） */
-    @Query("DELETE FROM ship_cache WHERE archiveType = :archiveType")
-    abstract suspend fun deleteByArchiveType(archiveType: String)
 
     /**
      * 部分写入：只覆盖 [voicesJson] / [galleryJson] / [profileJson] / [detailJson] 中非空的那几段。

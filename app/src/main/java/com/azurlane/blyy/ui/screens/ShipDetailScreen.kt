@@ -115,7 +115,9 @@ fun ShipDetailScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (state.isRefreshing) {
+            // 首次加载与手动刷新都要有可见反馈：详情页的四块数据来自不同链路，
+            // 没有任何指示时页面会先渲染一排"暂未解析到…"，像是坏了
+            if (state.isRefreshing || state.isLoading) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
@@ -139,11 +141,15 @@ fun ShipDetailScreen(
                     )
                 }
 
-                when (tabIndex) {
-                    0 -> statsItems(state.detail)
-                    1 -> skillItems(state.detail)
-                    2 -> equipmentItems(state.detail)
-                    else -> profileItems(state, onOpenWiki = onOpenWiki)
+                if (state.isLoading) {
+                    item(key = "loading_hint") { EmptyHint("正在读取档案…") }
+                } else {
+                    when (tabIndex) {
+                        0 -> statsItems(state.detail)
+                        1 -> skillItems(state.detail)
+                        2 -> equipmentItems(state.detail)
+                        else -> profileItems(state, onOpenWiki = onOpenWiki)
+                    }
                 }
 
                 item(key = "bottom_spacer") {

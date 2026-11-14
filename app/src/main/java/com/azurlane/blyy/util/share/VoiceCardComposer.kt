@@ -58,24 +58,39 @@ object VoiceCardComposer {
         sceneLabel: String,
         avatarUrl: String
     ): File? = withContext(Dispatchers.IO) {
-        runCatching {
-            val avatar = loadAvatar(context, avatarUrl)
-            val bitmap = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
+        var avatar: Bitmap? = null
+        var card: Bitmap? = null
+        try {
+            avatar = loadAvatar(context, avatarUrl)
+            card = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(card)
             drawBackground(canvas)
             drawHeader(canvas, avatar, shipName, sceneLabel)
             drawDialogue(canvas, dialogue)
             drawFooter(canvas, shipName)
-            avatar?.recycle()
 
             val dir = File(context.cacheDir, DIR).apply { mkdirs() }
             prune(dir)
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             val file = File(dir, "voice-card-$stamp.png")
-            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            bitmap.recycle()
+            file.outputStream().use { card.compress(Bitmap.CompressFormat.PNG, 100, it) }
             file
-        }.onFailure { Log.w(TAG, "compose failed: ${it.message}", it) }.getOrNull()
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            // 结构化并发：取消必须向上传播，不能被当成"合成失败"吞掉
+            throw c
+        } catch (oom: OutOfMemoryError) {
+            // 1080×1440 ARGB_8888 约 6 MB，低端机上叠加立绘解码可能 OOM：
+            // 分享是锦上添花，宁可返回 null 提示重试，也不要让进程被系统杀掉
+            Log.w(TAG, "compose OOM, abort", oom)
+            null
+        } catch (t: Throwable) {
+            Log.w(TAG, "compose failed: ${t.message}", t)
+            null
+        } finally {
+            // 一律回收，避免失败路径把 6 MB 的位图留给 GC
+            runCatching { avatar?.recycle() }
+            runCatching { card?.recycle() }
+        }
     }
 
     // ── 绘制 ──

@@ -98,9 +98,9 @@ fun BackupRestoreScreen(
         if (uri != null) viewModel.loadImportPreview(uri)
     }
 
-    val suggestedFileName = remember {
-        "blyy-backup-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.json"
-    }
+    // 每次点击现算文件名：同一次会话里连点两次备份不会因为同名被 SAF 覆盖
+    fun suggestedFileName(): String =
+        "blyy-backup-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.json"
 
     LaunchedEffect(state.message) {
         state.message?.let { message ->
@@ -142,7 +142,7 @@ fun BackupRestoreScreen(
                     leadingIcon = Icons.Rounded.CloudUpload,
                     title = "备份到文件",
                     subtitle = "选择保存位置（网盘/下载目录/数据线），用于换机迁移",
-                    onClick = { createDocumentLauncher.launch(suggestedFileName) },
+                    onClick = { createDocumentLauncher.launch(suggestedFileName()) },
                     asCard = true
                 )
                 BlyyListItem(

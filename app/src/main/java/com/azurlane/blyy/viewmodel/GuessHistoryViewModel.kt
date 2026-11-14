@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.util.UUID
 import javax.inject.Inject
 
 /** 四元组辅助类 */
@@ -230,36 +229,4 @@ class GuessHistoryViewModel @Inject constructor(
         _detailRecord.value = null
     }
 
-    /**
-     * 保存一局游戏记录（供 GuessShipViewModel 调用）
-     * 包含 sessionId 用于防重复
-     */
-    fun saveGameRecord(
-        mode: String,
-        difficulty: String,
-        score: GameScore,
-        sessionId: String = UUID.randomUUID().toString()
-    ) {
-        viewModelScope.launch {
-            // 预检查：防止重复录入
-            val exists = historyDao.existsBySession(sessionId, mode)
-            if (exists) return@launch
-
-            val record = GuessHistory(
-                mode = mode,
-                difficulty = difficulty,
-                totalQuestions = score.totalQuestions,
-                correctAnswers = score.correctAnswers,
-                totalScore = score.totalScore,
-                hintsUsedTotal = score.hintsUsedTotal,
-                skippedQuestions = score.skippedQuestions,
-                totalPossibleScore = score.totalPossibleScore,
-                timestamp = System.currentTimeMillis(),
-                accuracy = score.accuracy,
-                averageScore = score.averageScore,
-                sessionId = sessionId
-            )
-            historyDao.insert(record)
-        }
-    }
 }

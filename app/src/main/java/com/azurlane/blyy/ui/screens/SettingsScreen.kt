@@ -283,9 +283,12 @@ fun SettingsScreen(
                         onClick = {
                             if (!exportingDiagnostics) {
                                 viewModel.exportDiagnostics { intent ->
-                                    context.startActivity(
-                                        Intent.createChooser(intent, "分享诊断包")
-                                    )
+                                    // 极简 ROM 可能没有 chooser 承载者：兜底提示而不是崩溃
+                                    runCatching {
+                                        context.startActivity(Intent.createChooser(intent, "分享诊断包"))
+                                    }.onFailure {
+                                        Toast.makeText(context, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
+                                    }
                                 }
                             }
                         },

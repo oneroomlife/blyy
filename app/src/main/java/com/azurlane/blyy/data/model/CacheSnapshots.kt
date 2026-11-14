@@ -53,8 +53,6 @@ data class ProfileCacheSnapshot(
 
 // ── DTO ↔ 展示模型 转换（VoicesData 的转换在 ShipRepository 内完成，避免 model 反向依赖） ──
 
-fun GalleryCacheSnapshot.toLabels() = illustrations.map { it.label to it.url }
-
 fun List<Pair<String, String>>.toLabeledUrls() =
     map { LabeledUrl(label = it.first, url = it.second) }
 

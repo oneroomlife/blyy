@@ -797,7 +797,7 @@ class GuessShipViewModel @Inject constructor(
 
     private suspend fun getGalleryForShip(ship: Ship): ShipGallery {
         return CacheManager.getOrPutSuspend(CacheNamespaces.SHIP_GALLERY, ship.name) {
-            repository.fetchShipGallery(ship.name)
+            repository.fetchShipGallery(ship.name, ship.archiveType)
         }
     }
 
@@ -812,7 +812,7 @@ class GuessShipViewModel @Inject constructor(
         val cacheKey = "char_${ship.name}"
         CacheManager.remove(CacheNamespaces.SHIP_LIST, cacheKey)
         
-        val info = repository.fetchCharacterInfo(ship.name)
+        val info = repository.fetchCharacterInfo(ship.name, ship.archiveType)
         CacheManager.put(CacheNamespaces.SHIP_LIST, cacheKey, info)
         return info
     }

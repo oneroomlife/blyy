@@ -80,9 +80,17 @@ class ShipDetailViewModel @Inject constructor(
         }
     }
 
+    /** 手动刷新：详情与角色档案一起重抓（按钮语义是"刷新这一页"，不能只刷一半） */
     fun refresh() {
-        if (shipName.isBlank() || _uiState.value.isRefreshing) return
+        val state = _uiState.value
+        if (shipName.isBlank() || state.isRefreshing || state.isLoading) return
         viewModelScope.launch { loadDetail(forceRefresh = true) }
+        viewModelScope.launch {
+            val profile = runCatching {
+                shipRepository.fetchCharacterInfo(shipName, archiveType)
+            }.getOrNull() ?: return@launch
+            _uiState.update { it.copy(profile = profile) }
+        }
     }
 
     private suspend fun loadDetail(forceRefresh: Boolean) {

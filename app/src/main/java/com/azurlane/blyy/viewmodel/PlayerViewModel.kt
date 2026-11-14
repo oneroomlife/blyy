@@ -9,9 +9,11 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import com.azurlane.blyy.data.local.PlayLaterItem
+import com.azurlane.blyy.data.local.PlayerSessionStore
 import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.data.model.PlayerSession
 import com.azurlane.blyy.service.PlaybackServiceConnection
+import com.azurlane.blyy.service.SleepTimerController
 import com.google.common.util.concurrent.MoreExecutors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -62,7 +64,9 @@ data class PlayerUiState(
 @UnstableApi
 class PlayerViewModel @Inject constructor(
     private val settingsDataStore: PlayerSettingsDataStore,
-    private val playbackServiceConnection: PlaybackServiceConnection
+    private val playbackServiceConnection: PlaybackServiceConnection,
+    private val sleepTimer: SleepTimerController,
+    private val sessionStore: PlayerSessionStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlayerUiState())
@@ -81,9 +85,6 @@ class PlayerViewModel @Inject constructor(
     private var controller: MediaController? = null
 
     private var progressJob: Job? = null
-
-    /** 睡眠定时倒计时任务（同一时间只允许一个） */
-    private var sleepTimerJob: Job? = null
 
     /** 冷启动读到的上次会话；在 MediaController 就绪后按需恢复 */
     @Volatile
@@ -188,6 +189,13 @@ class PlayerViewModel @Inject constructor(
             settingsDataStore.playbackSpeed.collect { speed ->
                 _uiState.update { it.copy(playbackSpeed = speed) }
                 controller?.setPlaybackSpeed(speed)
+            }
+        }
+
+        // 睡眠定时剩余时间（进程级控制器 → UI 状态）
+        viewModelScope.launch {
+            sleepTimer.remainingMs.collect { remaining ->
+                _uiState.update { it.copy(sleepTimerRemainingMs = remaining) }
             }
         }
 
@@ -522,8 +530,6 @@ class PlayerViewModel @Inject constructor(
 
     // ─────────────────── 播放器产品化：倍速 / 睡眠定时 / 会话快照 ───────────────────
 
-    private val sessionJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-
     /**
      * 冷启动恢复播放位置。
      *
@@ -575,82 +581,49 @@ class PlayerViewModel @Inject constructor(
     }
 
     /**
-     * 睡眠定时：到点先 3 秒淡出音量再暂停（直接 pause 会把人吵醒），
-     * 关闭/取消时把音量恢复到 1。
+     * 睡眠定时：**委托给进程级的 [SleepTimerController]**。
+     *
+     * 这里曾经把倒计时放在 viewModelScope 里，导致退出语音页（VM 被销毁）后
+     * 定时任务被取消——"30 分钟后暂停"静默失效。定时属于播放器约束，
+     * 生命周期必须跟着播放服务，不跟页面走。
      */
     fun startSleepTimer(minutes: Int) {
-        if (minutes <= 0) {
-            cancelSleepTimer()
-            return
-        }
-        sleepTimerJob?.cancel()
-        val totalMs = minutes * 60_000L
-        _uiState.update { it.copy(sleepTimerRemainingMs = totalMs) }
-        sleepTimerJob = viewModelScope.launch {
-            var remaining = totalMs
-            while (isActive && remaining > 0) {
-                delay(1_000)
-                remaining -= 1_000
-                _uiState.update { it.copy(sleepTimerRemainingMs = remaining.coerceAtLeast(0)) }
-            }
-            if (remaining <= 0) fadeOutAndPause()
-        }
-    }
-
-    fun cancelSleepTimer() {
-        sleepTimerJob?.cancel()
-        sleepTimerJob = null
-        controller?.volume = 1f
-        _uiState.update { it.copy(sleepTimerRemainingMs = 0L) }
-    }
-
-    private suspend fun fadeOutAndPause() {
-        val player = controller
-        if (player != null) {
-            val steps = 12
-            for (step in steps downTo 0) {
-                runCatching { player.volume = step / steps.toFloat() }
-                delay(250)
-            }
-            runCatching {
-                player.pause()
-                player.volume = 1f
-            }
-        }
-        _uiState.update { it.copy(sleepTimerRemainingMs = 0L) }
+        sleepTimer.start(minutes)
         saveSession(force = true)
     }
 
-    /** 会话落盘节流时间戳（避免每 500ms 进度回调都写 DataStore） */
-    private var lastSessionSaveAt = 0L
+    fun cancelSleepTimer() {
+        sleepTimer.cancel()
+    }
 
     /**
-     * 保存「听到哪了」。force=true 用于切歌/暂停/退出这些关键节点，
-     * 普通调用受 5 秒节流保护。
+     * 保存「听到哪了」。force=true 用于切歌/暂停/退出这些关键节点。
+     *
+     * 写盘交给进程级的 [PlayerSessionStore]：`onCleared()` 里 `viewModelScope` 已经
+     * 被取消，原先在这里 launch 的写法实际从未执行（见 PlayerSessionStore 类注释）。
      */
     private fun saveSession(force: Boolean = false) {
         val player = controller ?: return
         val item = player.currentMediaItem ?: return
-        val now = System.currentTimeMillis()
-        if (!force && now - lastSessionSaveAt < 5_000) return
-        lastSessionSaveAt = now
+
+        // 已播完（单曲/队列结束）→ 清掉会话，避免下次启动把用户"恢复"到片尾
+        if (player.playbackState == Player.STATE_ENDED) {
+            sessionStore.clear()
+            return
+        }
 
         val url = item.mediaId.ifBlank { item.localConfiguration?.uri?.toString().orEmpty() }
         if (url.isBlank()) return
-        val session = PlayerSession(
-            url = url,
-            positionMs = player.currentPosition.coerceAtLeast(0L),
-            fromQueue = _uiState.value.isPlayingFromQueue,
-            queueItemUrl = _uiState.value.currentlyPlayingQueueItemUrl.orEmpty(),
-            savedAt = now
+        sessionStore.save(
+            PlayerSession(
+                url = url,
+                positionMs = player.currentPosition.coerceAtLeast(0L),
+                fromQueue = _uiState.value.isPlayingFromQueue,
+                queueItemUrl = _uiState.value.currentlyPlayingQueueItemUrl.orEmpty(),
+                savedAt = System.currentTimeMillis()
+            ),
+            force = force
         )
-        viewModelScope.launch {
-            runCatching {
-                settingsDataStore.setPlayerSession(
-                    sessionJson.encodeToString(PlayerSession.serializer(), session)
-                )
-            }
-        }
     }
 
     override fun onCleared() {
@@ -668,7 +641,7 @@ class PlayerViewModel @Inject constructor(
             }
         }
         saveSession(force = true)
-        sleepTimerJob?.cancel()
+        // 注意：不取消睡眠定时（它跟随进程，不跟随页面）
         controller = null
         stopProgressUpdateLoop()
         super.onCleared()

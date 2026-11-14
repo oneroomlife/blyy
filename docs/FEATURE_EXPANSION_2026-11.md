@@ -42,6 +42,29 @@
 
 测试增量：`WikiShipDetailParserTest`（7 例，合成 HTML）、`WikiUrlsTest`（4 例）、`PersonalScoreBoardTest`/`BackupValidatorTest` 沿用。
 
+**第四轮：全量审查与加固（2026-11-15）**
+
+对本轮新增代码逐文件复审后，发现并修掉以下问题（按严重度）：
+
+| # | 问题 | 性质 | 修复 |
+|---|---|---|---|
+| 1 | 睡眠定时跑在 `viewModelScope` 里，退出语音页即被取消 —— 用户设的"30 分钟后暂停"静默失效 | **功能失效** | 新增进程级 `SleepTimerController`（单例 + 独立作用域 + 共享 MediaController） |
+| 2 | 会话快照在 `onCleared()` 里 `viewModelScope.launch` 写入 —— 但 `ViewModel.clear()` 先取消 scope 再调 onCleared，**这段代码从未执行** | **功能失效** | 新增进程级 `PlayerSessionStore`，非 suspend 接口，宿主销毁后仍能落盘 |
+| 3 | `ship_cache` 迁移 DDL 给 NOT NULL 列加了 `DEFAULT ''`，与 Room 生成的 schema 不一致 → 升级启动抛 "Migration didn't properly handle" | **升级崩溃** | DDL 与 `createSql` 逐字对齐；导出 schema 比对验证 |
+| 4 | `SecretCipher` 的熔断标志 `keystoreUnavailable` 从未被置位；且 DataStore 每次写入都会让所有派生 Flow 重新解密（播放会话 5 秒一次） | 性能/健壮性 | 分类捕获 `KeyStoreException/ProviderException` 并熔断；解密结果按密文做 8 条 LRU；`AEADBadTagException` 只算单条损坏 |
+| 5 | 诊断日志在主线程安装时写盘；日志原文可能含 `?api_key=`、`Bearer xxx`、`sk-...`，而诊断包是用户主动分享出去的 | 隐私 | 安装不再写首行；落盘前统一脱敏三类凭证形态 |
+| 6 | 成绩榜的排序/聚合/趋势在 `combine` 里跑主线程 | 性能 | `.flowOn(Dispatchers.Default)` |
+| 7 | `fetchShipGallery/fetchCharacterInfo` 未传 archiveType，学生的数据会写进 DOCK 缓存键 | 数据错乱 | 调用方传入 `ship.archiveType` |
+| 8 | 备份恢复逐条 `existsBySession + insert`（500 条 = 1000 次查询/写入）、誓约逐条 `getShipByName` | 性能 | 成绩走单事务批量 `insertAll`；誓约先一次性读全表做内存比对，只对差异行写库 |
+| 9 | 台词卡合成未处理 OOM、失败路径不回收 6 MB 位图；`CancellationException` 被当失败吞掉 | 稳定性 | try/finally 回收 + OOM 兜底 + 取消原样抛出 |
+| 10 | 本地备份文件名精确到秒，自动备份与手动备份同秒会互相覆盖 | 数据丢失 | 文件名加毫秒 |
+| 11 | 仓库缓存 JSON 无体积上限（异常页面可能写入几 MB） | 存储/性能 | 单类上限 256 KB，超限跳过并记日志 |
+| 12 | 首启种子没写生日 —— 首装离线时生日日历/组件是空的 | 功能缺失 | 种子导入时合并 `blhx_birthdays.json` |
+| 13 | 详情页首次加载显示一排"暂未解析到…"，像坏了 | UX | 增加 loading 分支与进度条 |
+| 14 | 分享诊断包/台词卡在无 chooser 的 ROM 上会 `ActivityNotFoundException` | 崩溃 | `runCatching` + Toast 兜底 |
+| 15 | 缓存命中未告知 UI（"从缓存加载"只在学生链路生效） | 诚实性 | `VoicesData.fromCache` 透传到 `isCacheHit`，切换舰娘时重置 |
+| 16 | 死代码：`encryptIfNeeded`、`ShipCache.hasX()`、`CacheSnapshots.toLabels`、`ShipCacheDao.countWithVoices/deleteByArchiveType`、`GuessHistoryViewModel.saveGameRecord` | 可维护性 | 全部删除 |
+
 仍待处理：P1 全量（离线优先、god class 拆分、i18n、AI 流式等）—— 见 §4 与 §6 路线图；备份/恢复（P0-5）已于本轮补齐。
 
 ---

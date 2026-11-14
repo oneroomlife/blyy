@@ -38,6 +38,7 @@ class ShipSeedInstaller @Inject constructor(
     companion object {
         private const val TAG = "ShipSeedInstaller"
         private const val ASSET_NAME = "blhx_seed_ships.json"
+        private const val BIRTHDAY_ASSET = "blhx_birthdays.json"
     }
 
     @Serializable
@@ -47,6 +48,11 @@ class ShipSeedInstaller @Inject constructor(
 
     /**
      * 表为空时导入种子。
+     *
+     * 生日一并写入：`blhx_birthdays.json` 本来就在 assets 里（1004 条离线名单），
+     * 但此前只由"联网刷新后"的 `seedDockBirthdays` 回填——首装无网时生日日历是空的。
+     * 这里在插入时直接带上，首启离线也能用日历与生日组件。
+     *
      * @return 写入条数（0 = 已有数据/资源缺失/解析失败，均不抛异常）
      */
     suspend fun seedIfEmpty(): Int = withContext(Dispatchers.IO) {
@@ -56,6 +62,8 @@ class ShipSeedInstaller @Inject constructor(
             val seeds = json.decodeFromString<List<SeedShip>>(text)
                 .filter { it.n.isNotBlank() }
             if (seeds.isEmpty()) return@runCatching 0
+
+            val birthdays = loadBirthdays()
 
             val ships = seeds.map { seed ->
                 Ship(
@@ -72,13 +80,19 @@ class ShipSeedInstaller @Inject constructor(
                     archiveType = ArchiveType.DOCK.name,
                     isFavorite = false,
                     filterData = "",
-                    birthday = ""
+                    birthday = birthdays[seed.n].orEmpty()
                 )
             }
             // 直接 insertAll（不走 upsertShips：后者会读库保留状态，此处表本来就是空的）
             shipDao.insertAll(ships)
-            Log.i(TAG, "seeded ${ships.size} ships from $ASSET_NAME")
+            Log.i(TAG, "seeded ${ships.size} ships (birthdays=${ships.count { it.birthday.isNotBlank() }})")
             ships.size
         }.onFailure { Log.w(TAG, "seed failed: ${it.message}") }.getOrDefault(0)
     }
+
+    /** 读取打包的生日名单（舰名 → "MM-DD"）；缺失/损坏返回空表，不影响种子主体 */
+    private fun loadBirthdays(): Map<String, String> = runCatching {
+        val text = context.assets.open(BIRTHDAY_ASSET).bufferedReader().use { it.readText() }
+        json.decodeFromString<Map<String, String>>(text)
+    }.onFailure { Log.w(TAG, "birthday asset unreadable: ${it.message}") }.getOrDefault(emptyMap())
 }
