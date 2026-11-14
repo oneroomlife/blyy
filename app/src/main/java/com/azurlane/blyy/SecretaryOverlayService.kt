@@ -22,6 +22,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import java.util.concurrent.atomic.AtomicBoolean
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -1388,12 +1389,13 @@ class SecretaryOverlayService : Service() {
                     }
                 }
             }
-            val filter = IntentFilter(ACTION_CLOSE_OVERLAY)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(closeActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(closeActionReceiver, filter)
-            }
+            // ContextCompat 统一处理 API 分支：<33 走无 flag 注册，>=33 传 RECEIVER_NOT_EXPORTED
+            // （Android 14+ 对 targetSdk U+ 的应用强制要求 flag，缺了直接 SecurityException）
+            ContextCompat.registerReceiver(
+                this, closeActionReceiver,
+                IntentFilter(ACTION_CLOSE_OVERLAY),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
         }
         Log.d(TAG, "startForegroundServiceNotification: 前台服务启动成功")
     }
