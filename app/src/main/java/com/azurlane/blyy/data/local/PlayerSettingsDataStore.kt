@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.azurlane.blyy.data.backup.PrefBackup
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.viewmodel.PlayMode
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -37,6 +39,7 @@ import javax.inject.Singleton
 import com.azurlane.blyy.util.ChibiFrameRate
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MAX
 import com.azurlane.blyy.util.SECRETARY_SD_SCALE_MIN
+import com.azurlane.blyy.util.security.SecretCipher
 
 /** 容错 JSON 实例：忽略未知字段，避免模型升级后反序列化崩溃导致数据"静默消失" */
 private val lenientJson = Json {
@@ -147,8 +150,11 @@ class PlayerSettingsDataStore @Inject constructor(
         private val ASSISTANT_DEFAULT_UID_KEY = stringPreferencesKey("assistant_default_uid")
         private val ASSISTANT_DEFAULT_SERVER_KEY = stringPreferencesKey("assistant_default_server")
 
-        // 排行榜自定义昵称：当无法通过 UID/服务器查询到玩家信息时，使用该昵称上传排行榜
-        private val LEADERBOARD_NICKNAME_KEY = stringPreferencesKey("leaderboard_nickname")
+        // 指挥官昵称：显示在「我的成绩榜」标题与战绩分享；仅本地使用，不上传。
+        // 旧键名 leaderboard_nickname 属于已下线的全服排行榜，启动时由
+        // [purgeLegacyLeaderboardData] 迁移到新键并删除旧键。
+        private val COMMANDER_NICKNAME_KEY = stringPreferencesKey("commander_nickname")
+        private const val LEGACY_COMMANDER_NICKNAME_KEY_NAME = "leaderboard_nickname"
 
         // AI 配置
         private val AI_API_KEY_KEY = stringPreferencesKey("ai_api_key")
@@ -186,9 +192,49 @@ class PlayerSettingsDataStore @Inject constructor(
         private val USER_NAME_KEY = stringPreferencesKey("user_name")
         private val USER_AVATAR_URL_KEY = stringPreferencesKey("user_avatar_url")
 
-        // 排行榜本地缓存（JSON + 时间戳），用于避免每次进入页面都重新加载
-        private val LEADERBOARD_CACHE_JSON_KEY = stringPreferencesKey("leaderboard_cache_json")
-        private val LEADERBOARD_CACHE_TIMESTAMP_KEY = androidx.datastore.preferences.core.longPreferencesKey("leaderboard_cache_ts")
+        // 旧版「全服排行榜」的本地缓存 key 已废弃（排行榜改为纯本地历史成绩榜，
+        // 不再有远端数据）。历史遗留值由 [purgeLegacyLeaderboardData] 在启动时清除。
+
+        // ── 密文自愈用的隔离区 ──
+        // 若某段 JSON 是密文但当前 Keystore 解不开（换机恢复备份、清除应用密钥、
+        // 签名/包名变更），直接覆盖写会**永久丢掉**用户的人格/配置。这里在覆盖前
+        // 把解不开的原始密文挪到隔离 key，至少给后续人工/工具恢复留一份原料。
+        private val AI_CHAT_SESSIONS_ORPHAN_KEY = stringPreferencesKey("ai_chat_sessions_orphan")
+        private val AI_API_CONFIGS_ORPHAN_KEY = stringPreferencesKey("ai_api_configs_orphan")
+        private val AI_JIUXIN_PRESETS_ORPHAN_KEY = stringPreferencesKey("ai_jiuxin_presets_orphan")
+
+        // ── 备份 / 恢复 ──
+        private val AUTO_BACKUP_ENABLED_KEY = booleanPreferencesKey("auto_backup_enabled")
+        private val LAST_BACKUP_AT_KEY = longPreferencesKey("last_backup_at")
+        private val LAST_RESTORE_AT_KEY = longPreferencesKey("last_restore_at")
+        /** 恢复时舰娘表尚未建立 → 暂存待补的誓约名单，下次名录刷新后自动应用 */
+        private val PENDING_OATH_RESTORE_KEY = stringPreferencesKey("pending_oath_restore")
+
+        /**
+         * 不进备份的 key 前缀（凭证 / 设备相关 / 可重建缓存）。
+         *
+         * 这份名单是**安全边界**而不是性能优化：
+         * - ai_api_key / ai_api_configs / ai_chat_sessions / ai_jiuxin_presets 含凭证或凭证副本；
+         * - assistant_default_uid/server 属隐私标识；
+         * - secretary_overlay_pos_* 是屏幕像素坐标，换设备即失效；
+         * - app_icon 与 app_custom_icon 指向本机文件路径；
+         * - archive_cache_ts 与 widget_voices_cache 是可重建缓存；
+         * - 备份自身状态（last_*）与待补标记不参与覆盖，避免恢复把"上次备份时间"弄乱。
+         */
+        private val BACKUP_EXCLUDED_PREFIXES = listOf(
+            "ai_api_key", "ai_api_configs", "ai_chat_sessions", "ai_session_msgs_",
+            "ai_current_session_id", "ai_jiuxin_presets",
+            "assistant_default_",
+            "secretary_overlay_pos_",
+            "app_custom_icon", "app_icon_",
+            "cached_drive_link", "cached_sd_resource_link",
+            "archive_cache_ts", "widget_voices_cache",
+            "last_backup_at", "last_restore_at", "pending_oath_restore", "auto_backup_enabled",
+            "ai_chat_sessions_orphan", "ai_api_configs_orphan", "ai_jiuxin_presets_orphan"
+        )
+
+        /** 迁移/清理时识别旧排行榜遗留 key（含旧昵称，迁移后删除） */
+        private const val LEGACY_LEADERBOARD_KEY_PREFIX = "leaderboard_"
 
         // 档案缓存时间戳（DOCK/STUDENT 各一份），用于多级缓存过期策略
         private val ARCHIVE_CACHE_TIMESTAMP_DOCK_KEY = androidx.datastore.preferences.core.longPreferencesKey("archive_cache_ts_dock")
@@ -715,34 +761,51 @@ class PlayerSettingsDataStore @Inject constructor(
         }
     }
 
-    // ── 小助手配置 ──
+    // ── 小助手配置（敏感：加密落盘，见 SecretCipher） ──
 
-    /** 小助手默认 UID */
-    val assistantDefaultUid: Flow<String> = safeData.map { it[ASSISTANT_DEFAULT_UID_KEY] ?: "" }
+    /** 小助手默认 UID（密文落盘；历史明文读取时原样返回，下次写入自动加密） */
+    val assistantDefaultUid: Flow<String> = safeData
+        .map { SecretCipher.decrypt(it[ASSISTANT_DEFAULT_UID_KEY]) }
+        .flowOn(Dispatchers.Default)
 
-    /** 小助手默认服务器名/ID */
-    val assistantDefaultServer: Flow<String> = safeData.map { it[ASSISTANT_DEFAULT_SERVER_KEY] ?: "" }
+    /** 小助手默认服务器名/ID（密文落盘） */
+    val assistantDefaultServer: Flow<String> = safeData
+        .map { SecretCipher.decrypt(it[ASSISTANT_DEFAULT_SERVER_KEY]) }
+        .flowOn(Dispatchers.Default)
 
     suspend fun setAssistantDefaultUid(uid: String) {
-        context.dataStore.edit { it[ASSISTANT_DEFAULT_UID_KEY] = uid }
+        val encrypted = SecretCipher.encrypt(uid)
+        context.dataStore.edit { it[ASSISTANT_DEFAULT_UID_KEY] = encrypted }
     }
 
     suspend fun setAssistantDefaultServer(server: String) {
-        context.dataStore.edit { it[ASSISTANT_DEFAULT_SERVER_KEY] = server }
+        val encrypted = SecretCipher.encrypt(server)
+        context.dataStore.edit { it[ASSISTANT_DEFAULT_SERVER_KEY] = encrypted }
     }
 
-    // ── 排行榜自定义昵称 ──
+    // ── 指挥官昵称 ──
 
-    /** 排行榜自定义昵称（无法通过助手查询到玩家信息时使用） */
-    val leaderboardNickname: Flow<String> = safeData.map { it[LEADERBOARD_NICKNAME_KEY] ?: "" }
+    /**
+     * 指挥官昵称：成绩榜页标题显示；不再用于任何上传。
+     *
+     * 读取时兼容旧键 `leaderboard_nickname`（老用户升级后昵称不丢），
+     * 下一次写入即落到新键；[purgeLegacyLeaderboardData] 会把旧键彻底清掉。
+     */
+    val commanderNickname: Flow<String> = safeData.map { prefs ->
+        prefs[COMMANDER_NICKNAME_KEY]
+            ?: prefs[stringPreferencesKey(LEGACY_COMMANDER_NICKNAME_KEY_NAME)].orEmpty()
+    }
 
-    suspend fun setLeaderboardNickname(nickname: String) {
-        context.dataStore.edit { it[LEADERBOARD_NICKNAME_KEY] = nickname.trim() }
+    suspend fun setCommanderNickname(nickname: String) {
+        context.dataStore.edit { it[COMMANDER_NICKNAME_KEY] = nickname.trim() }
     }
 
     // ── AI 配置 ──
 
-    val aiApiKey: Flow<String> = safeData.map { it[AI_API_KEY_KEY] ?: "" }
+    /** AI API Key（密文落盘） */
+    val aiApiKey: Flow<String> = safeData
+        .map { SecretCipher.decrypt(it[AI_API_KEY_KEY]) }
+        .flowOn(Dispatchers.Default)
     val aiCustomBaseUrl: Flow<String> = safeData.map { it[AI_CUSTOM_BASE_URL_KEY] ?: "" }
     val aiSystemPrompt: Flow<String> = safeData.map { it[AI_SYSTEM_PROMPT_KEY] ?: "" }
     val aiName: Flow<String> = safeData.map { it[AI_NAME_KEY] ?: "" }
@@ -759,7 +822,10 @@ class PlayerSettingsDataStore @Inject constructor(
     val aiStickersEnabled: Flow<Boolean> = safeData.map { it[AI_STICKERS_ENABLED_KEY] ?: true }
     val aiStickerChance: Flow<Float> = safeData.map { it[AI_STICKER_CHANCE_KEY] ?: 0.8f }
 
-    suspend fun setAiApiKey(key: String) { context.dataStore.edit { it[AI_API_KEY_KEY] = key } }
+    suspend fun setAiApiKey(key: String) {
+        val encrypted = SecretCipher.encrypt(key)
+        context.dataStore.edit { it[AI_API_KEY_KEY] = encrypted }
+    }
     suspend fun setAiCustomBaseUrl(url: String) { context.dataStore.edit { it[AI_CUSTOM_BASE_URL_KEY] = url } }
     suspend fun setAiSystemPrompt(prompt: String) { context.dataStore.edit { it[AI_SYSTEM_PROMPT_KEY] = prompt } }
     suspend fun setAiName(name: String) { context.dataStore.edit { it[AI_NAME_KEY] = name } }
@@ -776,17 +842,28 @@ class PlayerSettingsDataStore @Inject constructor(
 
     // ── 历史对话会话管理 ──
 
-    /** 所有会话元数据列表 */
+    /**
+     * 所有会话元数据列表。
+     *
+     * 会话快照内含 `apiKey`（历史设计为"会话保存当时的 API Key"，见 [ChatSession]），
+     * 因此整个 JSON 以密文落盘：即使被读到 Preferences 文件，也不会直接暴露 Key。
+     */
     val aiChatSessions: Flow<List<com.azurlane.blyy.data.model.ChatSession>> = safeData.map { prefs ->
-        val json = prefs[AI_CHAT_SESSIONS_KEY] ?: "[]"
+        val json = readSecretJson(prefs, AI_CHAT_SESSIONS_KEY, "[]")
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ChatSession>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode chat sessions", e); emptyList() }
     }.flowOn(Dispatchers.Default)
 
     /** 当前会话 ID */
     val aiCurrentSessionId: Flow<String> = safeData.map { it[AI_CURRENT_SESSION_ID_KEY] ?: "" }
 
-    /** 保存会话列表 */
-    suspend fun setAiChatSessions(sessions: List<com.azurlane.blyy.data.model.ChatSession>) { context.dataStore.edit { it[AI_CHAT_SESSIONS_KEY] = lenientJson.encodeToString(sessions) } }
+    /** 保存会话列表（整段 JSON 加密落盘） */
+    suspend fun setAiChatSessions(sessions: List<com.azurlane.blyy.data.model.ChatSession>) {
+        val encoded = SecretCipher.encrypt(lenientJson.encodeToString(sessions))
+        context.dataStore.edit { prefs ->
+            preserveUndecryptable(prefs, AI_CHAT_SESSIONS_KEY, AI_CHAT_SESSIONS_ORPHAN_KEY)
+            prefs[AI_CHAT_SESSIONS_KEY] = encoded
+        }
+    }
 
     /** 设置当前会话 ID */
     suspend fun setAiCurrentSessionId(id: String) {
@@ -812,9 +889,9 @@ class PlayerSettingsDataStore @Inject constructor(
 
     // ── 啾信预设配置管理 ──
 
-    /** 所有已保存的啾信预设列表 */
+    /** 所有已保存的啾信预设列表（内含 API Key，整段加密落盘） */
     val aiJiuxinPresets: Flow<List<com.azurlane.blyy.data.model.JiuxinPreset>> = safeData.map { prefs ->
-        val json = prefs[AI_JIUXIN_PRESETS_KEY] ?: "[]"
+        val json = readSecretJson(prefs, AI_JIUXIN_PRESETS_KEY, "[]")
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode presets", e); emptyList() }
     }.flowOn(Dispatchers.Default)
 
@@ -827,14 +904,15 @@ class PlayerSettingsDataStore @Inject constructor(
      */
     suspend fun updateAiJiuxinPresets(transform: (List<com.azurlane.blyy.data.model.JiuxinPreset>) -> List<com.azurlane.blyy.data.model.JiuxinPreset>) {
         context.dataStore.edit { prefs ->
-            val json = prefs[AI_JIUXIN_PRESETS_KEY] ?: "[]"
+            val json = readSecretJson(prefs, AI_JIUXIN_PRESETS_KEY, "[]")
             val current = try {
                 lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.JiuxinPreset>>(json)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to decode presets during atomic update, treating as empty", e)
                 emptyList()
             }
-            prefs[AI_JIUXIN_PRESETS_KEY] = lenientJson.encodeToString(transform(current))
+            preserveUndecryptable(prefs, AI_JIUXIN_PRESETS_KEY, AI_JIUXIN_PRESETS_ORPHAN_KEY)
+            prefs[AI_JIUXIN_PRESETS_KEY] = SecretCipher.encrypt(lenientJson.encodeToString(transform(current)))
         }
     }
 
@@ -859,23 +937,24 @@ class PlayerSettingsDataStore @Inject constructor(
 
     // ── 多套 API 配置管理 ──
 
-    /** 所有已保存的 API 配置列表 */
+    /** 所有已保存的 API 配置列表（内含 API Key，整段加密落盘） */
     val aiApiConfigs: Flow<List<com.azurlane.blyy.data.model.ApiConfig>> = safeData.map { prefs ->
-        val json = prefs[AI_API_CONFIGS_KEY] ?: "[]"
+        val json = readSecretJson(prefs, AI_API_CONFIGS_KEY, "[]")
         try { lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json) } catch (e: Exception) { Log.w(TAG, "Failed to decode API configs", e); emptyList() }
     }.flowOn(Dispatchers.Default)
 
     /** API 配置列表原子更新，机制见 [updateAiJiuxinPresets] */
     suspend fun updateAiApiConfigs(transform: (List<com.azurlane.blyy.data.model.ApiConfig>) -> List<com.azurlane.blyy.data.model.ApiConfig>) {
         context.dataStore.edit { prefs ->
-            val json = prefs[AI_API_CONFIGS_KEY] ?: "[]"
+            val json = readSecretJson(prefs, AI_API_CONFIGS_KEY, "[]")
             val current = try {
                 lenientJson.decodeFromString<List<com.azurlane.blyy.data.model.ApiConfig>>(json)
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to decode API configs during atomic update, treating as empty", e)
                 emptyList()
             }
-            prefs[AI_API_CONFIGS_KEY] = lenientJson.encodeToString(transform(current))
+            preserveUndecryptable(prefs, AI_API_CONFIGS_KEY, AI_API_CONFIGS_ORPHAN_KEY)
+            prefs[AI_API_CONFIGS_KEY] = SecretCipher.encrypt(lenientJson.encodeToString(transform(current)))
         }
     }
 
@@ -946,32 +1025,232 @@ class PlayerSettingsDataStore @Inject constructor(
     suspend fun setUserName(name: String) { context.dataStore.edit { it[USER_NAME_KEY] = name } }
     suspend fun setUserAvatarUrl(url: String) { context.dataStore.edit { it[USER_AVATAR_URL_KEY] = url } }
 
-    // ── 排行榜本地缓存 ──
+    // ── 安全存储：敏感字段加密迁移 ──
+
+    /** 需要加密落盘的 key（含凭证或在凭证快照里出现的 JSON 块） */
+    private val secretKeys = listOf(
+        AI_API_KEY_KEY,
+        AI_API_CONFIGS_KEY,
+        AI_CHAT_SESSIONS_KEY,
+        AI_JIUXIN_PRESETS_KEY,
+        ASSISTANT_DEFAULT_UID_KEY,
+        ASSISTANT_DEFAULT_SERVER_KEY
+    )
 
     /**
-     * 读取排行榜本地缓存。
-     * @return Pair<JSON 字符串, 缓存写入时间戳>，若不存在返回 null
+     * 读取加密 JSON：解不开时返回兜底值（UI 照常可用），**不会被当成"数据被删"**。
+     * 原始密文在下次写入前由 [preserveUndecryptable] 挪进隔离 key。
      */
-    suspend fun getLeaderboardCache(): Pair<String, Long>? {
-        val prefs = safeData.first()
-        val json = prefs[LEADERBOARD_CACHE_JSON_KEY] ?: return null
-        val ts = prefs[LEADERBOARD_CACHE_TIMESTAMP_KEY] ?: 0L
-        return json to ts
+    private fun readSecretJson(
+        prefs: Preferences,
+        key: Preferences.Key<String>,
+        fallback: String
+    ): String {
+        val raw = prefs[key] ?: return fallback
+        val decoded = SecretCipher.tryDecrypt(raw) ?: return fallback
+        return decoded.ifBlank { fallback }
     }
 
-    /** 写入排行榜本地缓存（JSON + 当前时间戳） */
-    suspend fun setLeaderboardCache(json: String) {
-        context.dataStore.edit { prefs ->
-            prefs[LEADERBOARD_CACHE_JSON_KEY] = json
-            prefs[LEADERBOARD_CACHE_TIMESTAMP_KEY] = System.currentTimeMillis()
+    /**
+     * 覆盖写之前的保险丝：当前值是密文、但当前 Keystore 解不开时，先原样存进隔离 key。
+     * 代价只有一次额外的 preferences 写入，换来的是"换机/恢复备份后配置不会凭空消失"。
+     */
+    private fun preserveUndecryptable(
+        prefs: MutablePreferences,
+        key: Preferences.Key<String>,
+        orphanKey: Preferences.Key<String>
+    ) {
+        val raw = prefs[key] ?: return
+        if (!SecretCipher.isEncrypted(raw)) return
+        if (SecretCipher.tryDecrypt(raw) != null) return
+        prefs[orphanKey] = raw
+        Log.w(TAG, "preserved undecryptable blob: ${key.name} -> ${orphanKey.name}")
+    }
+
+    /**
+     * 把历史明文敏感字段就地替换为密文。
+     *
+     * 幂等：已加密的键全部跳过；Keystore 不可用时 [SecretCipher.encrypt] 会降级明文，
+     * 因此本方法不会把可用配置写坏。启动时在 IO 线程调用一次即可。
+     *
+     * @return 本次实际加密的字段数（0 表示无需迁移或已迁移）
+     */
+    suspend fun migrateSecretsToEncrypted(): Int = withContext(Dispatchers.IO) {        var migrated = 0
+        try {
+            context.dataStore.edit { prefs ->
+                secretKeys.forEach { key ->
+                    val raw = prefs[key] ?: return@forEach
+                    if (raw.isEmpty() || SecretCipher.isEncrypted(raw)) return@forEach
+                    val encrypted = SecretCipher.encrypt(raw)
+                    if (encrypted != raw) {
+                        prefs[key] = encrypted
+                        migrated++
+                    }
+                }
+            }
+            if (migrated > 0) Log.i(TAG, "migrateSecretsToEncrypted: $migrated field(s) encrypted")
+        } catch (e: Exception) {
+            Log.w(TAG, "migrateSecretsToEncrypted failed", e)
         }
+        migrated
     }
 
-    /** 清空排行榜本地缓存 */
-    suspend fun clearLeaderboardCache() {
+    // ── 旧排行榜遗留数据清理 ──
+
+    /**
+     * 清除已下线的全服排行榜残留在 Preferences 里的数据，并把旧昵称键迁移到新键。
+     *
+     * 处理对象（均来自已下线的远端榜单实现）：
+     * - `leaderboard_nickname` → 迁移到 `commander_nickname` 后删除
+     * - `leaderboard_cache_json` / `leaderboard_cache_ts` → 直接删除（远端缓存已无意义）
+     *
+     * 幂等：无遗留数据时返回 0。启动时调用一次。
+     */
+    suspend fun purgeLegacyLeaderboardData(): Int = withContext(Dispatchers.IO) {
+        var removed = 0
+        try {
+            context.dataStore.edit { prefs ->
+                val legacyNickname = prefs[stringPreferencesKey(LEGACY_COMMANDER_NICKNAME_KEY_NAME)]
+                if (!legacyNickname.isNullOrBlank() && prefs[COMMANDER_NICKNAME_KEY].isNullOrBlank()) {
+                    prefs[COMMANDER_NICKNAME_KEY] = legacyNickname
+                }
+                // asMap().keys 是数据里真实存在的 typed key，按 name 前缀精确匹配后移除
+                val doomed = prefs.asMap().keys.filter { it.name.startsWith(LEGACY_LEADERBOARD_KEY_PREFIX) }
+                doomed.forEach { key ->
+                    @Suppress("UNCHECKED_CAST")
+                    prefs.remove(key as Preferences.Key<Any>)
+                    removed++
+                }
+            }
+            if (removed > 0) Log.i(TAG, "purgeLegacyLeaderboardData: removed $removed key(s)")
+        } catch (e: Exception) {
+            Log.w(TAG, "purgeLegacyLeaderboardData failed", e)
+        }
+        removed
+    }
+
+    // ── 备份 / 恢复状态 ──
+
+    val autoBackupEnabled: Flow<Boolean> = safeData.map { it[AUTO_BACKUP_ENABLED_KEY] ?: true }
+    val lastBackupAt: Flow<Long> = safeData.map { it[LAST_BACKUP_AT_KEY] ?: 0L }
+    val lastRestoreAt: Flow<Long> = safeData.map { it[LAST_RESTORE_AT_KEY] ?: 0L }
+
+    suspend fun setAutoBackupEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[AUTO_BACKUP_ENABLED_KEY] = enabled }
+    }
+
+    suspend fun setLastBackupAt(timestamp: Long) {
+        context.dataStore.edit { it[LAST_BACKUP_AT_KEY] = timestamp }
+    }
+
+    suspend fun setLastRestoreAt(timestamp: Long) {
+        context.dataStore.edit { it[LAST_RESTORE_AT_KEY] = timestamp }
+    }
+
+    /**
+     * 导出可进备份的偏好项（已排除凭证/设备相关/缓存的 key）。
+     *
+     * 值按真实类型编码，恢复时才能用同类型 key 写回（float 不会退化成 int）。
+     */
+    suspend fun readBackupPrefs(): List<PrefBackup> = withContext(Dispatchers.IO) {
+        val prefs = safeData.first()
+        prefs.asMap().entries.mapNotNull { (key, value) ->
+            val name = key.name
+            if (BACKUP_EXCLUDED_PREFIXES.any { name.startsWith(it) }) return@mapNotNull null
+            when (value) {
+                is String -> PrefBackup(name, PrefBackup.TYPE_STRING, value)
+                is Boolean -> PrefBackup(name, PrefBackup.TYPE_BOOL, value.toString())
+                is Int -> PrefBackup(name, PrefBackup.TYPE_INT, value.toString())
+                is Long -> PrefBackup(name, PrefBackup.TYPE_LONG, value.toString())
+                is Float -> PrefBackup(name, PrefBackup.TYPE_FLOAT, value.toString())
+                is Set<*> -> PrefBackup(
+                    name = name,
+                    type = PrefBackup.TYPE_STRING_SET,
+                    setValues = value.filterIsInstance<String>()
+                )
+                else -> null // 未知类型（未来 DataStore 新增）→ 跳过，不猜
+            }
+        }.sortedBy { it.name }
+    }
+
+    /**
+     * 应用备份中的偏好项。
+     *
+     * 安全：仍然按 [BACKUP_EXCLUDED_PREFIXES] 过滤一次（即使备份文件被人手工改过，
+     * 也不能借"恢复"把凭证写进来/覆盖掉）。
+     *
+     * @return 实际写入的项数
+     */
+    suspend fun writeBackupPrefs(entries: List<PrefBackup>): Int = withContext(Dispatchers.IO) {
+        var applied = 0
         context.dataStore.edit { prefs ->
-            prefs.remove(LEADERBOARD_CACHE_JSON_KEY)
-            prefs.remove(LEADERBOARD_CACHE_TIMESTAMP_KEY)
+            entries.forEach { entry ->
+                if (entry.name.isBlank()) return@forEach
+                if (BACKUP_EXCLUDED_PREFIXES.any { entry.name.startsWith(it) }) return@forEach
+                when (entry.type) {
+                    PrefBackup.TYPE_STRING -> prefs[stringPreferencesKey(entry.name)] = entry.value
+                    PrefBackup.TYPE_BOOL -> prefs[booleanPreferencesKey(entry.name)] =
+                        entry.value.toBooleanStrictOrNull() ?: return@forEach
+                    PrefBackup.TYPE_INT -> prefs[intPreferencesKey(entry.name)] =
+                        entry.value.toIntOrNull() ?: return@forEach
+                    PrefBackup.TYPE_LONG -> prefs[longPreferencesKey(entry.name)] =
+                        entry.value.toLongOrNull() ?: return@forEach
+                    PrefBackup.TYPE_FLOAT -> prefs[floatPreferencesKey(entry.name)] =
+                        entry.value.toFloatOrNull() ?: return@forEach
+                    PrefBackup.TYPE_STRING_SET -> prefs[stringSetPreferencesKey(entry.name)] =
+                        (entry.setValues ?: emptyList()).toSet()
+                    else -> return@forEach
+                }
+                applied++
+            }
+        }
+        applied
+    }
+
+    /** 暂存"恢复时表里还没有的舰娘誓约"，等名录刷新后补上（JSON 数组） */
+    suspend fun setPendingOathRestore(json: String) {
+        context.dataStore.edit { it[PENDING_OATH_RESTORE_KEY] = json }
+    }
+
+    /** 读取并清空待补誓约名单 */
+    suspend fun takePendingOathRestore(): String? = withContext(Dispatchers.IO) {
+        var json: String? = null
+        context.dataStore.edit { prefs ->
+            json = prefs[PENDING_OATH_RESTORE_KEY]
+            prefs.remove(PENDING_OATH_RESTORE_KEY)
+        }
+        json
+    }
+
+    /**
+     * 诊断快照：把 DataStore 的全部 key 与「脱敏后的值」拼成文本，供诊断包导出。
+     *
+     * 规则：
+     * - 命中 [SecretCipher.looksSensitive] 的 key（api_key/token/uid/server…）只输出状态，
+     *   不输出任何明文或密文片段；
+     * - 其他字符串值超过 120 字符时只给长度，避免诊断包变成用户数据备份。
+     */
+    suspend fun diagnosticSnapshot(): String = withContext(Dispatchers.IO) {
+        val prefs = safeData.first()
+        buildString {
+            appendLine("# DataStore snapshot (${prefs.asMap().size} keys)")
+            prefs.asMap().entries
+                .sortedBy { it.key.name }
+                .forEach { (key, value) ->
+                    val name = key.name
+                    val rendered = when {
+                        SecretCipher.looksSensitive(name) -> "<redacted>"
+                        value == null -> "null"
+                        value is String -> when {
+                            value.isEmpty() -> "\"\""
+                            SecretCipher.isEncrypted(value) -> "<encrypted len=${value.length}>"
+                            value.length <= 120 -> value
+                            else -> "<string len=${value.length}>"
+                        }
+                        else -> value.toString()
+                    }
+                    appendLine("$name = $rendered")
+                }
         }
     }
 

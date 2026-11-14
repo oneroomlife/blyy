@@ -20,6 +20,34 @@ val keystoreProps = Properties().apply {
 fun signingProp(key: String, fallback: String?): String? =
     keystoreProps.getProperty(key) ?: System.getenv(key) ?: fallback
 
+/**
+ * 由 versionName 推导 versionCode（唯一事实来源 = versionName）。
+ *
+ * 为什么不手写常量：此前 `versionCode = 1` 恒定不变，`versionName` 却一路走到 3.0.1，
+ * 导致 ① 无法用 versionCode 做灰度/回滚判定；② 应用商店/部分 ROM 的包管理器会拒绝
+ * 或误判升级；③ 崩溃与埋点里拿不到"到底是第几个包"。
+ *
+ * 编码规则（十进制，肉眼可读）：
+ *   major * 1_000_000 + minor * 10_000 + patch * 100
+ *   3.0.1  -> 3_000_100
+ *   3.1.0  -> 3_010_000
+ *   3.1.12 -> 3_011_200
+ * 末两位留给"同版本热修"（例如 3.0.1 的第二个包可手改为 3_000_101）。
+ */
+fun versionCodeOf(versionName: String): Int {
+    val numeric = versionName.trim().substringBefore('-').substringBefore('+')
+    val parts = numeric.split('.').map { it.toIntOrNull() ?: 0 }
+    val major = parts.getOrElse(0) { 0 }
+    val minor = parts.getOrElse(1) { 0 }
+    val patch = parts.getOrElse(2) { 0 }
+    require(major in 0..2000) { "versionName 主版本号越界: $versionName" }
+    require(minor in 0..99 && patch in 0..99) { "versionName 次/修订号需 ≤ 99: $versionName" }
+    return major * 1_000_000 + minor * 10_000 + patch * 100
+}
+
+val appVersionName = "3.0.1"
+val appVersionCode = versionCodeOf(appVersionName)
+
 android {
     namespace = "com.azurlane.blyy"
     compileSdk = 36
@@ -28,8 +56,8 @@ android {
         applicationId = "com.azurlane.blyy"
         minSdk = 24
         targetSdk = 35
-        versionCode = 1
-        versionName = "3.0.1"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

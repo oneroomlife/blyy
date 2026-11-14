@@ -33,7 +33,7 @@ import androidx.compose.material.icons.rounded.DriveFileRenameOutline
 import androidx.compose.material.icons.rounded.Error
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
-import androidx.compose.material.icons.rounded.Leaderboard
+import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
@@ -77,7 +77,6 @@ import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import com.azurlane.blyy.viewmodel.GuessHistoryViewModel
 import com.azurlane.blyy.viewmodel.HistoryFilter
-import com.azurlane.blyy.viewmodel.RecordUploadStatus
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -85,17 +84,10 @@ import java.util.Locale
 @Composable
 fun GuessHistoryScreen(
     onBack: () -> Unit,
-    onLeaderboard: () -> Unit = {},
-    onNavigateToAssistantConfig: () -> Unit = {},
+    onScoreBoard: () -> Unit = {},
     viewModel: GuessHistoryViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val uploadStatuses by viewModel.uploadStatuses.collectAsStateWithLifecycle()
-    val userUid by viewModel.userUid.collectAsStateWithLifecycle()
-    val userServer by viewModel.userServer.collectAsStateWithLifecycle()
-    val configPromptRecord by viewModel.configPromptRecord.collectAsStateWithLifecycle()
-    val nicknamePromptRecord by viewModel.nicknamePromptRecord.collectAsStateWithLifecycle()
-    val suggestedNickname by viewModel.suggestedNickname.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -106,10 +98,10 @@ fun GuessHistoryScreen(
                     onBackClick = onBack,
                     actions = {
                         if (!state.isMultiSelectMode) {
-                            IconButton(onClick = onLeaderboard) {
+                            IconButton(onClick = onScoreBoard) {
                                 Icon(
-                                    Icons.Rounded.Leaderboard,
-                                    contentDescription = "排行榜",
+                                    Icons.Rounded.EmojiEvents,
+                                    contentDescription = "我的成绩榜",
                                     tint = MaterialTheme.colorScheme.onSurface
                                 )
                             }
@@ -155,7 +147,6 @@ fun GuessHistoryScreen(
                                 record = record,
                                 isSelected = record.id in state.selectedIds,
                                 isMultiSelectMode = state.isMultiSelectMode,
-                                uploadStatus = uploadStatuses[record.id],
                                 onClick = {
                                     if (state.isMultiSelectMode) {
                                         viewModel.toggleSelection(record.id)
@@ -169,7 +160,6 @@ fun GuessHistoryScreen(
                                     }
                                     viewModel.toggleSelection(record.id)
                                 },
-                                onUpload = { viewModel.uploadRecord(record) },
                                 onDelete = { viewModel.deleteRecord(record.id) }
                             )
                         }
@@ -197,36 +187,7 @@ fun GuessHistoryScreen(
             state.detailRecord?.let { record ->
                 HistoryDetailDialog(
                     record = record,
-                    uploadStatus = uploadStatuses[record.id],
-                    isUserInfoConfigured = userUid.isNotBlank() && userServer.isNotBlank(),
-                    onDismiss = {
-                        viewModel.closeDetail()
-                        viewModel.clearUploadStatus(record.id)
-                    },
-                    onUpload = { viewModel.uploadRecord(record) },
-                    onRetry = { viewModel.retryUpload(record) }
-                )
-            }
-
-            // 未配置 UID/服务器提示弹窗
-            configPromptRecord?.let {
-                ConfigPromptDialog(
-                    onDismiss = { viewModel.dismissConfigPrompt() },
-                    onNavigateToConfig = {
-                        viewModel.dismissConfigPrompt()
-                        onNavigateToAssistantConfig()
-                    }
-                )
-            }
-
-            // 无法查询玩家信息时的昵称输入弹窗
-            nicknamePromptRecord?.let { record ->
-                NicknamePromptDialog(
-                    suggestedNickname = suggestedNickname,
-                    onDismiss = { viewModel.dismissNicknamePrompt() },
-                    onConfirm = { nickname ->
-                        viewModel.uploadWithNickname(record, nickname)
-                    }
+                    onDismiss = { viewModel.closeDetail() }
                 )
             }
         }
@@ -239,10 +200,8 @@ private fun HistoryRecordCard(
     record: GuessHistory,
     isSelected: Boolean,
     isMultiSelectMode: Boolean,
-    uploadStatus: RecordUploadStatus? = null,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onUpload: () -> Unit = {},
     onDelete: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
@@ -402,55 +361,9 @@ private fun HistoryRecordCard(
                 )
             }
 
-            // 上传按钮 + 删除按钮（非多选模式）
+            // 删除按钮（非多选模式）
             if (!isMultiSelectMode) {
                 Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                // 独立上传按钮：根据上传状态显示不同图标（唯一状态指示器，不再重复显示 Chip）
-                IconButton(
-                    onClick = {
-                        if (uploadStatus !is RecordUploadStatus.Uploading &&
-                            uploadStatus !is RecordUploadStatus.Success
-                        ) {
-                            onUpload()
-                        }
-                    },
-                    modifier = Modifier.minimumInteractiveComponentSize().size(32.dp),
-                    enabled = uploadStatus !is RecordUploadStatus.Uploading &&
-                            uploadStatus !is RecordUploadStatus.Success
-                ) {
-                    when (uploadStatus) {
-                        is RecordUploadStatus.Uploading -> {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                        }
-                        is RecordUploadStatus.Success -> {
-                            Icon(
-                                Icons.Rounded.CheckCircle,
-                                contentDescription = "已上传",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        is RecordUploadStatus.Failed -> {
-                            Icon(
-                                Icons.Rounded.Refresh,
-                                contentDescription = "重试上传",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                        null -> {
-                            Icon(
-                                Icons.Rounded.CloudUpload,
-                                contentDescription = "上传排行",
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                            )
-                        }
-                    }
-                }
                 IconButton(onClick = onDelete, modifier = Modifier.minimumInteractiveComponentSize().size(32.dp)) {
                     Icon(
                         Icons.Rounded.Delete,
@@ -511,11 +424,7 @@ private fun MultiSelectActionBar(
 @Composable
 private fun HistoryDetailDialog(
     record: GuessHistory,
-    uploadStatus: RecordUploadStatus? = null,
-    isUserInfoConfigured: Boolean = false,
-    onDismiss: () -> Unit,
-    onUpload: () -> Unit = {},
-    onRetry: () -> Unit = {}
+    onDismiss: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
     val isImageMode = record.mode == "IMAGE"
@@ -544,120 +453,11 @@ private fun HistoryDetailDialog(
                 DetailRow("满分", "${record.totalPossibleScore}")
                 DetailRow("准确率", "${(record.accuracy * 100).toInt()}%")
                 DetailRow("平均得分", String.format(Locale.getDefault(), "%.1f", record.averageScore))
-
-                // 上传状态反馈
-                uploadStatus?.let { status ->
-                    HorizontalDivider()
-                    when (status) {
-                        is RecordUploadStatus.Uploading -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                                Text(
-                                    "正在上传成绩...",
-                                    style = AppTypography.BodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                        is RecordUploadStatus.Success -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Rounded.CheckCircle,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                                Text(
-                                    "上传成功！",
-                                    style = AppTypography.BodySmall,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                        is RecordUploadStatus.Failed -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Rounded.Error,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                                Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                                Text(
-                                    "上传失败: ${status.message}",
-                                    style = AppTypography.BodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // 上传前提提示
-                if (!isUserInfoConfigured) {
-                    HorizontalDivider()
-                    Text(
-                        "未配置 UID 和服务器，点击上传后将引导前往配置",
-                        style = AppTypography.BodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
             }
         },
         confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-                when (uploadStatus) {
-                    is RecordUploadStatus.Failed -> {
-                        // 失败时显示重试按钮
-                        FilledTonalButton(
-                            onClick = onRetry
-                        ) {
-                            Icon(
-                                Icons.Rounded.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                            Text("重试上传")
-                        }
-                    }
-                    is RecordUploadStatus.Uploading -> {
-                        FilledTonalButton(
-                            onClick = {},
-                            enabled = false
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                            Text("上传中...")
-                        }
-                    }
-                    else -> {
-                        // 未上传或已成功时显示上传按钮（未配置时点击会弹出配置提示）
-                        FilledTonalButton(
-                            onClick = onUpload,
-                            enabled = uploadStatus !is RecordUploadStatus.Success
-                        ) {
-                            Icon(
-                                Icons.Rounded.CloudUpload,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-                            Text(if (uploadStatus is RecordUploadStatus.Success) "已上传" else "上传排行")
-                        }
-                    }
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭")
-                }
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
             }
         }
     )
@@ -681,92 +481,4 @@ private fun DetailRow(label: String, value: String, highlight: Boolean = false) 
             color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
         )
     }
-}
-
-/**
- * 未配置 UID/服务器时的提示弹窗。
- * 引导用户前往助手配置页填写 UID 和服务器。
- */
-@Composable
-private fun ConfigPromptDialog(
-    onDismiss: () -> Unit,
-    onNavigateToConfig: () -> Unit
-) {
-    BlyyConfirmDialog(
-        title = "未配置 UID 和服务器",
-        message = "上传排行榜需要先在「助手配置」中填写游戏内 UID 和服务器，" +
-            "用于查询玩家昵称并标识你的成绩。\n\n是否前往配置？",
-        confirmText = "去配置",
-        dismissText = "取消",
-        onConfirm = onNavigateToConfig,
-        onDismiss = onDismiss
-    )
-}
-
-/**
- * 无法通过 UID/服务器查询到玩家信息时的昵称输入弹窗。
- * 用户输入自定义昵称后保存并上传，后续上传将自动复用该昵称。
- */
-@Composable
-private fun NicknamePromptDialog(
-    suggestedNickname: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
-) {
-    var nickname by remember { mutableStateOf(suggestedNickname) }
-    val isError = nickname.isBlank()
-
-    BlyyFormDialog(
-        onDismiss = onDismiss,
-        title = "无法查询到玩家信息",
-        icon = {
-            Icon(
-                Icons.Rounded.DriveFileRenameOutline,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Sm)) {
-                Text(
-                    "通过当前 UID 和服务器无法查询到玩家信息，" +
-                        "请输入自定义昵称用于上传排行榜。保存后后续上传将自动复用该昵称。",
-                    style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                OutlinedTextField(
-                    value = nickname,
-                    onValueChange = { nickname = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("输入自定义昵称") },
-                    isError = isError,
-                    supportingText = {
-                        if (isError) {
-                            Text("昵称不能为空", color = MaterialTheme.colorScheme.error)
-                        }
-                    },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Sm),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                    )
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(nickname) },
-                enabled = !isError
-            ) {
-                Text("保存并上传")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
-        }
-    )
 }

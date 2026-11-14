@@ -10,7 +10,10 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import coil.util.DebugLogger
+import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.util.RefererResolver
+import com.azurlane.blyy.util.diagnostics.AppLog
+import com.azurlane.blyy.util.diagnostics.CrashReporter
 import com.azurlane.blyy.widget.WidgetSync
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +26,16 @@ import javax.inject.Inject
 
 @HiltAndroidApp
 class MyApplication : Application(), ImageLoaderFactory {
+
+    private companion object {
+        private const val TAG = "MyApplication"
+    }
+
+    @Inject
+    lateinit var playerSettings: PlayerSettingsDataStore
+
+    @Inject
+    lateinit var backupManager: com.azurlane.blyy.data.backup.BackupManager
 
     /**
      * 复用 Hilt 单例 OkHttpClient（AppModule 提供）。
@@ -44,10 +57,35 @@ class MyApplication : Application(), ImageLoaderFactory {
      * Glance 不会主动重新渲染（每日推荐件甚至无周期更新）。
      * 每次进程冷启动补一次刷新，让用户打开 App 或点击组件后小组件必然恢复。
      * 延迟 500ms 错开冷启动高峰，Hilt 图此时已就绪（onCreate 先于本协程生效）。
+     *
+     * 同时在冷启动阶段做三件"越早越好"的事：
+     * 1. 安装崩溃兜底与运行日志（[CrashReporter] / [AppLog]）——越早装，越能覆盖早期崩溃；
+     * 2. 把历史明文的 API Key / UID 就地加密（[PlayerSettingsDataStore.migrateSecretsToEncrypted]）；
+     * 3. 小组件与头像裁切缓存的补刷/清扫。
      */
     override fun onCreate() {
         super.onCreate()
+
+        // 诊断基础设施必须最先安装：崩溃可能发生在任何异步初始化里
+        AppLog.install(this)
+        CrashReporter.install(this)
+
         applicationScope.launch {
+            // 旧版全服排行榜遗留的偏好键清理 + 旧昵称键迁移（幂等）
+            runCatching { playerSettings.purgeLegacyLeaderboardData() }
+                .onSuccess { count -> if (count > 0) AppLog.i(TAG, "legacy leaderboard keys purged: $count") }
+                .onFailure { AppLog.w(TAG, "legacy leaderboard purge failed", it) }
+
+            // 敏感字段加密迁移（幂等、失败不阻断，见 PlayerSettingsDataStore）
+            runCatching { playerSettings.migrateSecretsToEncrypted() }
+                .onSuccess { count -> if (count > 0) AppLog.i(TAG, "secrets encrypted: $count field(s)") }
+                .onFailure { AppLog.w(TAG, "secret migration failed", it) }
+
+            // 每日自动备份（24h 闸门在 BackupManager 内，冷启动触发，不引调度框架）
+            runCatching { backupManager.autoBackupIfDue() }
+                .onSuccess { done -> if (done) AppLog.i(TAG, "auto backup created") }
+                .onFailure { AppLog.w(TAG, "auto backup failed", it) }
+
             delay(500)
             runCatching { WidgetSync.updateAll(this@MyApplication) }
             // 自定义头像裁切源临时文件清扫（取消/失败路径的残留缓存文件）

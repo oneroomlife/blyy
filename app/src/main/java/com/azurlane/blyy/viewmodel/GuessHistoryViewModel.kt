@@ -1,24 +1,14 @@
 package com.azurlane.blyy.viewmodel
 
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.azurlane.blyy.BuildConfig
 import com.azurlane.blyy.data.local.GuessHistoryDao
-import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.data.model.GuessHistory
-import com.azurlane.blyy.data.model.LEADERBOARD_ENTRY_FORMAT_VERSION
-import com.azurlane.blyy.data.model.LeaderboardCategory
-import com.azurlane.blyy.data.model.LeaderboardEntry
-import com.azurlane.blyy.data.repository.AssistantRepository
-import com.azurlane.blyy.data.repository.LeaderboardRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -73,22 +63,9 @@ data class GuessHistoryUiState(
     val stats: HistoryStats = HistoryStats()
 )
 
-/** 单条记录的上传状态 */
-sealed class RecordUploadStatus {
-    /** 上传中 */
-    object Uploading : RecordUploadStatus()
-    /** 上传成功 */
-    object Success : RecordUploadStatus()
-    /** 上传失败，[message] 为失败原因 */
-    data class Failed(val message: String) : RecordUploadStatus()
-}
-
 @HiltViewModel
 class GuessHistoryViewModel @Inject constructor(
-    private val historyDao: GuessHistoryDao,
-    private val leaderboardRepository: LeaderboardRepository,
-    private val assistantRepository: AssistantRepository,
-    private val settings: PlayerSettingsDataStore
+    private val historyDao: GuessHistoryDao
 ) : ViewModel() {
 
     companion object {
@@ -102,27 +79,8 @@ class GuessHistoryViewModel @Inject constructor(
     private val _isMultiSelectMode = MutableStateFlow(false)
     private val _detailRecord = MutableStateFlow<GuessHistory?>(null)
 
-    /** 每条记录的上传状态，key = GuessHistory.id */
-    private val _uploadStatuses = MutableStateFlow<Map<Long, RecordUploadStatus>>(emptyMap())
-    val uploadStatuses: StateFlow<Map<Long, RecordUploadStatus>> = _uploadStatuses.asStateFlow()
-
-    /** 需要提示配置 UID/服务器的记录（未配置时上传触发） */
-    private val _configPromptRecord = MutableStateFlow<GuessHistory?>(null)
-    val configPromptRecord: StateFlow<GuessHistory?> = _configPromptRecord.asStateFlow()
-
-    /** 需要输入自定义昵称的记录（无法通过 UID/服务器查询到玩家信息时触发） */
-    private val _nicknamePromptRecord = MutableStateFlow<GuessHistory?>(null)
-    val nicknamePromptRecord: StateFlow<GuessHistory?> = _nicknamePromptRecord.asStateFlow()
-
-    /** 预填的昵称建议（已保存的自定义昵称或本地用户名） */
-    private val _suggestedNickname = MutableStateFlow("")
-    val suggestedNickname: StateFlow<String> = _suggestedNickname.asStateFlow()
-
-    // 用户 UID / 服务器（复用小助手配置，用于上传成绩）
-    val userUid = settings.assistantDefaultUid
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
-    val userServer = settings.assistantDefaultServer
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+    // 历史记录只做浏览/删除：成绩榜已是纯本地实现（见 domain/PersonalScoreBoard），
+    // 本类不再持有任何上传态、凭证或远端依赖。
 
     /**
      * 根据筛选条件查询历史记录
@@ -270,159 +228,6 @@ class GuessHistoryViewModel @Inject constructor(
     /** 关闭详情 */
     fun closeDetail() {
         _detailRecord.value = null
-    }
-
-    /** 检查用户是否已配置 UID 和服务器 */
-    fun isUserInfoConfigured(): Boolean {
-        return userUid.value.isNotBlank() && userServer.value.isNotBlank()
-    }
-
-    /**
-     * 上传单条历史记录到排行榜。
-     *
-     * 上传流程：
-     * 1. 未配置 UID/服务器 → 弹出配置提示（[configPromptRecord]）
-     * 2. 通过"碧蓝航线助手"查询玩家昵称 → 成功则用该昵称上传
-     * 3. 查询失败但已有保存的自定义昵称 → 用自定义昵称上传
-     * 4. 查询失败且无自定义昵称 → 弹出昵称输入弹窗（[nicknamePromptRecord]）
-     *
-     * 上传状态通过 [uploadStatuses] 反馈，支持失败后调用 [retryUpload] 重试。
-     */
-    fun uploadRecord(record: GuessHistory) {
-        viewModelScope.launch {
-            val uid = settings.assistantDefaultUid.first()
-            val server = settings.assistantDefaultServer.first()
-            if (uid.isBlank() || server.isBlank()) {
-                Log.w(TAG, "上传中止：未配置 UID/服务器")
-                _configPromptRecord.value = record
-                return@launch
-            }
-
-            _uploadStatuses.update { it + (record.id to RecordUploadStatus.Uploading) }
-
-            // 1. 尝试通过助手查询玩家昵称
-            val queriedNick = tryQueryNickname(uid, server)
-            val nickname = if (queriedNick != null) {
-                queriedNick
-            } else {
-                // 2. 查询失败 → 使用已保存的自定义昵称
-                val savedNick = settings.leaderboardNickname.first()
-                if (savedNick.isNotBlank()) {
-                    Log.d(TAG, "使用已保存的自定义昵称上传: $savedNick")
-                    savedNick
-                } else {
-                    // 3. 无自定义昵称 → 弹出昵称输入弹窗
-                    Log.w(TAG, "无法查询玩家信息且无自定义昵称，弹出昵称输入弹窗")
-                    _uploadStatuses.update { it - record.id }
-                    _suggestedNickname.value = settings.userName.first().ifBlank { DEFAULT_NICKNAME }
-                    _nicknamePromptRecord.value = record
-                    return@launch
-                }
-            }
-
-            performUpload(record, uid, server, nickname)
-        }
-    }
-
-    /** 执行实际上传逻辑 */
-    private suspend fun performUpload(record: GuessHistory, uid: String, server: String, nickname: String) {
-        Log.i(TAG, "上传记录: id=${record.id}, nickname=$nickname, uid=$uid, server=$server")
-        val category = LeaderboardCategory.fromModeAndDifficulty(record.mode, record.difficulty)
-        val entry = LeaderboardEntry(
-            uid = uid,
-            server = server,
-            nickname = nickname,
-            score = record.totalScore,
-            accuracy = record.accuracy,
-            totalQuestions = record.totalQuestions,
-            correctAnswers = record.correctAnswers,
-            timestamp = System.currentTimeMillis(),
-            appVersion = BuildConfig.VERSION_NAME,
-            formatVersion = LEADERBOARD_ENTRY_FORMAT_VERSION
-        )
-
-        val result = leaderboardRepository.uploadScore(entry, category)
-        _uploadStatuses.update {
-            it + (record.id to result.fold(
-                onSuccess = {
-                    Log.i(TAG, "上传成功: id=${record.id}")
-                    RecordUploadStatus.Success
-                },
-                onFailure = { e ->
-                    Log.e(TAG, "上传失败: id=${record.id}, reason=${e.message}")
-                    RecordUploadStatus.Failed(e.message ?: "上传失败")
-                }
-            ))
-        }
-    }
-
-    /**
-     * 通过"碧蓝航线助手"查询玩家昵称。
-     * @return 查询成功且昵称非空时返回昵称，查询失败或昵称为空时返回 null
-     */
-    private suspend fun tryQueryNickname(uid: String, server: String): String? {
-        return try {
-            val result = assistantRepository.fetchUserDetail(uid, server)
-            result.fold(
-                onSuccess = { data ->
-                    val nick = data.user_info.nickname
-                    if (nick.isNotBlank()) {
-                        Log.d(TAG, "解析到玩家 ID: $nick")
-                        nick
-                    } else {
-                        Log.w(TAG, "玩家 ID 为空")
-                        null
-                    }
-                },
-                onFailure = { e ->
-                    Log.w(TAG, "查询玩家 ID 失败: ${e.message}")
-                    null
-                }
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "查询玩家 ID 异常: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * 使用用户输入的自定义昵称上传记录。
-     * 保存昵称后立即上传，后续上传将自动复用该昵称。
-     */
-    fun uploadWithNickname(record: GuessHistory, nickname: String) {
-        val trimmed = nickname.trim()
-        if (trimmed.isBlank()) {
-            Log.w(TAG, "昵称为空，取消上传")
-            return
-        }
-        viewModelScope.launch {
-            _nicknamePromptRecord.value = null
-            settings.setLeaderboardNickname(trimmed)
-            val uid = settings.assistantDefaultUid.first()
-            val server = settings.assistantDefaultServer.first()
-            _uploadStatuses.update { it + (record.id to RecordUploadStatus.Uploading) }
-            performUpload(record, uid, server, trimmed)
-        }
-    }
-
-    /** 关闭配置提示弹窗 */
-    fun dismissConfigPrompt() {
-        _configPromptRecord.value = null
-    }
-
-    /** 关闭昵称输入弹窗 */
-    fun dismissNicknamePrompt() {
-        _nicknamePromptRecord.value = null
-    }
-
-    /** 重试上传失败的记录 */
-    fun retryUpload(record: GuessHistory) {
-        uploadRecord(record)
-    }
-
-    /** 清除指定记录的上传状态 */
-    fun clearUploadStatus(recordId: Long) {
-        _uploadStatuses.update { it - recordId }
     }
 
     /**

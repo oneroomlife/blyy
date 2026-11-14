@@ -67,6 +67,7 @@ import com.azurlane.blyy.ui.screens.AssistantConfigScreen
 import com.azurlane.blyy.ui.screens.AssistantScreen
 import com.azurlane.blyy.ui.screens.AvatarCropScreen
 import com.azurlane.blyy.ui.screens.AvatarFigurePickerScreen
+import com.azurlane.blyy.ui.screens.BackupRestoreScreen
 import com.azurlane.blyy.ui.screens.birthday.BirthdayCalendarScreen
 import com.azurlane.blyy.ui.screens.ConversationListScreen
 import com.azurlane.blyy.ui.screens.GalleryScreen
@@ -79,7 +80,7 @@ import com.azurlane.blyy.ui.screens.ImageCropperScreen
 import com.azurlane.blyy.ui.screens.JiuxinChatScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
-import com.azurlane.blyy.ui.screens.LeaderboardScreen
+import com.azurlane.blyy.ui.screens.PersonalScoreScreen
 import com.azurlane.blyy.ui.screens.SdResourceGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
@@ -173,11 +174,12 @@ fun AppContent() {
             currentDestination?.route?.startsWith("guess_image") != true &&
             currentDestination?.route?.startsWith("guess_voice") != true &&
             currentDestination?.route?.startsWith("guess_history") != true &&
-            currentDestination?.route != "leaderboard" &&
+            currentDestination?.route != "my_scores" &&
             currentDestination?.route != Screen.About.route &&
             currentDestination?.route?.startsWith("secretary") != true &&
             currentDestination?.route?.startsWith("avatar_") != true &&
             currentDestination?.route != "settings" &&
+            currentDestination?.route != "backup_restore" &&
             currentDestination?.route?.startsWith("live2d") != true &&
             // 游戏资源导入：与 Live2D 皮肤库一致，整段功能页都不显示底部导航
             currentDestination?.route?.startsWith("gameimport") != true &&
@@ -655,8 +657,7 @@ fun AppContent() {
                     composable("guess_history") {
                         GuessHistoryScreen(
                             onBack = { navController.popBackStack() },
-                            onLeaderboard = { navController.navigate("leaderboard") },
-                            onNavigateToAssistantConfig = { navController.navigate("assistant_config") }
+                            onScoreBoard = { navController.navigate("my_scores") }
                         )
                     }
                     composable("watermark_camera") {
@@ -697,10 +698,11 @@ fun AppContent() {
                             }
                         )
                     }
-                    composable("leaderboard") {
-                        LeaderboardScreen(
+                    // 我的成绩榜：纯本地个人历史榜（无全服榜、无网络、无凭证）
+                    composable("my_scores") {
+                        PersonalScoreScreen(
                             onBack = { navController.popBackStack() },
-                            onNavigateToAssistantConfig = { navController.navigate("assistant_config") }
+                            onStartGame = { navController.navigate("guess_image") { launchSingleTop = true } }
                         )
                     }
                     composable(Screen.About.route) {
@@ -713,8 +715,13 @@ fun AppContent() {
                             onBack = { navController.popBackStack() },
                             onNavigateToAssistantConfig = { navController.navigate("assistant_config") },
                             onNavigateToJiuxinConfig = { navController.navigate("jiuxin_config") },
-                            onNavigateToAppIconSettings = { navController.navigate("app_icon_settings") }
+                            onNavigateToAppIconSettings = { navController.navigate("app_icon_settings") },
+                            onNavigateToBackup = { navController.navigate("backup_restore") { launchSingleTop = true } }
                         )
+                    }
+                    // 备份与恢复：誓约 / 成绩 / 设置的唯一换机通道
+                    composable("backup_restore") {
+                        BackupRestoreScreen(onBack = { navController.popBackStack() })
                     }
                     composable("app_icon_settings") {
                         IconSettingsScreen(

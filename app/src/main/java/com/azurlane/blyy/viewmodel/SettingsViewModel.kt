@@ -1,5 +1,6 @@
 package com.azurlane.blyy.viewmodel
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -9,7 +10,11 @@ import com.azurlane.blyy.ui.theme.UiStyle
 import com.azurlane.blyy.util.AppIconManager
 import com.azurlane.blyy.util.AppIconType
 import com.azurlane.blyy.util.PinShortcutResult
+import com.azurlane.blyy.util.diagnostics.AppLog
+import com.azurlane.blyy.util.diagnostics.CrashReporter
+import com.azurlane.blyy.util.diagnostics.DiagnosticsExporter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -42,8 +47,13 @@ sealed class PlayerVerifyState {
 class SettingsViewModel @Inject constructor(
     private val settings: PlayerSettingsDataStore,
     private val assistantRepository: AssistantRepository,
-    private val appIconManager: AppIconManager
+    private val appIconManager: AppIconManager,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
+
+    private companion object {
+        private const val TAG = "SettingsViewModel"
+    }
 
     val uiStyle: StateFlow<UiStyle> = settings.uiStyle
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UiStyle.COMMAND_CENTER)
@@ -84,7 +94,7 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     /** 排行榜自定义昵称（无法通过 UID/服务器查询到玩家信息时使用） */
-    val leaderboardNickname: StateFlow<String> = settings.leaderboardNickname
+    val commanderNickname: StateFlow<String> = settings.commanderNickname
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     /** 玩家信息验证状态 */
@@ -123,8 +133,8 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settings.setAssistantDefaultServer(server) }
     }
 
-    fun setLeaderboardNickname(nickname: String) {
-        viewModelScope.launch { settings.setLeaderboardNickname(nickname) }
+    fun setCommanderNickname(nickname: String) {
+        viewModelScope.launch { settings.setCommanderNickname(nickname) }
     }
 
     /** 重置验证状态（UID/服务器变更时调用） */
@@ -318,4 +328,83 @@ class SettingsViewModel @Inject constructor(
     fun clearIconSwitchingState() {
         _iconSwitching.value = IconSwitchState.Idle
     }
+
+    // ── 诊断与反馈 ──
+
+    /** 诊断概览：崩溃文件数 / 最近崩溃时间 / 日志体积 */
+    private val _diagnosticsInfo = MutableStateFlow(DiagnosticsInfo())
+    val diagnosticsInfo: StateFlow<DiagnosticsInfo> = _diagnosticsInfo.asStateFlow()
+
+    private val _exportingDiagnostics = MutableStateFlow(false)
+    val exportingDiagnostics: StateFlow<Boolean> = _exportingDiagnostics.asStateFlow()
+
+    /** 导出结果文案（成功/失败），UI 消费后调用 [clearDiagnosticsMessage] */
+    private val _diagnosticsMessage = MutableStateFlow<String?>(null)
+    val diagnosticsMessage: StateFlow<String?> = _diagnosticsMessage.asStateFlow()
+
+    fun refreshDiagnostics() {
+        viewModelScope.launch {
+            val info = withContext(Dispatchers.IO) {
+                DiagnosticsInfo(
+                    crashCount = CrashReporter.crashCount(context),
+                    lastCrashAt = CrashReporter.latest(context)?.lastModified() ?: 0L,
+                    logBytes = AppLog.totalBytes()
+                )
+            }
+            _diagnosticsInfo.value = info
+        }
+    }
+
+    /**
+     * 生成诊断包并通过 [onReady] 交给 UI 启动系统分享。
+     *
+     * 快照里的敏感 key 已由 [PlayerSettingsDataStore.diagnosticSnapshot] 打码；
+     * 整个过程（收集 + zip）在 IO 线程，完成后主线程回调。
+     */
+    fun exportDiagnostics(onReady: (android.content.Intent) -> Unit) {
+        if (_exportingDiagnostics.value) return
+        _exportingDiagnostics.value = true
+        viewModelScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val snapshot = settings.diagnosticSnapshot()
+                    DiagnosticsExporter.build(context, snapshot)
+                }
+            }
+            _exportingDiagnostics.value = false
+            result
+                .onSuccess { file ->
+                    _diagnosticsMessage.value = "诊断包已生成（${file.length() / 1024} KB）"
+                    onReady(DiagnosticsExporter.shareIntent(context, file))
+                    refreshDiagnostics()
+                }
+                .onFailure { e ->
+                    AppLog.e(TAG, "exportDiagnostics failed", e)
+                    _diagnosticsMessage.value = "导出失败：${e.message ?: "未知错误"}"
+                }
+        }
+    }
+
+    fun clearDiagnostics() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                CrashReporter.clear(context)
+                AppLog.clear()
+                AppLog.i(TAG, "diagnostics cleared by user")
+            }
+            _diagnosticsMessage.value = "诊断日志已清空"
+            refreshDiagnostics()
+        }
+    }
+
+    fun clearDiagnosticsMessage() {
+        _diagnosticsMessage.value = null
+    }
 }
+
+/** 诊断概览数据（设置页展示） */
+data class DiagnosticsInfo(
+    val crashCount: Int = 0,
+    val lastCrashAt: Long = 0L,
+    val logBytes: Long = 0L
+)

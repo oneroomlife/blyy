@@ -11,7 +11,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AppShortcut
 import androidx.compose.material.icons.rounded.AutoMode
+import androidx.compose.material.icons.rounded.Backup
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.CloudSync
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Fullscreen
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PersonSearch
@@ -20,10 +24,14 @@ import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.content.Intent
+import android.widget.Toast
 import com.azurlane.blyy.ui.components.BlyyEntrance
 import com.azurlane.blyy.ui.components.BlyyListItem
 import com.azurlane.blyy.ui.components.BlyyScreenScaffold
@@ -41,6 +49,7 @@ fun SettingsScreen(
     onNavigateToAssistantConfig: () -> Unit = {},
     onNavigateToJiuxinConfig: () -> Unit = {},
     onNavigateToAppIconSettings: () -> Unit = {},
+    onNavigateToBackup: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiStyle by viewModel.uiStyle.collectAsStateWithLifecycle()
@@ -51,6 +60,22 @@ fun SettingsScreen(
     // null=设置尚未加载完成，开关行按默认开启回显
     val archiveSwitcherChecked = showArchiveSwitcher ?: true
     val autoCheckUpdate by viewModel.autoCheckUpdateEnabled.collectAsStateWithLifecycle()
+
+    // ── 诊断与反馈 ──
+    val context = LocalContext.current
+    val diagnosticsInfo by viewModel.diagnosticsInfo.collectAsStateWithLifecycle()
+    val exportingDiagnostics by viewModel.exportingDiagnostics.collectAsStateWithLifecycle()
+    val diagnosticsMessage by viewModel.diagnosticsMessage.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) { viewModel.refreshDiagnostics() }
+
+    // 导出/清空的结果用 Toast 反馈（与导出入口同一交互层级，不打断滚动）
+    LaunchedEffect(diagnosticsMessage) {
+        diagnosticsMessage?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            viewModel.clearDiagnosticsMessage()
+        }
+    }
 
     BlyyScreenScaffold(
         topBar = {
@@ -212,6 +237,65 @@ fun SettingsScreen(
                         title = "自定义 app 快捷方式",
                         subtitle = "从相册选择图片创建桌面快捷方式",
                         onClick = onNavigateToAppIconSettings,
+                        asCard = true
+                    )
+                }
+            }
+
+            BlyyEntrance(index = 6) {
+                // ── 数据与备份 ──
+                BlyySectionPanel(
+                    title = "数据与备份",
+                    icon = Icons.Rounded.Backup,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    separateItems = true
+                ) {
+                    BlyyListItem(
+                        leadingIcon = Icons.Rounded.Backup,
+                        title = "备份与恢复",
+                        subtitle = "换机迁移 / 回滚誓约、成绩与设置",
+                        onClick = onNavigateToBackup,
+                        asCard = true
+                    )
+                }
+            }
+
+            BlyyEntrance(index = 7) {
+                // ── 诊断与反馈 ──
+                // 崩溃/日志此前完全不可见（P0-4）。这里提供「导出诊断包」这一条用户可操作的自救路径：
+                // 打包后的 zip 里凭证字段已打码，用户可自行发到 Issue。
+                val logKb = (diagnosticsInfo.logBytes / 1024).coerceAtLeast(0)
+                val crashSummary = if (diagnosticsInfo.crashCount > 0) {
+                    "崩溃记录 ${diagnosticsInfo.crashCount} 份 · 日志 ${logKb} KB"
+                } else {
+                    "暂无崩溃记录 · 日志 ${logKb} KB"
+                }
+                BlyySectionPanel(
+                    title = "诊断与反馈",
+                    icon = Icons.Rounded.BugReport,
+                    accentColor = MaterialTheme.colorScheme.error,
+                    separateItems = true
+                ) {
+                    BlyyListItem(
+                        leadingIcon = Icons.Rounded.FileDownload,
+                        title = if (exportingDiagnostics) "正在生成诊断包…" else "导出诊断包",
+                        subtitle = "日志 + 崩溃现场 + 设备信息（API Key/UID 等已打码）",
+                        onClick = {
+                            if (!exportingDiagnostics) {
+                                viewModel.exportDiagnostics { intent ->
+                                    context.startActivity(
+                                        Intent.createChooser(intent, "分享诊断包")
+                                    )
+                                }
+                            }
+                        },
+                        asCard = true
+                    )
+                    BlyyListItem(
+                        leadingIcon = Icons.Rounded.DeleteSweep,
+                        title = "清空诊断日志",
+                        subtitle = crashSummary,
+                        onClick = { viewModel.clearDiagnostics() },
                         asCard = true
                     )
                 }

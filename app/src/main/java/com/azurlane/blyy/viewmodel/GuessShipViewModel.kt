@@ -753,7 +753,7 @@ class GuessShipViewModel @Inject constructor(
      * - 仅当 totalQuestions > 0 时保存，避免空对局产生无意义记录
      * - 网络异常不影响本地保存（历史记录仅写入本地 Room 数据库，无网络依赖）
      *
-     * @return 本次会话的 sessionId（供调用方做后续处理，如上传排行榜）
+     * @return 本次会话的 sessionId（供调用方做后续处理，如跳转历史记录）
      */
     fun confirmExitAndSave() {
         val state = _uiState.value

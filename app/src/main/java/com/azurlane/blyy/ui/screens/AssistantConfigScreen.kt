@@ -69,7 +69,7 @@ fun AssistantConfigScreen(
 ) {
     val defaultUid by viewModel.assistantDefaultUid.collectAsStateWithLifecycle()
     val defaultServer by viewModel.assistantDefaultServer.collectAsStateWithLifecycle()
-    val leaderboardNickname by viewModel.leaderboardNickname.collectAsStateWithLifecycle()
+    val commanderNickname by viewModel.commanderNickname.collectAsStateWithLifecycle()
     val verifyState by viewModel.playerVerifyState.collectAsStateWithLifecycle()
 
     AdaptiveScreenBackground {
@@ -169,31 +169,29 @@ fun AssistantConfigScreen(
                         // 验证结果反馈
                         VerifyResultBanner(verifyState = verifyState)
 
-                        // 昵称输入框：仅在无法查询到玩家信息时显示（或已有自定义昵称时可编辑）
-                        val showNicknameField = verifyState is PlayerVerifyState.Failed ||
-                            (verifyState !is PlayerVerifyState.Success && leaderboardNickname.isNotBlank())
+                        // 指挥官昵称：显示在「我的成绩榜」标题；不再参与任何上传
                         AnimatedVisibility(
-                            visible = showNicknameField,
+                            visible = true,
                             enter = fadeIn() + expandVertically(),
                             exit = fadeOut() + shrinkVertically()
                         ) {
                             Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
                                 Text(
-                                    text = "排行榜昵称",
+                                    text = "指挥官昵称",
                                     style = AppTypography.TitleSmall,
                                     fontWeight = FontWeight.Medium,
                                     color = if (LocalUiStyle.current.isCommandCenter()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "无法通过 UID 和服务器查询到玩家信息时，将使用此昵称上传排行榜",
+                                    text = "显示在「我的成绩榜」标题与战绩分享中；成绩只保存在本机，不会上传",
                                     style = AppTypography.BodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                 )
                                 Spacer(modifier = Modifier.height(AppSpacing.Xs))
                                 EnhancedOutlinedTextField(
-                                    value = leaderboardNickname,
-                                    onValueChange = { viewModel.setLeaderboardNickname(it) },
-                                    placeholder = "输入自定义昵称",
+                                    value = commanderNickname,
+                                    onValueChange = { viewModel.setCommanderNickname(it) },
+                                    placeholder = "输入昵称（默认：指挥官）",
                                     isCommandCenter = LocalUiStyle.current.isCommandCenter(),
                                     isDark = LocalIsDark.current,
                                     keyboardType = KeyboardType.Text
@@ -229,7 +227,7 @@ private fun VerifyResultBanner(verifyState: PlayerVerifyState) {
                 iconTint = MaterialTheme.colorScheme.error,
                 icon = Icons.Rounded.Error,
                 title = "无法查询到玩家信息",
-                message = "${verifyState.message}，请在下方填写自定义昵称用于上传排行榜"
+                message = "${verifyState.message}，可继续使用 UID 与服务器查询（成绩榜不依赖玩家信息）"
             )
         }
         else -> { /* Idle / Loading 不显示横幅 */ }

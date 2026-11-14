@@ -58,11 +58,12 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Image
-import androidx.compose.material.icons.rounded.Leaderboard
+import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PhotoCamera
+import androidx.compose.material.icons.rounded.Backup
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material.icons.rounded.Star
@@ -135,7 +136,7 @@ import com.azurlane.blyy.ui.screens.ImageCropperScreen
 import com.azurlane.blyy.ui.screens.JiuxinChatScreen
 import com.azurlane.blyy.ui.screens.JiuxinConfigScreen
 import com.azurlane.blyy.ui.screens.JiuxinShipConfigScreen
-import com.azurlane.blyy.ui.screens.LeaderboardScreen
+import com.azurlane.blyy.ui.screens.PersonalScoreScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipModeScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromGalleryScreen
 import com.azurlane.blyy.ui.screens.SecretaryShipPickFromHomeScreen
@@ -471,10 +472,10 @@ internal fun ModernDrawerSheet(
             group = "挑战"
         ),
         DrawerMenuItem(
-            route = "leaderboard",
-            label = "积分排行榜",
-            icon = Icons.Rounded.Leaderboard,
-            description = "查看全服成绩排名",
+            route = "my_scores",
+            label = "我的成绩榜",
+            icon = Icons.Rounded.EmojiEvents,
+            description = "个人历史成绩与纪录（本地）",
             color = MaterialTheme.colorScheme.primary,
             group = "挑战"
         ),
@@ -508,6 +509,14 @@ internal fun ModernDrawerSheet(
             icon = Icons.Rounded.Settings,
             description = "界面风格与显示偏好",
             color = MaterialTheme.colorScheme.tertiary,
+            group = "系统"
+        ),
+        DrawerMenuItem(
+            route = "backup_restore",
+            label = "备份与恢复",
+            icon = Icons.Rounded.Backup,
+            description = "换机迁移与回滚（誓约/成绩/设置）",
+            color = MaterialTheme.colorScheme.primary,
             group = "系统"
         ),
         DrawerMenuItem(

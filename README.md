@@ -112,9 +112,12 @@
 ### 🎮 猜舰娘小游戏
 - **看图识舰娘**：根据立绘辨认舰娘
 - **听音识舰娘**：根据语音辨认舰娘
-- 答题得分、答题历史回顾、全服排行榜
+- 答题得分、答题历史回顾、**个人历史成绩榜**（分数/准确率/时间三重排序，四档个人纪录，近期走势；纯本地数据，不上传、不依赖任何账号或凭证）
 
 ### 🎨 更多功能
+- **备份与恢复**：把**誓约/收藏、答题成绩、外观与功能设置**导出成一个 JSON（可选保存位置：网盘/下载目录/数据线），换机后一键恢复；支持「备份到本机」保留最近 5 份做回滚，以及每日首次启动自动备份
+  - 明确**不含**凭证：AI API Key、聊天会话、啾信预设、游戏 UID 均不写入备份（这些字段在本机 Keystore 加密存放，跨设备无法解密）
+  - 恢复前先解析预览（备份时间/来源版本/条目数）再二次确认；成绩按局去重、不会重复累加；誓约在名录尚未建立时自动暂存，下次刷新补写
 - **SD 资源图鉴**：浏览 Spine 骨骼动画 SD 小人资源，支持本地导入整理（zstd 压缩解析）；入口在「秘书舰设置 → SD 资源库」
 - **Live2D 皮肤库**：导入本地 Cubism 3/4 模型（文件夹/zip 免权限导入），内置 pixi-live2d-display 渲染，支持动作/表情/手势交互与真实缩略图，多选批量删除
   - **陪伴模式**：循环待机无缝衔接，每到设定间隔随机播放动作并配语音；锁屏风时钟/电量角标；沉浸模式自动收齐全部界面，触摸画布唤出
@@ -196,7 +199,7 @@
 ### 导航结构
 
 - **底部三个主页面**：后宅 / 船坞（舰船⇆成员档案切换）/ 关于；点击舰娘卡片进入她的语音播放页
-- **侧拉菜单**：今日秘书舰、Live2D 皮肤、游戏资源导入、生日日历、看图/听音识舰娘、历史记录、积分排行榜、碧蓝航线助手、啾信、水印相机、设置、关于
+- **侧拉菜单**：今日秘书舰、Live2D 皮肤、游戏资源导入、生日日历、看图/听音识舰娘、历史记录、我的成绩榜、碧蓝航线助手、啾信、水印相机、备份与恢复、设置、关于
 - **桌面小组件**：在启动器小组件列表添加「今日推荐舰娘」「秘书舰问候」「舰娘生日」
 
 ### 桌面小组件
@@ -266,7 +269,7 @@
 | [Room](https://developer.android.com/training/data-storage/room) | 2.8.4 | 本地数据库（舰娘/答题历史，v9 schema 导出） |
 | [DataStore Preferences](https://developer.android.com/topic/libraries/architecture/datastore) | 1.2.0 | 偏好与玩家设置存储 |
 | [Glance](https://developer.android.com/jetpack/compose/glance) | 1.1.1 | 桌面小组件（Compose 风格 API） |
-| [WorkManager](https://developer.android.com/topic/libraries/background-work) | 2.11.1 | 小组件后台刷新任务 |
+| [Android Keystore](https://developer.android.com/privacy-and-security/keystore) | 系统 API | 敏感字段静态加密（AI Key / UID / 服务器，AES-256-GCM） |
 | [Shizuku](https://shizuku.rikka.app/) | 13.1.5 | ADB 身份读取游戏私有目录（api + provider） |
 | [Media3 ExoPlayer](https://developer.android.com/media/media3) | 1.3.1 | 音频播放 + MediaSession |
 | [Coil](https://coil-kt.github.io/coil/) | 2.7.0 | 图片加载（含 GIF） |

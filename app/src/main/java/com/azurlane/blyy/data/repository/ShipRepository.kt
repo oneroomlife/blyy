@@ -3,6 +3,8 @@ package com.azurlane.blyy.data.repository
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.azurlane.blyy.data.backup.ShipStateBackup
+import com.azurlane.blyy.data.local.PlayerSettingsDataStore
 import com.azurlane.blyy.data.local.ShipDao
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.ShipCharacterInfo
@@ -65,6 +67,7 @@ data class VoicesData(
 class ShipRepository @Inject constructor(
     private val shipDao: ShipDao,
     private val networkHelper: NetworkHelper,
+    private val settings: PlayerSettingsDataStore,
     @ApplicationContext private val context: Context
 ) {
     companion object {
@@ -201,6 +204,8 @@ class ShipRepository @Inject constructor(
                         .onFailure { Log.w(TAG, "生日回填失败（不影响档案数据）", it) }
                 }
                 Log.d(TAG, "Successfully refreshed ${ships.size} ships")
+                // 备份恢复时若名录还没建起来，誓约条目会暂存起来，这里补写（幂等）
+                applyPendingOathRestore()
                 // 图鉴从空到有/内容变化影响「今日推荐舰娘」候选池，同步刷新桌面小组件
                 if (archiveType == ArchiveType.DOCK) {
                     WidgetSync.enqueueUpdate(context)
@@ -216,6 +221,37 @@ class ShipRepository @Inject constructor(
     // ---------- 生日静态名单回填 ----------
 
     private val birthdayJson = Json { ignoreUnknownKeys = true }
+
+    /** 备份恢复专用（待补誓约名单的反序列化） */
+    private val backupJson = Json { ignoreUnknownKeys = true }
+
+    /**
+     * 补写「备份恢复时还不在库里」的誓约记录。
+     *
+     * 新装/离线时直接恢复备份，`ships` 表可能还是空的：此时恢复流程把誓约名单写进
+     * DataStore 的 `pending_oath_restore`，等 `refreshShipsFromWiki` /
+     * `refreshStudentsFromGamekee` 建好名录后再回来应用，避免"恢复成功但誓约全丢"。
+     *
+     * 幂等：读取后即清空标记；只把 isFavorite 置 true，不会反向取消。
+     */
+    private suspend fun applyPendingOathRestore() {
+        val json = runCatching { settings.takePendingOathRestore() }.getOrNull() ?: return
+        if (json.isBlank()) return
+        val states = runCatching {
+            backupJson.decodeFromString<List<ShipStateBackup>>(json)
+        }.getOrNull()
+        if (states.isNullOrEmpty()) return
+
+        var applied = 0
+        states.forEach { state ->
+            if (!state.favorite) return@forEach
+            if (shipDao.getShipByName(state.name, state.archiveType) != null) {
+                shipDao.updateFavorite(state.name, state.archiveType, true)
+                applied++
+            }
+        }
+        Log.i(TAG, "applyPendingOathRestore: $applied/${states.size} oath(s) applied")
+    }
 
     @Volatile
     private var cachedBirthdays: Map<String, String>? = null
@@ -813,6 +849,8 @@ class ShipRepository @Inject constructor(
             shipDao.deleteStaleShips(ArchiveType.STUDENT.name, students.map { it.name })
             val dbDuration = System.currentTimeMillis() - dbStart
             Log.d(TAG, "DB upsert completed in ${dbDuration}ms, ${students.size} students")
+            // 同 DOCK：备份恢复时若名录尚未建立，誓约在此补写
+            applyPendingOathRestore()
 
             val totalDuration = System.currentTimeMillis() - startTime
             Log.d(TAG, "refreshStudentsFromGamekee SUCCESS: total=${totalDuration}ms, students=${students.size}")

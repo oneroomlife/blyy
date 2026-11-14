@@ -60,7 +60,7 @@ fun BlyyShimmerBlock(
 /**
  * 列表骨架屏 — 圆形头像 + 两行文字的占位行。
  *
- * 用于整页列表（排行榜/历史记录等）首屏加载，
+ * 用于整页列表（成绩榜/历史记录等）首屏加载，
  * 替代孤零零的 CircularProgressIndicator。
  */
 @Composable
