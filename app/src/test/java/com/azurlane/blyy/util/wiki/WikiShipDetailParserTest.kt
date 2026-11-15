@@ -81,6 +81,34 @@ class WikiShipDetailParserTest {
     }
 
     @Test
+    fun `equipment parser drops slot numbers and skill noise`() {
+        // 线上回归样本：曾经的输出是 1 / - / 2 / 3 / 装备说明 / 技能改造技能改造技能 …
+        val noisy = """
+            <html><body><table>
+              <tr><th>装备1</th><td><a title="双联装381mm主炮">双联装381mm主炮</a></td></tr>
+              <tr><th>装备2</th><td><a title="-">-</a></td></tr>
+              <tr><th>装备3</th><td><a title="1">1</a><a title="2">2</a></td></tr>
+              <tr><th>装备说明</th><td><a title="技能改造">技能改造</a><a title="荡涤诸恶">荡涤诸恶</a></td></tr>
+              <tr><th>装备4</th><td>这一格是装备说明文字，长度超过四十个字符就会被判定为说明块而整格跳过，避免把技能描述当成装备</td></tr>
+            </table></body></html>
+        """.trimIndent()
+
+        val detail = WikiShipDetailParser.parse(Jsoup.parse(noisy))
+
+        assertEquals(listOf("双联装381mm主炮"), detail.equipment)
+    }
+
+    @Test
+    fun `equipment parser keeps short chinese names`() {
+        val html2 = """
+            <html><body><table>
+              <tr><th>初始装备</th><td><a title="彩雷">彩雷</a></td></tr>
+            </table></body></html>
+        """.trimIndent()
+        assertEquals(listOf("彩雷"), WikiShipDetailParser.parse(Jsoup.parse(html2)).equipment)
+    }
+
+    @Test
     fun `parses acquire from meta table`() {
         assertEquals("建造 / 活动", parse().acquire)
     }

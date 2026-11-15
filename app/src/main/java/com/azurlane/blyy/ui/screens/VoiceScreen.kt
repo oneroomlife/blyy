@@ -211,7 +211,8 @@ fun VoiceScreenContent(
      * 分享台词卡（图片 / 图片+语音）。
      *
      * 旧「分享」只把文本写进剪贴板；这里改成系统分享面板。
-     * 卡片在 IO 线程合成（1080×1440），生成失败与「无可用分享应用」都明确提示。
+     * 卡片在 IO 线程合成（1080×1440），生成失败、语音降级、无可用分享应用都给出**具体**提示，
+     * 不再用一句"没有可用的分享应用"糊掉所有失败原因。
      */
     fun shareVoiceCard(voice: VoiceLine, withAudio: Boolean) {
         scope.launch {
@@ -224,11 +225,12 @@ fun VoiceScreenContent(
                 avatarUrl = effectiveAvatarUrl
             )
             if (card == null) {
-                Toast.makeText(context, "台词卡生成失败，请重试", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "台词卡生成失败（内存不足或图片异常），请重试", Toast.LENGTH_LONG).show()
                 return@launch
             }
+
             val audioUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
-            val launched = if (withAudio) {
+            val result = if (withAudio) {
                 VoiceShareLauncher.shareCardWithAudio(
                     context = context,
                     card = card,
@@ -239,10 +241,16 @@ fun VoiceScreenContent(
             } else {
                 VoiceShareLauncher.shareCard(context, card, voiceState.shipName)
             }
-            if (launched) {
-                VoiceShareLauncher.pruneAudioCache(context)
-            } else {
-                Toast.makeText(context, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
+
+            when (result) {
+                is VoiceShareLauncher.ShareResult.Success ->
+                    VoiceShareLauncher.pruneAudioCache(context)
+
+                is VoiceShareLauncher.ShareResult.AudioSkipped ->
+                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+
+                is VoiceShareLauncher.ShareResult.Failed ->
+                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -424,7 +432,10 @@ fun VoiceScreenContent(
                                 onClick = onRowClick,
                                 onDownloadClick = onDownloadClick,
                                 onFavoriteClick = onFavoriteClick,
-                                onShareClick = onShareClick
+                                onShareClick = onShareClick,
+                                // 这两个回调曾经漏传 → 菜单项走默认空实现，点了没反应
+                                onShareCardClick = onShareCardClick,
+                                onShareCardAudioClick = onShareCardAudioClick
                             )
                         }
                     }

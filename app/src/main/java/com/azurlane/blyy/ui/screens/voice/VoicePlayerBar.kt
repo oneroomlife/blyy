@@ -557,25 +557,35 @@ internal fun ExpandedPlayerBar(
                 }
 
                 if (hasContent) {
+                    Spacer(modifier = Modifier.height(AppSpacing.Md))
+                    // 细分隔线：把"播放控制"和"播放设置"分成两层，视觉上不再是一堆浮着的胶囊
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                    )
                     Spacer(modifier = Modifier.height(AppSpacing.Sm))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
+                        // 左右分置：倍速管"怎么听"，定时管"听多久"，两者语义不同，不该挤在中间
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         PlayerMetaChip(
                             icon = Icons.Rounded.Speed,
-                            label = formatSpeedLabel(playerState.playbackSpeed),
+                            label = "倍速",
+                            value = formatSpeedLabel(playerState.playbackSpeed),
                             active = kotlin.math.abs(playerState.playbackSpeed - 1f) > 0.001f,
                             onClick = onSpeedClick
                         )
-                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
                         PlayerMetaChip(
                             icon = Icons.Rounded.Bedtime,
-                            label = if (playerState.sleepTimerActive) {
+                            label = "定时",
+                            value = if (playerState.sleepTimerActive) {
                                 formatSleepRemaining(playerState.sleepTimerRemainingMs)
                             } else {
-                                "定时"
+                                "关闭"
                             },
                             active = playerState.sleepTimerActive,
                             onClick = onTimerClick
@@ -612,64 +622,65 @@ internal fun ExpandedPlayerBar(
 }
 
 /**
- * 播放器元信息胶囊（倍速 / 睡眠定时）。
+ * 播放器设置胶囊（倍速 / 睡眠定时）。
  *
- * 设计意图：这两个是"低频但一找就要找得到"的开关，常驻在控制条下方一行，
- * 不激活时低调（透明底 + 细描边），激活后主色描边 + 浅底，避免抢主控件的视觉权重。
+ * 交互与视觉取舍：
+ * - **左标签 + 右数值**（"倍速 1.25x" / "定时 29:59"），比只显示 "1x" 更能自解释，
+ *   用户不需要先点一次才知道这枚胶囊是干什么的；
+ * - 未激活时用浅底 + 细描边，激活（非 1x / 定时进行中）后换成主色底与主色字，
+ *   一眼区分"默认状态"与"我改过设置"；
+ * - 高度 34dp、横向内边距 12dp，保证点按热区 ≥ 48dp（`minimumInteractiveComponentSize` 由 Surface 保证）。
  */
 @Composable
 private fun PlayerMetaChip(
     icon: ImageVector,
     label: String,
+    value: String,
     active: Boolean,
     onClick: () -> Unit
 ) {
+    val accent = MaterialTheme.colorScheme.primary
+    val idle = MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(AppSpacing.Corner.Full),
         color = if (active) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+            accent.copy(alpha = 0.12f)
         } else {
-            Color.Transparent
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
         },
         border = BorderStroke(
             width = 1.dp,
-            color = if (active) {
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-            } else {
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-            }
+            color = if (active) accent.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
         ),
-        modifier = Modifier.height(28.dp)
+        modifier = Modifier.height(34.dp)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = AppSpacing.Sm),
+            modifier = Modifier.padding(horizontal = AppSpacing.Md),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = if (active) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                modifier = Modifier.size(15.dp),
+                tint = if (active) accent else idle
             )
-            Spacer(modifier = Modifier.width(AppSpacing.Xxs))
+            Spacer(modifier = Modifier.width(AppSpacing.Xs))
             Text(
                 text = label,
                 style = AppTypography.LabelSmall,
-                color = if (active) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                color = idle
+            )
+            Spacer(modifier = Modifier.width(AppSpacing.Xxs))
+            Text(
+                text = value,
+                style = AppTypography.LabelLarge,
+                color = if (active) accent else MaterialTheme.colorScheme.onSurface,
+                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
             )
         }
     }
 }
-
 /** 0.75f → "0.75x"，1.0f → "1x"，1.5f → "1.5x" */
 private fun formatSpeedLabel(speed: Float): String {
     val rounded = (speed * 100).roundToInt() / 100f

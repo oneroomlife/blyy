@@ -20,6 +20,7 @@ import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -284,17 +285,25 @@ object VoiceCardComposer {
 
     // ── 资源 ──
 
+    /**
+     * 加载分享卡片用的头像。
+     *
+     * 加 3 秒超时：弱网/图床抽风时，用户点"分享"不应该对着一个转圈的 Toast 等半分钟——
+     * 超时就用首字占位图，卡片照常生成、照常分享。
+     */
     private suspend fun loadAvatar(context: Context, url: String): Bitmap? {
         if (url.isBlank()) return null
-        return runCatching {
-            val request = ImageRequest.Builder(context)
-                .data(url)
-                .size(480)
-                .allowHardware(false)
-                .build()
-            val result = context.imageLoader.execute(request)
-            if (result is SuccessResult) result.drawable.toBitmap() else null
-        }.getOrNull()
+        return withTimeoutOrNull(3_000) {
+            runCatching {
+                val request = ImageRequest.Builder(context)
+                    .data(url)
+                    .size(480)
+                    .allowHardware(false)
+                    .build()
+                val result = context.imageLoader.execute(request)
+                if (result is SuccessResult) result.drawable.toBitmap() else null
+            }.getOrNull()
+        }
     }
 
     private fun android.graphics.drawable.Drawable.toBitmap(): Bitmap {

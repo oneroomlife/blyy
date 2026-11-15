@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -292,6 +293,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.statsItems(detail: Sh
         item(key = "stats_empty") { EmptyHint("暂未解析到属性数据，可点右上角刷新或前往 Wiki") }
         return
     }
+    item(key = "stats_header") {
+        SectionLabel(text = "基础属性", trailing = "${detail.stats.size} 项")
+    }
     items(detail.stats, key = { "stat_${it.label}" }) { row -> StatRowItem(row) }
 }
 
@@ -325,6 +329,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.skillItems(detail: Sh
         item(key = "skills_empty") { EmptyHint("暂未解析到技能数据，可点右上角刷新或前往 Wiki") }
         return
     }
+    item(key = "skills_header") {
+        SectionLabel(text = "技能", trailing = "${detail.skills.size} 个")
+    }
     items(detail.skills, key = { "skill_${it.name}" }) { skill -> SkillItem(skill) }
 }
 
@@ -347,60 +354,127 @@ private fun SkillItem(skill: SkillRow) {
                 Text(
                     text = skill.description,
                     style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // wiki 有些技能描述带整段数值表；限行避免单张卡占满一屏
+                    maxLines = 12,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
     }
 }
 
+/**
+ * 装备页。
+ *
+ * 之前的实现把每个"装备名"渲染成一条带 `·` 的全宽卡片，wiki 解析噪声
+ * （1 / - / 2 / 3 / 装备说明 / 技能名）会原样漏到界面上（见用户反馈截图）。
+ * 现在：解析层已做严格过滤，界面也改成"槽位徽标 + 名称"的列表，并在末尾标注数据来源。
+ */
 private fun androidx.compose.foundation.lazy.LazyListScope.equipmentItems(detail: ShipDetail) {
-    if (detail.equipment.isEmpty()) {
+    if (detail.equipment.isEmpty() && detail.acquire.isBlank()) {
         item(key = "equip_empty") { EmptyHint("暂未解析到装备数据，可点右上角刷新或前往 Wiki") }
         return
     }
-    items(detail.equipment, key = { "equip_$it" }) { name ->
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text = "·", style = AppTypography.BodyMedium, color = MaterialTheme.colorScheme.primary)
-            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-            Text(
-                text = name,
-                style = AppTypography.BodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+
+    if (detail.equipment.isNotEmpty()) {
+        item(key = "equip_header") {
+            SectionLabel(text = "初始装备", trailing = "${detail.equipment.size} 件")
         }
+        itemsIndexed(
+            items = detail.equipment,
+            key = { index, name -> "equip_${index}_$name" }
+        ) { index, name -> EquipmentRow(index = index + 1, name = name) }
     }
+
     if (detail.acquire.isNotBlank()) {
         item(key = "acquire") {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(AppSpacing.Corner.Md),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                )
-            ) {
-                Column(modifier = Modifier.padding(AppSpacing.Md)) {
-                    Text(
-                        text = "获取方式",
-                        style = AppTypography.LabelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            Column {
+                SectionLabel(text = "获取方式")
+                Spacer(modifier = Modifier.height(AppSpacing.Xs))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(AppSpacing.Corner.Md),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                     )
+                ) {
                     Text(
                         text = detail.acquire,
                         style = AppTypography.BodySmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(AppSpacing.Md)
                     )
                 }
             }
+        }
+    }
+
+    item(key = "equip_source") {
+        Text(
+            text = "数据来自 wiki 舰船页，可能滞后于游戏版本",
+            style = AppTypography.LabelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.padding(top = AppSpacing.Xs)
+        )
+    }
+}
+
+/** 装备行：槽位徽标 + 名称（两行以内，长名截断） */
+@Composable
+private fun EquipmentRow(index: Int, name: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AppSpacing.Corner.Sm))
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(24.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "$index",
+                style = AppTypography.LabelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+        Text(
+            text = name,
+            style = AppTypography.BodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** 分区小标题（左标题 + 右侧计数） */
+@Composable
+private fun SectionLabel(text: String, trailing: String? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = text,
+            style = AppTypography.LabelLarge,
+            color = MaterialTheme.colorScheme.primary
+        )
+        if (!trailing.isNullOrBlank()) {
+            Text(
+                text = trailing,
+                style = AppTypography.LabelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

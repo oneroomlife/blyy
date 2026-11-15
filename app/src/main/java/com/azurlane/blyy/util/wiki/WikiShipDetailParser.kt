@@ -31,6 +31,16 @@ object WikiShipDetailParser {
     private val ILLUST_REGEX = Regex("""(?:画师|立绘|原画)\s*[:：]\s*([^\s/|,，、\[\]]{1,24})""")
     private val ACQUIRE_REGEX = Regex("""(?:获得方式|获取方式|入手方式)\s*[:：]?\s*([^\n]{2,60})""")
 
+    /** 装备行表头：`装备` / `装备1` / `初始装备`（"装备说明"不匹配） */
+    private val EQUIP_LABEL_REGEX = Regex("""^(?:初始)?装备\d*$""")
+    private val EQUIP_TEXT_REGEX = Regex("""初始装备\s*[:：]?\s*([^\n]{2,80})""")
+
+    /** 整词噪声（槽位/空槽/说明标题） */
+    private val EQUIP_JUNK_WORDS = setOf("装备", "装备说明", "初始装备", "无", "暂无", "空")
+
+    /** 出现在名称里就一定不是装备的词 */
+    private val EQUIP_NOISE_WORDS = listOf("技能", "说明", "改造", "台词", "获取", "获得")
+
     fun parse(doc: Document): ShipDetail {
         // 表格键值对优先：wiki 的 infobox 是 <th>CV</th><td>xxx</td>，
         // 直接对 doc.text() 做正则时 "CV" 与值会被粘在一起（没有冒号），因此先走表格。
@@ -165,29 +175,59 @@ object WikiShipDetailParser {
 
     // ── 装备 ──
 
+    /**
+     * 装备解析（严格版）。
+     *
+     * 旧实现只要行长文本里出现"装备"就把整行所有链接收进来，线上实际产出是
+     * 「1 / - / 2 / 3 / 装备说明 / 技能改造技能改造技能 / 荡涤诸恶 / 战斗开始后」——
+     * 把槽位编号、破折号、技能名全当成了装备。这里改为：
+     * 1. 表头必须是 `装备` / `装备N` / `初始装备`（正则整串匹配，"装备说明"直接排除）；
+     * 2. 单元格文本超过 40 字视为说明块，整格跳过；
+     * 3. 名称做语义过滤（纯数字/破折号/含"技能""说明""改造"的一律丢弃）；
+     * 4. 优先取链接的 `title` 属性（wiki 的装备条目名在 title 里最干净）。
+     */
     private fun parseEquipment(doc: Document): List<String> {
         val result = LinkedHashSet<String>()
 
         doc.select("table tr").forEach { row ->
             val cells = row.select("th, td")
-            if (cells.isEmpty()) return@forEach
-            val label = cells[0].text()
-            if (!label.contains("装备")) return@forEach
-            cells.drop(1)
-                .flatMap { it.select("a").map { a -> a.text().trim() } }
-                .filter { it.isNotBlank() && it.length <= 24 }
-                .forEach { result += it }
+            if (cells.size < 2) return@forEach
+            val label = cells[0].text().trim().replace(" ", "")
+            if (!EQUIP_LABEL_REGEX.matches(label)) return@forEach
+
+            cells.drop(1).forEach cellLoop@{ cell ->
+                val cellText = cell.text().trim()
+                // 折叠块里的"装备说明"整格都是技能描述，不能当装备
+                if (cellText.length > 40) return@cellLoop
+                val candidates = cell.select("a")
+                    .map { anchor -> anchor.attr("title").ifBlank { anchor.text() }.trim() }
+                    .ifEmpty { listOf(cellText) }
+                candidates.forEach { raw ->
+                    if (isValidEquipmentName(raw)) result += raw.trim()
+                }
+            }
         }
 
+        // 兜底：纯文本"初始装备：A、B"
         if (result.isEmpty()) {
-            val regex = Regex("""初始装备\s*[:：]?\s*([^\n]{2,80})""")
-            regex.find(doc.text())?.groupValues?.getOrNull(1)
+            EQUIP_TEXT_REGEX.find(doc.text())?.groupValues?.getOrNull(1)
                 ?.split('、', '，', ',', ' ')
                 ?.map { it.trim() }
-                ?.filter { it.isNotBlank() && it.length <= 24 }
+                ?.filter { isValidEquipmentName(it) }
                 ?.forEach { result += it }
         }
 
-        return result.take(8).toList()
+        return result.take(6).toList()
+    }
+
+    /** 装备名合法性：长度、纯数字/符号、语义噪声三重过滤 */
+    private fun isValidEquipmentName(raw: String): Boolean {
+        val name = raw.trim()
+        if (name.length !in 2..20) return false
+        // 纯数字、纯符号（"-" "—" "1" "2" 这类槽位/空槽标记）
+        if (name.all { it.isDigit() || it in "-—–/·.、 " }) return false
+        if (name in EQUIP_JUNK_WORDS) return false
+        if (EQUIP_NOISE_WORDS.any { name.contains(it) }) return false
+        return true
     }
 }
