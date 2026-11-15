@@ -34,6 +34,21 @@
         android:resizeable="true"
         android:anyDensity="true" />
 
+    <!-- 分享目标可见性（Android 11+ package visibility）：
+         台词卡分享前需 queryIntentActivities 探测有无应用可接 ACTION_SEND/SEND_MULTIPLE，
+         无目标时降级为保存到本地（Download/BLYY），避免弹出系统的"没有应用可执行此操作"空面板。
+         mimeType 用 */*：filter 级匹配覆盖目标应用声明的任意 MIME（image/*、audio/* 等） -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
+
     <application
         android:name="com.azurlane.blyy.MyApplication"
         android:allowBackup="true"

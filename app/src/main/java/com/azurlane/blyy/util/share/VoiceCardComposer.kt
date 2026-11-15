@@ -19,6 +19,8 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -59,10 +61,12 @@ object VoiceCardComposer {
         sceneLabel: String,
         avatarUrl: String
     ): File? = withContext(Dispatchers.IO) {
-        var avatar: Bitmap? = null
         var card: Bitmap? = null
         try {
-            avatar = loadAvatar(context, avatarUrl)
+            val avatar = loadAvatar(context, avatarUrl)
+            // loadAvatar 内部的 runCatching 会吞掉外层取消信号，这里补检：
+            // 用户已离开/再次取消时不再白画一张 6 MB 的图
+            currentCoroutineContext().ensureActive()
             card = Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(card)
             drawBackground(canvas)
@@ -88,8 +92,11 @@ object VoiceCardComposer {
             Log.w(TAG, "compose failed: ${t.message}", t)
             null
         } finally {
-            // 一律回收，避免失败路径把 6 MB 的位图留给 GC
-            runCatching { avatar?.recycle() }
+            // 只回收自己创建的卡片位图。
+            // ⚠️ 绝不能 recycle avatar：loadAvatar 返回的是 Coil 内存缓存里的**共享实例**
+            // （SuccessResult.drawable 是包着缓存位图的 BitmapDrawable，toBitmap 不做拷贝），
+            // 一旦 recycle 就把缓存条目毒化——之后每次生成都会拿到"已回收的位图"，
+            // drawBitmap 抛 IllegalStateException → compose 返回 null →「台词卡生成失败」。
             runCatching { card?.recycle() }
         }
     }
@@ -239,6 +246,8 @@ object VoiceCardComposer {
         canvas.drawText("“", left - 12f, areaTop + 40f, quote)
 
         canvas.save()
+        // 裁剪到台词区：超长台词缩到最小字号仍放不下时，宁可截断也不能画进 footer 覆盖落款
+        canvas.clipRect(left.toFloat(), areaTop.toFloat(), right.toFloat(), areaBottom.toFloat())
         canvas.translate(left.toFloat(), areaTop.toFloat())
         layout.draw(canvas)
         canvas.restore()
@@ -294,7 +303,7 @@ object VoiceCardComposer {
     private suspend fun loadAvatar(context: Context, url: String): Bitmap? {
         if (url.isBlank()) return null
         return withTimeoutOrNull(3_000) {
-            runCatching {
+            val bitmap = runCatching {
                 val request = ImageRequest.Builder(context)
                     .data(url)
                     .size(480)
@@ -303,6 +312,10 @@ object VoiceCardComposer {
                 val result = context.imageLoader.execute(request)
                 if (result is SuccessResult) result.drawable.toBitmap() else null
             }.getOrNull()
+            // runCatching 会连外层的 CancellationException 一起吞掉：
+            // 超时/外层取消时这里补抛，让 withTimeoutOrNull 按约定返回 null（而不是继续拿着半个结果）
+            currentCoroutineContext().ensureActive()
+            bitmap
         }
     }
 

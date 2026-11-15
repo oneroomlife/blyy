@@ -213,44 +213,63 @@ fun VoiceScreenContent(
      * 旧「分享」只把文本写进剪贴板；这里改成系统分享面板。
      * 卡片在 IO 线程合成（1080×1440），生成失败、语音降级、无可用分享应用都给出**具体**提示，
      * 不再用一句"没有可用的分享应用"糊掉所有失败原因。
+     *
+     * in-flight 守卫：合成 + 下载语音可长达数秒，期间二次点击会弹出两个分享面板
+     * 并重复生成 6 MB 位图，直接忽略。
      */
+    var shareCardInFlight by remember { mutableStateOf(false) }
     fun shareVoiceCard(voice: VoiceLine, withAudio: Boolean) {
+        if (shareCardInFlight) return
+        shareCardInFlight = true
         scope.launch {
-            Toast.makeText(context, "正在生成台词卡…", Toast.LENGTH_SHORT).show()
-            val card = VoiceCardComposer.compose(
-                context = context,
-                shipName = voiceState.shipName,
-                dialogue = voice.dialogue,
-                sceneLabel = voice.scene,
-                avatarUrl = effectiveAvatarUrl
-            )
-            if (card == null) {
-                Toast.makeText(context, "台词卡生成失败（内存不足或图片异常），请重试", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-
-            val audioUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
-            val result = if (withAudio) {
-                VoiceShareLauncher.shareCardWithAudio(
+            try {
+                Toast.makeText(context, "正在生成台词卡…", Toast.LENGTH_SHORT).show()
+                val card = VoiceCardComposer.compose(
                     context = context,
-                    card = card,
-                    audioUrl = audioUrl,
                     shipName = voiceState.shipName,
-                    sceneName = voice.scene
+                    dialogue = voice.dialogue,
+                    sceneLabel = voice.scene,
+                    avatarUrl = effectiveAvatarUrl
                 )
-            } else {
-                VoiceShareLauncher.shareCard(context, card, voiceState.shipName)
-            }
+                if (card == null) {
+                    Toast.makeText(context, "台词卡生成失败（内存不足或图片异常），请重试", Toast.LENGTH_LONG).show()
+                    return@launch
+                }
 
-            when (result) {
-                is VoiceShareLauncher.ShareResult.Success ->
-                    VoiceShareLauncher.pruneAudioCache(context)
+                val audioUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
+                val result = if (withAudio) {
+                    VoiceShareLauncher.shareCardWithAudio(
+                        context = context,
+                        card = card,
+                        audioUrl = audioUrl,
+                        shipName = voiceState.shipName,
+                        sceneName = voice.scene
+                    )
+                } else {
+                    VoiceShareLauncher.shareCard(context, card, voiceState.shipName)
+                }
 
-                is VoiceShareLauncher.ShareResult.AudioSkipped ->
-                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                when (result) {
+                    is VoiceShareLauncher.ShareResult.Success ->
+                        VoiceShareLauncher.pruneAudioCache(context)
 
-                is VoiceShareLauncher.ShareResult.Failed ->
-                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                    // 降级分享（只发图）同样已经消耗过一次音频缓存，顺手清一把
+                    is VoiceShareLauncher.ShareResult.AudioSkipped -> {
+                        VoiceShareLauncher.pruneAudioCache(context)
+                        Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                    }
+
+                    // 无分享目标的兜底：已落盘到 Download/BLYY，音频缓存同样可能已产生
+                    is VoiceShareLauncher.ShareResult.SavedLocally -> {
+                        VoiceShareLauncher.pruneAudioCache(context)
+                        Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                    }
+
+                    is VoiceShareLauncher.ShareResult.Failed ->
+                        Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                shareCardInFlight = false
             }
         }
     }
