@@ -212,7 +212,7 @@ internal fun GlassPlayerControlBar(
                         onNextClick = { onVoiceIntent(VoiceIntent.SkipNext) },
                         onModeClick = { playerViewModel.cyclePlayMode() },
                         onListClick = { showPlayLaterSheet = true },
-                        onSpeedClick = { playerViewModel.cycleSpeed() },
+                        onSpeedSelected = { playerViewModel.setSpeed(it) },
                         onTimerClick = { showSleepTimerSheet = true }
                     )
                 }
@@ -508,7 +508,7 @@ internal fun ExpandedPlayerBar(
     onNextClick: () -> Unit,
     onModeClick: () -> Unit,
     onListClick: () -> Unit,
-    onSpeedClick: () -> Unit,
+    onSpeedSelected: (Float) -> Unit,
     onTimerClick: () -> Unit
 ) {
     val hasContent = playerState.currentMediaItem != null
@@ -535,62 +535,40 @@ internal fun ExpandedPlayerBar(
                 modifier = Modifier.padding(horizontal = AppSpacing.Xl, vertical = AppSpacing.Lg),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // 进度条独占一行：倍速/定时/队列都收进右侧菜单后，滑块重新拿回整行宽度，
+                // 拖动精度更高，控制条也回到"进度 + 控制"两层结构。
                 if (hasContent) {
                     ModernPlayerSlider(playerState, onSeek = onSeek)
-                    Spacer(modifier = Modifier.height(AppSpacing.Md))
+                    Spacer(modifier = Modifier.height(AppSpacing.Xs))
                 }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     PlayModeButton(playMode = playerState.playMode, onClick = onModeClick)
-                    ModernControlButton(icon = Icons.Rounded.SkipPrevious, size = ControlButtonSize.Medium, onClick = onPreviousClick)
-                    ModernPlayButton(isPlaying = playerState.isPlaying, onClick = onPlayPauseClick)
-                    ModernControlButton(icon = Icons.Rounded.SkipNext, size = ControlButtonSize.Medium, onClick = onNextClick)
                     ModernControlButton(
-                        icon = Icons.AutoMirrored.Rounded.PlaylistPlay,
-                        isActive = playerState.playLaterList.isNotEmpty(),
+                        icon = Icons.Rounded.SkipPrevious,
                         size = ControlButtonSize.Medium,
-                        onClick = onListClick
+                        contentDescription = "上一句",
+                        onClick = onPreviousClick
                     )
-                }
-
-                if (hasContent) {
-                    Spacer(modifier = Modifier.height(AppSpacing.Md))
-                    // 细分隔线：把"播放控制"和"播放设置"分成两层，视觉上不再是一堆浮着的胶囊
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                    ModernPlayButton(isPlaying = playerState.isPlaying, onClick = onPlayPauseClick)
+                    ModernControlButton(
+                        icon = Icons.Rounded.SkipNext,
+                        size = ControlButtonSize.Medium,
+                        contentDescription = "下一句",
+                        onClick = onNextClick
                     )
-                    Spacer(modifier = Modifier.height(AppSpacing.Sm))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        // 左右分置：倍速管"怎么听"，定时管"听多久"，两者语义不同，不该挤在中间
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        PlayerMetaChip(
-                            icon = Icons.Rounded.Speed,
-                            label = "倍速",
-                            value = formatSpeedLabel(playerState.playbackSpeed),
-                            active = kotlin.math.abs(playerState.playbackSpeed - 1f) > 0.001f,
-                            onClick = onSpeedClick
-                        )
-                        PlayerMetaChip(
-                            icon = Icons.Rounded.Bedtime,
-                            label = "定时",
-                            value = if (playerState.sleepTimerActive) {
-                                formatSleepRemaining(playerState.sleepTimerRemainingMs)
-                            } else {
-                                "关闭"
-                            },
-                            active = playerState.sleepTimerActive,
-                            onClick = onTimerClick
-                        )
-                    }
+                    // 原「稍后播放」按钮升级为菜单：队列 / 倍速 / 睡眠定时统一收纳，
+                    // 主控制条不必再为低频设置让位（图标在有非默认状态时高亮）
+                    PlayerOverflowMenu(
+                        playerState = playerState,
+                        onOpenQueue = onListClick,
+                        onSpeedSelected = onSpeedSelected,
+                        onOpenSleepTimer = onTimerClick
+                    )
                 }
             }
         }
@@ -622,65 +600,184 @@ internal fun ExpandedPlayerBar(
 }
 
 /**
- * 播放器设置胶囊（倍速 / 睡眠定时）。
+ * 播放器溢出菜单：稍后播放 / 倍速 / 睡眠定时。
  *
- * 交互与视觉取舍：
- * - **左标签 + 右数值**（"倍速 1.25x" / "定时 29:59"），比只显示 "1x" 更能自解释，
- *   用户不需要先点一次才知道这枚胶囊是干什么的；
- * - 未激活时用浅底 + 细描边，激活（非 1x / 定时进行中）后换成主色底与主色字，
- *   一眼区分"默认状态"与"我改过设置"；
- * - 高度 34dp、横向内边距 12dp，保证点按热区 ≥ 48dp（`minimumInteractiveComponentSize` 由 Surface 保证）。
+ * 为什么把这些从主控制条挪进来：
+ * - 「稍后播放」原本独占一个主按钮，但它并不是"播放"语义（不控制当前曲目）；
+ * - 倍速与定时在上一版里又各占一行胶囊，小屏上把控制条撑到三层。
+ * 收进菜单后：主控制条回到「播放模式 / 上一首 / 播放 / 下一首 / 菜单」五个等距按钮，
+ * 低频设置按需展开，且菜单里能直接看到当前值与队列数量。
  */
 @Composable
-private fun PlayerMetaChip(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    active: Boolean,
-    onClick: () -> Unit
+private fun PlayerOverflowMenu(
+    playerState: PlayerUiState,
+    onOpenQueue: () -> Unit,
+    onSpeedSelected: (Float) -> Unit,
+    onOpenSleepTimer: () -> Unit
 ) {
-    val accent = MaterialTheme.colorScheme.primary
-    val idle = MaterialTheme.colorScheme.onSurfaceVariant
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(AppSpacing.Corner.Full),
-        color = if (active) {
-            accent.copy(alpha = 0.12f)
-        } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-        },
-        border = BorderStroke(
-            width = 1.dp,
-            color = if (active) accent.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-        ),
-        modifier = Modifier.height(34.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = AppSpacing.Md),
-            verticalAlignment = Alignment.CenterVertically
+    var expanded by remember { mutableStateOf(false) }
+    val speedActive = kotlin.math.abs(playerState.playbackSpeed - 1f) > 0.001f
+    val queueCount = playerState.playLaterList.size
+    val hasNonDefault = speedActive || playerState.sleepTimerActive || queueCount > 0
+
+    Box {
+        ModernControlButton(
+            icon = Icons.Rounded.MoreVert,
+            isActive = hasNonDefault,
+            size = ControlButtonSize.Medium,
+            contentDescription = "更多播放设置",
+            onClick = { expanded = true }
+        )
+
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            shape = RoundedCornerShape(AppSpacing.Corner.Lg),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shadowElevation = AppSpacing.Elevation.Xl
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(15.dp),
-                tint = if (active) accent else idle
+            // ── 稍后播放（带队列数量）──
+            DropdownMenuItem(
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.PlaylistPlay,
+                            contentDescription = null,
+                            modifier = Modifier.size(AppSpacing.Icon.Md),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        Column {
+                            Text("稍后播放", style = AppTypography.BodyMedium)
+                            Text(
+                                text = if (queueCount > 0) "$queueCount 条待播" else "队列为空",
+                                style = AppTypography.LabelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
+                onClick = {
+                    expanded = false
+                    onOpenQueue()
+                }
             )
-            Spacer(modifier = Modifier.width(AppSpacing.Xs))
-            Text(
-                text = label,
-                style = AppTypography.LabelSmall,
-                color = idle
+
+            // ── 睡眠定时（显示剩余时间）──
+            DropdownMenuItem(
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Rounded.Bedtime,
+                            contentDescription = null,
+                            modifier = Modifier.size(AppSpacing.Icon.Md),
+                            tint = if (playerState.sleepTimerActive) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        Text("睡眠定时", style = AppTypography.BodyMedium)
+                    }
+                },
+                trailingIcon = {
+                    Text(
+                        text = if (playerState.sleepTimerActive) {
+                            formatSleepRemaining(playerState.sleepTimerRemainingMs)
+                        } else {
+                            "关闭"
+                        },
+                        style = AppTypography.LabelSmall,
+                        color = if (playerState.sleepTimerActive) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                },
+                onClick = {
+                    expanded = false
+                    onOpenSleepTimer()
+                }
             )
-            Spacer(modifier = Modifier.width(AppSpacing.Xxs))
-            Text(
-                text = value,
-                style = AppTypography.LabelLarge,
-                color = if (active) accent else MaterialTheme.colorScheme.onSurface,
-                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium
+
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = AppSpacing.Xxs),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
             )
+
+            // ── 倍速：直接列出档位，避免"点一次循环一档"的盲选 ──
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AppSpacing.Lg, vertical = AppSpacing.Xs)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "倍速",
+                        style = AppTypography.LabelLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = formatSpeedLabel(playerState.playbackSpeed),
+                        style = AppTypography.LabelSmall,
+                        color = if (speedActive) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+                Spacer(modifier = Modifier.height(AppSpacing.Sm))
+                Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)) {
+                    PLAYER_SPEED_OPTIONS.forEach { speed ->
+                        SpeedChoiceChip(
+                            speed = speed,
+                            selected = kotlin.math.abs(playerState.playbackSpeed - speed) < 0.001f,
+                            onClick = { onSpeedSelected(speed) }
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(AppSpacing.Xs))
+            }
         }
     }
 }
+
+/** 菜单里的倍速档位（0.75x / 1x / 1.25x / 1.5x，与持久化边界一致） */
+private val PLAYER_SPEED_OPTIONS = listOf(0.75f, 1f, 1.25f, 1.5f)
+
+@Composable
+private fun SpeedChoiceChip(
+    speed: Float,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(AppSpacing.Corner.Full),
+        color = if (selected) accent.copy(alpha = 0.16f) else Color.Transparent,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) accent.copy(alpha = 0.6f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        )
+    ) {
+        Text(
+            text = formatSpeedLabel(speed),
+            style = AppTypography.LabelSmall,
+            color = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier.padding(horizontal = AppSpacing.Sm, vertical = AppSpacing.Xs)
+        )
+    }
+}
+
 /** 0.75f → "0.75x"，1.0f → "1x"，1.5f → "1.5x" */
 private fun formatSpeedLabel(speed: Float): String {
     val rounded = (speed * 100).roundToInt() / 100f
@@ -730,6 +827,7 @@ private fun ModernControlButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     isActive: Boolean = false,
     size: ControlButtonSize = ControlButtonSize.Small,
+    contentDescription: String? = null,
     onClick: () -> Unit
 ) {
     val buttonSize = when (size) {
@@ -753,7 +851,7 @@ private fun ModernControlButton(
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = icon,
-                contentDescription = null,
+                contentDescription = contentDescription,
                 tint = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                 modifier = Modifier.size(iconSize)
             )

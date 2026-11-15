@@ -565,13 +565,6 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    /** 轮换倍速：0.75x → 1x → 1.25x → 1.5x → 0.75x（台词精听场景够用，避免长列表） */
-    fun cycleSpeed() {
-        val steps = listOf(0.75f, 1f, 1.25f, 1.5f)
-        val current = _uiState.value.playbackSpeed
-        val next = steps.firstOrNull { it > current + 0.001f } ?: steps.first()
-        setSpeed(next)
-    }
 
     fun setSpeed(speed: Float) {
         val clamped = speed.coerceIn(PlayerSettingsDataStore.SPEED_MIN, PlayerSettingsDataStore.SPEED_MAX)
