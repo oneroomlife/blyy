@@ -17,7 +17,8 @@ import kotlin.math.roundToInt
 /** 玩法模式（对应 `guess_history.mode`） */
 enum class ScoreMode(val rawValue: String, val label: String) {
     IMAGE("IMAGE", "看图识舰娘"),
-    VOICE("VOICE", "听音识舰娘");
+    VOICE("VOICE", "听音识舰娘"),
+    SKILL("SKILL", "技能识舰娘");
 
     companion object {
         fun fromRaw(raw: String): ScoreMode? = entries.firstOrNull { it.rawValue == raw }
@@ -63,7 +64,8 @@ data class ScoreRun(
 enum class ScoreModeFilter(val label: String, val mode: ScoreMode?) {
     ALL("全部", null),
     IMAGE("看图", ScoreMode.IMAGE),
-    VOICE("听音", ScoreMode.VOICE)
+    VOICE("听音", ScoreMode.VOICE),
+    SKILL("技能", ScoreMode.SKILL)
 }
 
 /** 难度过滤（"全部"= 不限） */
@@ -91,7 +93,7 @@ data class ScoreSummary(
     val answerRateLabel: String get() = "$correctAnswers/$totalQuestions"
 }
 
-/** 「模式 × 难度」四档个人纪录 */
+/** 「模式 × 难度」各档个人纪录 */
 data class ScoreRecord(
     val mode: ScoreMode,
     val difficulty: ScoreDifficulty,

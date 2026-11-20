@@ -76,8 +76,9 @@ import com.azurlane.blyy.ui.screens.guess.GuessErrorBanner
 import com.azurlane.blyy.ui.screens.guess.GuessHintButton
 import com.azurlane.blyy.ui.screens.guess.GuessHintsSection
 import com.azurlane.blyy.ui.screens.guess.GuessInputField
-import com.azurlane.blyy.ui.screens.guess.GuessScoreBanner
-import com.azurlane.blyy.ui.screens.guess.GuessScoreChip
+import com.azurlane.blyy.ui.screens.guess.GuessMetaBar
+import com.azurlane.blyy.ui.screens.guess.GuessTopBar
+import com.azurlane.blyy.ui.screens.guess.GuessQuestionFrame
 import com.azurlane.blyy.ui.screens.guess.GuessSettlementDialog
 import com.azurlane.blyy.ui.screens.guess.GuessWrongCard
 import com.azurlane.blyy.ui.theme.AppAnimation
@@ -216,20 +217,12 @@ private fun ModernGuessVoiceContent(
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
-            BlyyTopBar(
+            GuessTopBar(
                 title = "听音识舰娘",
                 subtitle = "聆听语音，猜出舰娘",
-                onBackClick = onBack,
-                actions = {
-                    IconButton(onClick = onHistory) {
-                        Icon(
-                            Icons.Rounded.History,
-                            contentDescription = "历史记录",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    GuessScoreChip(totalScore = state.score.totalScore)
-                }
+                totalScore = state.score.totalScore,
+                onBack = onBack,
+                onHistory = onHistory
             )
 
             Column(
@@ -259,14 +252,19 @@ private fun ModernGuessVoiceContent(
                     onSelect = onDifficultyChange
                 )
 
+                GuessMetaBar(
+                    questionIndex = state.currentQuestionNumber,
+                    questionScore = state.currentQuestionScore,
+                    isHard = !isEasy
+                )
+
                 VoicePlayerCard(
                     isPlaying = isVoicePlaying,
                     onReplay = onReplay,
                     hasVoice = state.currentVoice != null,
-                    dialogue = if (isEasy) state.currentVoice?.dialogue else null
+                    dialogue = if (isEasy) state.currentVoice?.dialogue else null,
+                    isHard = !isEasy
                 )
-
-                GuessScoreBanner(score = state.currentQuestionScore)
 
                 if (isEasy && state.hints.isNotEmpty()) {
                     GuessHintsSection(hints = state.hints)
@@ -364,7 +362,7 @@ private fun ModernGuessVoiceContent(
 }
 
 /**
- * 播放卡片 — BlyyPanel 容器 + BlyyPrimaryButton 播放键 + 台词面板
+ * 播放卡片 — 与看图/识技能共用 [GuessQuestionFrame] 外框（同一套标签/描边/投影）。
  *
  * 要点：
  * - [isPlaying] 绑定 PlayerViewModel 的真实播放状态（旧版误绑 isLoadingHint，
@@ -372,16 +370,18 @@ private fun ModernGuessVoiceContent(
  * - 播放键语义为"换一条语音"：每次点击随机播放该舰娘的另一条语音，
  *   EASY 模式台词在卡内随新语音同步切换
  * - 播放中耳机图标以呼吸光晕反馈，静止时不跑动画
+ * - [isHard] 困难模式不显示台词，外框徽标改为「无台词」，让玩家一眼知道当前档位
  */
 @Composable
 private fun VoicePlayerCard(
     isPlaying: Boolean,
     onReplay: () -> Unit,
     hasVoice: Boolean,
-    dialogue: String?
+    dialogue: String?,
+    isHard: Boolean
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (isPlaying) 1.02f else 1f,
+        targetValue = if (isPlaying) 1.01f else 1f,
         animationSpec = spring(stiffness = Spring.StiffnessLow),
         label = "scale"
     )
@@ -400,107 +400,104 @@ private fun VoicePlayerCard(
         0.25f
     }
 
-    BlyyPanel(
-        modifier = Modifier
-            .fillMaxWidth()
-            .scale(scale),
-        accentColor = MaterialTheme.colorScheme.primary
+    GuessQuestionFrame(
+        label = "语音",
+        icon = Icons.Rounded.Headphones,
+        badge = if (isHard) "无台词" else "含台词",
+        modifier = Modifier.scale(scale)
     ) {
-        Column(
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                MaterialTheme.colorScheme.primary.copy(alpha = breathingAlpha),
+                                Color.Transparent
+                            )
+                        ),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Rounded.Headphones,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    if (hasVoice) "聆听这段语音" else "正在准备题目",
+                    style = AppTypography.TitleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    when {
+                        !hasVoice -> "语音加载完成后即可播放"
+                        isPlaying -> "正在播放，点下方按钮可换一条"
+                        else -> "每次点击随机播放该舰娘的不同语音"
+                    },
+                    style = AppTypography.BodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                )
+            }
+        }
+
+        BlyyPrimaryButton(
+            text = when {
+                isPlaying -> "播放中…"
+                hasVoice -> "换一条语音"
+                else -> "等待题目加载"
+            },
+            icon = if (isPlaying) Icons.Rounded.MusicNote else Icons.Rounded.PlayArrow,
+            onClick = onReplay,
+            enabled = hasVoice,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(AppSpacing.Xl),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.Lg)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+                .height(AppSpacing.Game.Button.Height)
+        )
+
+        if (!dialogue.isNullOrBlank()) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(AppSpacing.Corner.Md),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
             ) {
-                Box(
+                Column(
                     modifier = Modifier
-                        .size(52.dp)
-                        .background(
-                            brush = Brush.radialGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primary.copy(alpha = breathingAlpha),
-                                    Color.Transparent
-                                )
-                            ),
-                            shape = CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .padding(AppSpacing.Md),
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
                 ) {
-                    Icon(
-                        Icons.Rounded.Headphones,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
-                Column {
-                    Text(
-                        if (hasVoice) "聆听这段语音" else "正在准备题目",
-                        style = AppTypography.TitleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        if (hasVoice) "每次点击随机播放该舰娘的不同语音" else "语音加载完成后即可播放",
-                        style = AppTypography.BodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
-                }
-            }
-
-            BlyyPrimaryButton(
-                text = when {
-                    isPlaying -> "播放中…"
-                    hasVoice -> "换一条语音"
-                    else -> "等待题目加载"
-                },
-                icon = if (isPlaying) Icons.Rounded.MusicNote else Icons.Rounded.PlayArrow,
-                onClick = onReplay,
-                enabled = hasVoice,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(AppSpacing.Game.Button.Height)
-            )
-
-            if (!dialogue.isNullOrBlank()) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(AppSpacing.Corner.Md),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(AppSpacing.Md),
-                        verticalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
-                        ) {
-                            Icon(
-                                Icons.Rounded.RecordVoiceOver,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Text(
-                                "台词",
-                                style = AppTypography.LabelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
+                        Icon(
+                            Icons.Rounded.RecordVoiceOver,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
                         Text(
-                            dialogue,
-                            style = AppTypography.BodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                            "台词",
+                            style = AppTypography.LabelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
+                    Text(
+                        dialogue,
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                    )
                 }
             }
         }

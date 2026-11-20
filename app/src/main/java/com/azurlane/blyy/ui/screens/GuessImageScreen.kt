@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Crop
 import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.ImageNotSupported
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.SkipNext
@@ -75,8 +77,9 @@ import com.azurlane.blyy.ui.screens.guess.GuessErrorBanner
 import com.azurlane.blyy.ui.screens.guess.GuessHintButton
 import com.azurlane.blyy.ui.screens.guess.GuessHintsSection
 import com.azurlane.blyy.ui.screens.guess.GuessInputField
-import com.azurlane.blyy.ui.screens.guess.GuessScoreBanner
-import com.azurlane.blyy.ui.screens.guess.GuessScoreChip
+import com.azurlane.blyy.ui.screens.guess.GuessMetaBar
+import com.azurlane.blyy.ui.screens.guess.GuessTopBar
+import com.azurlane.blyy.ui.screens.guess.GuessQuestionFrame
 import com.azurlane.blyy.ui.screens.guess.GuessSettlementDialog
 import com.azurlane.blyy.ui.screens.guess.GuessWrongCard
 import com.azurlane.blyy.ui.theme.AppAnimation
@@ -207,20 +210,12 @@ private fun ModernGuessImageContent(
 
     AdaptiveScreenBackground {
         Column(modifier = Modifier.fillMaxSize()) {
-            BlyyTopBar(
+            GuessTopBar(
                 title = "看图识舰娘",
-                subtitle = "观察图片，猜出舰娘",
-                onBackClick = onBack,
-                actions = {
-                    IconButton(onClick = onHistory) {
-                        Icon(
-                            Icons.Rounded.History,
-                            contentDescription = "历史记录",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    GuessScoreChip(totalScore = state.score.totalScore)
-                }
+                subtitle = "观察立绘，猜出舰娘",
+                totalScore = state.score.totalScore,
+                onBack = onBack,
+                onHistory = onHistory
             )
 
             Column(
@@ -257,7 +252,11 @@ private fun ModernGuessImageContent(
                     )
                 }
 
-                GuessScoreBanner(score = state.currentQuestionScore)
+                GuessMetaBar(
+                    questionIndex = state.currentQuestionNumber,
+                    questionScore = state.currentQuestionScore,
+                    isHard = state.difficulty == ImageDifficulty.HARD
+                )
 
                 ImageCard(
                     imageUrl = state.currentImageUrl,
@@ -393,109 +392,101 @@ private fun ImageCard(
     showFullImage: Boolean = false
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (isLoading) 0.95f else 1f,
+        targetValue = if (isLoading) 0.97f else 1f,
         animationSpec = spring(stiffness = Spring.StiffnessLow),
         label = "scale"
     )
 
-    // 修复 P0：原 targetValue 两分支均为 1f（死代码，动画无效）。
-    // 改为揭示全图时轻微放大（1.05f），强化"揭示"的视觉反馈。
+    // 揭示全图时轻微放大（1.05f），强化"揭示"的视觉反馈。
     val imageScale by animateFloatAsState(
         targetValue = if (showFullImage && cropRegion != null) 1.05f else 1f,
         animationSpec = tween(durationMillis = 300),
         label = "imageScale"
     )
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(3f / 4f)
-            .scale(scale)
-            // L2 仪表层（题面卡）— 四层深度模型统一阴影，
-            // 仅直射光允许染主色（原实现环境光也染了主色，且 16.dp 绕过令牌）
-            .blyyDepth(
-                DepthLayer.Instrument,
-                RoundedCornerShape(AppSpacing.Corner.Xxl),
-                spotTint = MaterialTheme.colorScheme.primary
-            )
-            .clip(RoundedCornerShape(AppSpacing.Corner.Xxl))
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                    )
-                )
-            )
-            .border(
-                width = 1.dp,
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+    // 与听音/识技能统一：同一套题面卡外框（左上标签 + 状态徽标 + 统一圆角/投影）
+    GuessQuestionFrame(
+        label = "立绘",
+        icon = Icons.Rounded.Image,
+        badge = if (difficulty == ImageDifficulty.HARD && !showFullImage) "局部" else "完整",
+        modifier = Modifier.scale(scale)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                // 限高 520dp：立绘是 3:4，横屏/平板上按宽度撑满会有 900+dp，
+                // 会把输入框和操作按钮顶到两三屏之外（与答题卡揭示图同一处理）
+                .heightIn(max = 520.dp)
+                .aspectRatio(3f / 4f, matchHeightConstraintsFirst = true)
+                .clip(RoundedCornerShape(AppSpacing.Corner.Lg))
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.15f)
+                        )
                     )
                 ),
-                shape = RoundedCornerShape(AppSpacing.Corner.Xxl)
-            ),
-        contentAlignment = Alignment.Center
-    ) {
-        if (imageUrl != null) {
-            if (cropRegion != null && difficulty == ImageDifficulty.HARD && !showFullImage) {
-                CroppedImage(
-                    imageUrl = imageUrl,
-                    cropRegion = cropRegion,
-                    modifier = Modifier.fillMaxSize()
-                )
+            contentAlignment = Alignment.Center
+        ) {
+            if (imageUrl != null) {
+                if (cropRegion != null && difficulty == ImageDifficulty.HARD && !showFullImage) {
+                    CroppedImage(
+                        imageUrl = imageUrl,
+                        cropRegion = cropRegion,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    AsyncImage(
+                        model = imageUrl,
+                        contentDescription = "舰娘立绘",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .scale(imageScale),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            } else if (errorMessage != null) {
+                // 题目生成失败（重试耗尽/同步中）— 展示真实原因，引导点击「下一题」
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Md),
+                    modifier = Modifier.padding(AppSpacing.Lg)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.ImageNotSupported,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Text(
+                        errorMessage,
+                        style = AppTypography.BodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        "点击下方「下一题」重新出题",
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                    )
+                }
             } else {
-                AsyncImage(
-                    model = imageUrl,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .scale(imageScale),
-                    contentScale = ContentScale.Fit
-                )
-            }
-        } else if (errorMessage != null) {
-            // 题目生成失败（如重试耗尽/数据同步中）— 展示真实原因，引导点击「下一题」（B7 修复）
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(AppSpacing.Md),
-                modifier = Modifier.padding(AppSpacing.Lg)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.ImageNotSupported,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    modifier = Modifier.size(40.dp)
-                )
-                Text(
-                    errorMessage,
-                    style = AppTypography.BodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-                Text(
-                    "点击下方「下一题」重新出题",
-                    style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                )
-            }
-        } else {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(32.dp),
-                    strokeWidth = 3.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    "正在加载题目…",
-                    style = AppTypography.BodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(32.dp),
+                        strokeWidth = 3.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "正在加载立绘…",
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -88,61 +89,8 @@ import com.azurlane.blyy.viewmodel.HintItem
  */
 private val ResultCardShape = RoundedCornerShape(AppSpacing.Corner.Xl)
 
-/** 顶栏总分徽章 */
-@Composable
-fun GuessScoreChip(totalScore: Int) {
-    Surface(
-        shape = RoundedCornerShape(AppSpacing.Corner.Xl),
-        color = MaterialTheme.colorScheme.primaryContainer
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Icon(
-                Icons.Rounded.Star,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(AppSpacing.Icon.Sm)
-            )
-            Text(
-                "$totalScore",
-                style = AppTypography.TitleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-        }
-    }
-}
-
-/** "本题可得 N 分" 说明条 */
-@Composable
-fun GuessScoreBanner(score: Int) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(AppSpacing.Corner.Md),
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = AppSpacing.Md, vertical = AppSpacing.Sm),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Icon(
-                Icons.Rounded.Star,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.size(14.dp)
-            )
-            Text(
-                "本题可得 $score 分",
-                style = AppTypography.BodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer
-            )
-        }
-    }
-}
+// 顶栏 / 总分胶囊 / 题面元信息条 / 题面卡外框已迁到 GuessChrome.kt：
+// 它们是三个玩法共用的"页面骨架"，和玩法内的反馈卡（答对/答错/结算）不是一类东西。
 
 /**
  * 游戏内错误/状态提示条 — VM 的 [com.azurlane.blyy.viewmodel.GuessGameUiState.errorMessage]
@@ -462,13 +410,14 @@ fun GuessInputField(
     onValueChange: (String) -> Unit,
     onSubmit: () -> Unit,
     enabled: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    placeholder: String = "输入舰娘名字..."
 ) {
     BlyyTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier.fillMaxWidth(),
-        placeholder = "输入舰娘名字...",
+        placeholder = placeholder,
         trailingIcon = if (value.isNotEmpty() && enabled) Icons.Rounded.Clear else null,
         onTrailingIconClick = if (value.isNotEmpty() && enabled) ({ onValueChange("") }) else null,
         enabled = enabled,
@@ -477,12 +426,13 @@ fun GuessInputField(
     )
 }
 
-/** 答对卡片 — 奖杯 + 得分；可选奖励立绘（听音）与语音回放（看图） */
+/** 答对卡片 — 奖杯 + 得分；可选奖励立绘（听音/识技能）与语音回放（看图） */
 @Composable
 fun GuessCorrectCard(
     score: Int,
     rewardImageUrl: String?,
-    onReplayVoice: (() -> Unit)? = null
+    onReplayVoice: (() -> Unit)? = null,
+    note: String? = null
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.Md)) {
         Surface(
@@ -543,6 +493,15 @@ fun GuessCorrectCard(
                         text = "播放语音",
                         icon = Icons.Rounded.Refresh,
                         onClick = replay
+                    )
+                }
+                // 识技能：共享技能答对时说明判分依据（避免被误读成"蒙对也算"）
+                if (!note.isNullOrBlank()) {
+                    Text(
+                        text = note,
+                        style = AppTypography.BodySmall,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -645,20 +604,29 @@ fun GuessWrongCard() {
     }
 }
 
+/** 奖励立绘（答对/揭晓时展示舰娘本体，三个玩法共用） */
 @Composable
-private fun GuessRewardImage(rewardImageUrl: String?) {
+internal fun GuessRewardImage(rewardImageUrl: String?) {
     if (rewardImageUrl == null) return
-    AsyncImage(
-        model = rewardImageUrl,
-        contentDescription = null,
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(3f / 4f)
-            // L3 瞭望层 — 原 Level4 走的是默认纯黑阴影，改用 Depth 双色（暗色下发脏）
-            .blyyDepth(DepthLayer.Lookout, ResultCardShape)
-            .clip(ResultCardShape),
-        contentScale = ContentScale.Fit
-    )
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = rewardImageUrl,
+            contentDescription = null,
+            modifier = Modifier
+                // 限高 420dp：立绘是 3:4，横屏/平板上若按宽度撑满，一张图就有 900+dp 高，
+                // 会把「下一题 / 结算退出」顶到两三屏之外（实测 720p 横屏必现）。
+                // matchHeightConstraintsFirst 让比例先由高度算出宽度，仍保持 3:4 不缺边。
+                .heightIn(max = 420.dp)
+                .aspectRatio(3f / 4f, matchHeightConstraintsFirst = true)
+                // L3 瞭望层 — 原 Level4 走的是默认纯黑阴影，改用 Depth 双色（暗色下发脏）
+                .blyyDepth(DepthLayer.Lookout, ResultCardShape)
+                .clip(ResultCardShape),
+            contentScale = ContentScale.Fit
+        )
+    }
 }
 
 /** 结算弹窗 — 两玩法共享（历史上是两份仅配色不同的复制） */

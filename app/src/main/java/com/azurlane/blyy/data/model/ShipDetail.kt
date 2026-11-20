@@ -47,9 +47,27 @@ data class StatRow(
     val value: String
 )
 
-/** 一条技能（description 可能为空——wiki 有些页面把描述放在折叠块里） */
+/**
+ * 一条技能（description 可能为空——wiki 有些页面把描述放在折叠块里）。
+ *
+ * [iconUrl] 与 [badge] 是「识技能」玩法（GuessMode.SKILL）的题面数据：
+ * wiki 技能表的每个技能名单元格里都嵌着 `Skillicon_xxx.png` 图标，直接取原图即可。
+ * 两个字段都带默认值 —— 旧版本落库的 `ship_cache.detailJson` 没有它们，
+ * 反序列化时按空串补齐，不会因为新增字段而让缓存整体失效。
+ */
 @Serializable
 data class SkillRow(
     val name: String,
-    val description: String = ""
-)
+    val description: String = "",
+    /**
+     * 技能图标直链（patchwiki 原图优先，128×128 PNG）。
+     * 空串 = 该技能在 wiki 上没有图标（隐藏模板行/空槽），不能作为出题素材。
+     */
+    val iconUrl: String = "",
+    /** 技能标记：`""` 普通 / `"兵装强化"` 被特殊兵装强化过（描述带"专属特殊兵装强化"） */
+    val badge: String = ""
+) {
+    /** 是否具备出题条件（有名字且有图标） */
+    val isGuessable: Boolean
+        get() = name.isNotBlank() && iconUrl.isNotBlank()
+}

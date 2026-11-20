@@ -123,6 +123,33 @@ class WikiShipDetailParserTest {
     }
 
     @Test
+    fun `skill icons parsed by shared skill table parser reach ShipDetail`() {
+        // 详情页与「识技能」玩法共用 WikiSkillTableParser：这里只验证"委托"这条链路，
+        // 具体的图标/隐藏行规则由 WikiSkillTableParserTest 覆盖。
+        val withIcons = """
+            <html><body>
+              <table class="infobox"><tr><th>CV</th><td>某某</td></tr></table>
+              <table class="wikitable sv-skill"><tbody>
+                <tr><td colspan="2"><b>技能</b></td></tr>
+                <tr>
+                  <td style="width:30%;background:pink">
+                    <img alt="Skillicon LuckyE.png" src="https://patchwiki.biligame.com/images/blhx/2/27/m7vi.png" data-file-width="128"><br>LuckyE
+                  </td>
+                  <td>空中支援时有概率造成2倍伤害</td>
+                </tr>
+              </tbody></table>
+            </body></html>
+        """.trimIndent()
+
+        val detail = WikiShipDetailParser.parse(Jsoup.parse(withIcons))
+
+        assertEquals(1, detail.skills.size)
+        assertEquals("LuckyE", detail.skills.first().name)
+        assertEquals("https://patchwiki.biligame.com/images/blhx/2/27/m7vi.png", detail.skills.first().iconUrl)
+        assertTrue(detail.skills.first().isGuessable)
+    }
+
+    @Test
     fun `subtitle shows cv and illustrator`() {
         val subtitle = parse().subtitle
         assertTrue(subtitle.contains("CV"))

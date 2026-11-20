@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -343,12 +344,37 @@ private fun SkillItem(skill: SkillRow) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(AppSpacing.Md)) {
-            Text(
-                text = skill.name,
-                style = AppTypography.TitleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.Md)
+            ) {
+                // 技能图标（与「技能识舰娘」共用同一份解析结果：wiki 直链、原图 128px）
+                if (skill.iconUrl.isNotBlank()) {
+                    AsyncImage(
+                        model = skill.iconUrl,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(AppSpacing.Corner.Sm)),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = skill.name,
+                        style = AppTypography.TitleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (skill.badge.isNotBlank()) {
+                        Text(
+                            text = "技能标记：${skill.badge}",
+                            style = AppTypography.LabelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
             if (skill.description.isNotBlank()) {
                 Spacer(modifier = Modifier.height(AppSpacing.Xxs))
                 Text(

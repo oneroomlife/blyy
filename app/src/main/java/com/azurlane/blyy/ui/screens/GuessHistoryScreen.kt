@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Delete
@@ -60,6 +61,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -113,8 +116,10 @@ fun GuessHistoryScreen(
                 BlyySegmentedControl(
                     options = listOf(
                         BlyySegmentOption(HistoryFilter.ALL, "全部"),
-                        BlyySegmentOption(HistoryFilter.IMAGE, "看图识舰娘"),
-                        BlyySegmentOption(HistoryFilter.VOICE, "听音识舰娘")
+                        // 三段玩法共用一条筛选行：用短标签保证 4 段在小屏也不挤压
+                        BlyySegmentOption(HistoryFilter.IMAGE, "看图"),
+                        BlyySegmentOption(HistoryFilter.VOICE, "听音"),
+                        BlyySegmentOption(HistoryFilter.SKILL, "技能")
                     ),
                     selected = state.filter,
                     onSelect = viewModel::setFilter,
@@ -205,7 +210,7 @@ private fun HistoryRecordCard(
     onDelete: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
-    val isImageMode = record.mode == "IMAGE"
+    val visual = guessModeVisual(record.mode)
 
     Card(
         modifier = Modifier
@@ -252,24 +257,14 @@ private fun HistoryRecordCard(
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (isImageMode) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.tertiaryContainer
-                        }
-                    ),
+                    .background(visual.containerColor),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = if (isImageMode) Icons.Rounded.Image else Icons.Rounded.MusicNote,
+                    imageVector = visual.icon,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp),
-                    tint = if (isImageMode) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onTertiaryContainer
-                    }
+                    tint = visual.contentColor
                 )
             }
 
@@ -282,7 +277,7 @@ private fun HistoryRecordCard(
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.Xs)
                 ) {
                     Text(
-                        text = if (isImageMode) "看图识舰娘" else "听音识舰娘",
+                        text = visual.label,
                         style = AppTypography.TitleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -427,14 +422,14 @@ private fun HistoryDetailDialog(
     onDismiss: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
-    val isImageMode = record.mode == "IMAGE"
+    val visual = guessModeVisual(record.mode)
 
     BlyyFormDialog(
         onDismiss = onDismiss,
-        title = if (isImageMode) "看图识舰娘" else "听音识舰娘",
+        title = visual.label,
         icon = {
             Icon(
-                imageVector = if (isImageMode) Icons.Rounded.Image else Icons.Rounded.MusicNote,
+                imageVector = visual.icon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary
             )
@@ -481,4 +476,43 @@ private fun DetailRow(label: String, value: String, highlight: Boolean = false) 
             color = if (highlight) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
         )
     }
+}
+
+/**
+ * 玩法在历史记录里的视觉标识（名称 / 图标 / 容器色 / 内容色）。
+ *
+ * 抽出来的原因：模式从两种变三种后，原来的 `isImageMode` 布尔分支在每处都要改成
+ * 三分支三元表达式，很容易漏掉一处（例如详情弹窗标题）导致新玩法显示成"听音识舰娘"。
+ * 现在只有这一份映射，卡片与详情弹窗共用。
+ */
+private data class GuessModeVisual(
+    val label: String,
+    val icon: ImageVector,
+    val containerColor: Color,
+    val contentColor: Color
+)
+
+@Composable
+private fun guessModeVisual(mode: String): GuessModeVisual = when (mode) {
+    "VOICE" -> GuessModeVisual(
+        label = "听音识舰娘",
+        icon = Icons.Rounded.MusicNote,
+        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+    )
+
+    "SKILL" -> GuessModeVisual(
+        label = "技能识舰娘",
+        icon = Icons.Rounded.AutoAwesome,
+        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+    )
+
+    // 旧数据兜底：IMAGE 以及任何未知 mode 都按看图展示（宁可标错图标也不空列表）
+    else -> GuessModeVisual(
+        label = "看图识舰娘",
+        icon = Icons.Rounded.Image,
+        containerColor = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+    )
 }

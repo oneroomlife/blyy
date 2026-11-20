@@ -31,7 +31,8 @@ private data class Quint<A, B, C, D, E>(
 enum class HistoryFilter {
     ALL,    // 全部
     IMAGE,  // 看图识舰娘
-    VOICE   // 听音识舰娘
+    VOICE,  // 听音识舰娘
+    SKILL   // 技能识舰娘
 }
 
 /**
@@ -41,6 +42,7 @@ data class HistoryStats(
     val totalCount: Int = 0,
     val imageCount: Int = 0,
     val voiceCount: Int = 0,
+    val skillCount: Int = 0,
     val totalScoreSum: Int = 0,
     val totalQuestionsSum: Int = 0,
     val totalCorrectSum: Int = 0,
@@ -90,6 +92,7 @@ class GuessHistoryViewModel @Inject constructor(
             HistoryFilter.ALL -> historyDao.getAllHistory()
             HistoryFilter.IMAGE -> historyDao.getHistoryByMode("IMAGE")
             HistoryFilter.VOICE -> historyDao.getHistoryByMode("VOICE")
+            HistoryFilter.SKILL -> historyDao.getHistoryByMode("SKILL")
         }
     }
 
@@ -114,11 +117,13 @@ class GuessHistoryViewModel @Inject constructor(
     ) { (count, modeCounts, scoreSum, questionsSum, correctSum), highest ->
         val imageCount = modeCounts.find { mc -> mc.mode == "IMAGE" }?.count ?: 0
         val voiceCount = modeCounts.find { mc -> mc.mode == "VOICE" }?.count ?: 0
+        val skillCount = modeCounts.find { mc -> mc.mode == "SKILL" }?.count ?: 0
         val accuracy = if (questionsSum > 0) correctSum.toFloat() / questionsSum else 0f
         HistoryStats(
             totalCount = count,
             imageCount = imageCount,
             voiceCount = voiceCount,
+            skillCount = skillCount,
             totalScoreSum = scoreSum,
             totalQuestionsSum = questionsSum,
             totalCorrectSum = correctSum,

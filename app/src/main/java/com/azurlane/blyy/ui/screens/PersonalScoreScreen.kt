@@ -72,7 +72,7 @@ import java.util.Locale
  * - 数据源是本地 `guess_history`，冷启动与断网都能看；
  * - 排序规则：分数 → 准确率 → 时间（同分看谁更稳、谁更新），名次只在当前筛选内计算。
  *
- * 页面结构：总账卡 → 趋势 → 四档纪录 → 筛选 → 榜单列表（每行可删）。
+ * 页面结构：总账卡 → 趋势 → 各档纪录（模式 × 难度）→ 筛选 → 榜单列表（每行可删）。
  */
 @Composable
 fun PersonalScoreScreen(
@@ -336,7 +336,7 @@ private fun TrendCard(trend: List<Int>, best: Int) {
     }
 }
 
-// ─────────────────────────────── 四档纪录 ───────────────────────────────
+// ──────────────────────── 各档纪录（模式 × 难度） ────────────────────────
 
 @Composable
 private fun RecordStripCard(records: List<ScoreRecord>) {
@@ -632,7 +632,7 @@ private fun EmptyBlock(onStartGame: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(AppSpacing.Xxs))
         Text(
-            text = "完成一局「看图识舰娘」或「听音识舰娘」，成绩会自动出现在这里",
+            text = "完成一局「看图」「听音」或「技能」识舰娘，成绩会自动出现在这里",
             style = AppTypography.BodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

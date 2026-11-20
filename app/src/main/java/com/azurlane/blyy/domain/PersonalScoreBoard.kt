@@ -74,7 +74,7 @@ object PersonalScoreBoard {
         )
     }
 
-    /** 四档个人纪录（看图/听音 × 简单/困难），无记录的档位 best = null */
+    /** 各档个人纪录（看图/听音/技能 × 简单/困难），无记录的档位 best = null */
     fun records(runs: List<ScoreRun>): List<ScoreRecord> {
         // ⚠️ 方向坑：rankComparator 是「降序」比较器（compareByDescending），
         // 对它用 maxWith() 取到的是**最差**一局（比较器语义下“更大”= 分数更低）。

@@ -109,7 +109,7 @@ class PersonalScoreBoardTest {
     }
 
     @Test
-    fun `records exposes four categories and null for untouched ones`() {
+    fun `records exposes one category per mode and difficulty with null for untouched ones`() {
         val runs = listOf(
             run(id = 1, mode = ScoreMode.IMAGE, difficulty = ScoreDifficulty.EASY, score = 60),
             run(id = 2, mode = ScoreMode.IMAGE, difficulty = ScoreDifficulty.EASY, score = 90),
@@ -118,7 +118,9 @@ class PersonalScoreBoardTest {
 
         val records = PersonalScoreBoard.records(runs)
 
-        assertEquals(4, records.size)
+        // 玩法从两种扩到三种（看图/听音/技能）× 两档难度 = 6 个档位，无记录的档位也要占位
+        assertEquals(ScoreMode.entries.size * ScoreDifficulty.entries.size, records.size)
+        assertEquals(6, records.size)
         val imageEasy = records.first { it.mode == ScoreMode.IMAGE && it.difficulty == ScoreDifficulty.EASY }
         assertEquals(90, imageEasy.best?.score)
         assertEquals(2, imageEasy.runs)
@@ -129,6 +131,11 @@ class PersonalScoreBoardTest {
 
         val voiceHard = records.first { it.mode == ScoreMode.VOICE && it.difficulty == ScoreDifficulty.HARD }
         assertEquals(40, voiceHard.best?.score)
+
+        // 技能识舰娘：本次数据里没有成绩，两个档位都必须是空档
+        val skillRecords = records.filter { it.mode == ScoreMode.SKILL }
+        assertEquals(2, skillRecords.size)
+        assertTrue(skillRecords.all { it.best == null && it.runs == 0 })
     }
 
     @Test

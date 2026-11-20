@@ -72,6 +72,7 @@ import com.azurlane.blyy.ui.screens.birthday.BirthdayCalendarScreen
 import com.azurlane.blyy.ui.screens.ConversationListScreen
 import com.azurlane.blyy.ui.screens.GalleryScreen
 import com.azurlane.blyy.ui.screens.GuessByImageScreen
+import com.azurlane.blyy.ui.screens.GuessBySkillScreen
 import com.azurlane.blyy.ui.screens.GuessByVoiceScreen
 import com.azurlane.blyy.ui.screens.GuessHistoryScreen
 import com.azurlane.blyy.ui.screens.HomeScreen
@@ -175,6 +176,7 @@ fun AppContent() {
             currentDestination?.route?.startsWith("student_gallery/") != true &&
             currentDestination?.route?.startsWith("guess_image") != true &&
             currentDestination?.route?.startsWith("guess_voice") != true &&
+            currentDestination?.route?.startsWith("guess_skill") != true &&
             currentDestination?.route?.startsWith("guess_history") != true &&
             currentDestination?.route != "my_scores" &&
             currentDestination?.route != Screen.About.route &&
@@ -667,6 +669,15 @@ fun AppContent() {
                     composable("guess_voice") {
                         val viewModel: GuessShipViewModel = hiltViewModel()
                         GuessByVoiceScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            onHistory = { navController.navigate("guess_history") }
+                        )
+                    }
+                    // 技能识舰娘：题面是技能图标，答出持有该技能的舰娘
+                    composable("guess_skill") {
+                        val viewModel: GuessShipViewModel = hiltViewModel()
+                        GuessBySkillScreen(
                             viewModel = viewModel,
                             onBack = { navController.popBackStack() },
                             onHistory = { navController.navigate("guess_history") }

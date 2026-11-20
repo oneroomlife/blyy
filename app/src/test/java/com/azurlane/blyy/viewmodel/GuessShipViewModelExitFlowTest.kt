@@ -1,7 +1,9 @@
 package com.azurlane.blyy.viewmodel
 
 import com.azurlane.blyy.data.local.GuessHistoryDao
+import com.azurlane.blyy.data.model.GuessHistory
 import com.azurlane.blyy.data.model.Ship
+import com.azurlane.blyy.data.repository.ShipDetailRepository
 import com.azurlane.blyy.data.repository.ShipRepository
 import com.azurlane.blyy.domain.GetVoicesUseCase
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +22,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
 import org.mockito.kotlin.times
@@ -47,6 +50,7 @@ class GuessShipViewModelExitFlowTest {
     private lateinit var repository: ShipRepository
     private lateinit var getVoicesUseCase: GetVoicesUseCase
     private lateinit var historyDao: GuessHistoryDao
+    private lateinit var shipDetailRepository: ShipDetailRepository
     private lateinit var viewModel: GuessShipViewModel
 
     /** 测试用舰娘，用于设置 currentShip 非空 */
@@ -68,11 +72,12 @@ class GuessShipViewModelExitFlowTest {
         repository = mock()
         getVoicesUseCase = mock()
         historyDao = mock()
+        shipDetailRepository = mock()
 
         // repository.allShips 返回空列表，避免 init 块触发副作用
         whenever(repository.allShips).thenReturn(flowOf(emptyList()))
 
-        viewModel = GuessShipViewModel(repository, getVoicesUseCase, historyDao)
+        viewModel = GuessShipViewModel(repository, getVoicesUseCase, historyDao, shipDetailRepository)
     }
 
     @After
@@ -233,5 +238,38 @@ class GuessShipViewModelExitFlowTest {
 
         assertFalse(viewModel.uiState.value.showSettlement)
         verify(historyDao, never()).upsertBySession(any())
+    }
+
+    // ── 场景8：SKILL（技能识舰娘）模式的落库口径 ──
+
+    @Test
+    fun `confirmExitAndSave saves skill mode record with its own difficulty`() = runTest {
+        setUiState(
+            answeredState(mode = GuessMode.SKILL).copy(skillDifficulty = SkillDifficulty.HARD)
+        )
+
+        viewModel.confirmExitAndSave()
+        advanceUntilIdle()
+
+        val captor = argumentCaptor<GuessHistory>()
+        verify(historyDao, times(1)).upsertBySession(captor.capture())
+        assertEquals("SKILL", captor.firstValue.mode)
+        // 难度必须取 skillDifficulty，不能被 image/voice 的难度字段串味
+        assertEquals("HARD", captor.firstValue.difficulty)
+    }
+
+    // ── 场景9：SKILL 模式答对判定（与看图/听音共用同一套名字归一化） ──
+
+    @Test
+    fun `skill mode marks correct when input matches target ship`() = runTest {
+        setUiState(
+            answeredState(mode = GuessMode.SKILL).copy(inputText = fakeShip.name)
+        )
+
+        viewModel.checkAnswer()
+        advanceUntilIdle()
+
+        assertEquals(GuessResult.CORRECT, viewModel.uiState.value.lastResult)
+        assertEquals(4, viewModel.uiState.value.score.correctAnswers)
     }
 }

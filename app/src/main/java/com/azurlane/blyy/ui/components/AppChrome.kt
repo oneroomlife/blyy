@@ -53,6 +53,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Cake
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudDownload
@@ -461,6 +462,14 @@ internal fun ModernDrawerSheet(
             icon = Icons.Rounded.MusicNote,
             description = "通过语音辨认舰娘",
             color = MaterialTheme.colorScheme.secondary,
+            group = "挑战"
+        ),
+        DrawerMenuItem(
+            route = "guess_skill",
+            label = "技能识舰娘",
+            icon = Icons.Rounded.AutoAwesome,
+            description = "通过技能图标辨认舰娘",
+            color = MaterialTheme.colorScheme.tertiary,
             group = "挑战"
         ),
         DrawerMenuItem(

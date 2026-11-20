@@ -4,7 +4,6 @@ import com.azurlane.blyy.data.model.ShipDetail
 import com.azurlane.blyy.data.model.SkillRow
 import com.azurlane.blyy.data.model.StatRow
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 
 /**
  * wiki 舰船页 → [ShipDetail] 的容错解析器。
@@ -14,7 +13,8 @@ import org.jsoup.nodes.Element
  *
  * 1. **永不抛异常**：任何一步解析失败都只丢失该字段，不影响其他字段；
  * 2. **多路兜底**：属性先找"属性表"（按已知属性名匹配单元格），再退回全文正则；
- *    技能先找含"技能"的表，再退回 `已经 class 含 skill 的元素`；
+ *    技能统一交给 [WikiSkillTableParser]（`table.sv-skill` 优先，含图标），
+ *    详情页与「识技能」玩法共用同一份解析结果；
  * 3. **产出可验证**：`ShipDetail.isEmpty` 为 true 时 UI 明确显示"数据暂缺 → 去 Wiki"，
  *    而不是渲染一张空表格；
  * 4. **纯函数**：只依赖 Jsoup Document，不碰网络/磁盘，便于用合成 HTML 做单测。
@@ -116,62 +116,13 @@ object WikiShipDetailParser {
 
     // ── 技能 ──
 
-    private fun parseSkills(doc: Document): List<SkillRow> {
-        val result = LinkedHashMap<String, SkillRow>()
-
-        // 路线 1：含"技能"字样的表格（表头/标题命中）
-        doc.select("table").forEach { table ->
-            val heading = table.previousElementSibling()?.text().orEmpty() + table.text().take(80)
-            if (!heading.contains("技能")) return@forEach
-            collectSkillRows(table.select("tr"), result)
-        }
-
-        // 路线 2：class 里带 skill 的容器
-        if (result.isEmpty()) {
-            doc.select("[class*=skill]").forEach { element ->
-                val name = element.select("[class*=name]").text().trim()
-                if (name.isNotEmpty() && name.length <= 20) {
-                    val desc = element.select("[class*=desc], [class*=detail]").text().trim()
-                    result.putIfAbsent(name, SkillRow(name = name, description = desc.take(400)))
-                }
-            }
-        }
-
-        // 路线 3：标题"技能"之后紧跟的列表
-        if (result.isEmpty()) {
-            doc.select("h1, h2, h3, h4, .mw-headline").forEach { heading ->
-                if (!heading.text().contains("技能")) return@forEach
-                var sibling: Element? = heading.nextElementSibling()
-                repeat(3) {
-                    sibling?.select("li")?.forEach { li ->
-                        val name = li.select("b, strong").text().trim().ifBlank { li.text().take(12) }
-                        if (name.isNotBlank()) {
-                            result.putIfAbsent(
-                                name,
-                                SkillRow(name = name, description = li.text().trim().take(400))
-                            )
-                        }
-                    }
-                    sibling = sibling?.nextElementSibling()
-                }
-            }
-        }
-
-        return result.values.take(12).toList()
-    }
-
-    private fun collectSkillRows(rows: List<Element>, result: MutableMap<String, SkillRow>) {
-        rows.forEach { row ->
-            val cells = row.select("th, td")
-            if (cells.size < 2) return@forEach
-            val name = cells[0].text().trim()
-            if (name.isEmpty() || name.length > 24) return@forEach
-            if (name.contains("技能") || name.contains("名称")) return@forEach
-            val desc = cells.drop(1).joinToString(" ") { it.text().trim() }
-            if (desc.isBlank() && name.length < 2) return@forEach
-            result.putIfAbsent(name, SkillRow(name = name, description = desc.take(400)))
-        }
-    }
+    /**
+     * 技能解析委托给 [WikiSkillTableParser]。
+     *
+     * 详情页与「识技能」玩法必须看到**同一份**技能数据（含图标），否则会出现
+     * "详情页有技能、游戏里却抽不到"这种两份解析器各说各话的问题。
+     */
+    private fun parseSkills(doc: Document): List<SkillRow> = WikiSkillTableParser.parse(doc)
 
     // ── 装备 ──
 

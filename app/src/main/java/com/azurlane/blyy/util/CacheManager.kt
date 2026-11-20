@@ -137,4 +137,12 @@ object CacheNamespaces {
     const val IMAGE_DATA = "image_data"
     const val SHIP_LIST = "ship_list"
     const val WEBVIEW_RENDERED_HTML = "webview_rendered_html"
+
+    /**
+     * 舰娘技能表（含图标）——「识技能」玩法的题库缓存。
+     *
+     * 单条记录是一艘船解析出的 `List<SkillRow>`（通常 1–3 条）；
+     * 与 [SHIP_LIST] 里的角色档案分开放，避免"取提示"把技能缓存挤掉。
+     */
+    const val SHIP_SKILLS = "ship_skills"
 }
