@@ -2,7 +2,6 @@ package com.azurlane.blyy.util.share
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -15,14 +14,10 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.util.Log
-import coil.imageLoader
-import coil.request.ImageRequest
-import coil.request.SuccessResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -63,7 +58,7 @@ object VoiceCardComposer {
     ): File? = withContext(Dispatchers.IO) {
         var card: Bitmap? = null
         try {
-            val avatar = loadAvatar(context, avatarUrl)
+            val avatar = VoiceCardAssets.loadAvatar(context, avatarUrl, 480)
             // loadAvatar 内部的 runCatching 会吞掉外层取消信号，这里补检：
             // 用户已离开/再次取消时不再白画一张 6 MB 的图
             currentCoroutineContext().ensureActive()
@@ -294,47 +289,6 @@ object VoiceCardComposer {
 
     // ── 资源 ──
 
-    /**
-     * 加载分享卡片用的头像。
-     *
-     * 加 3 秒超时：弱网/图床抽风时，用户点"分享"不应该对着一个转圈的 Toast 等半分钟——
-     * 超时就用首字占位图，卡片照常生成、照常分享。
-     */
-    private suspend fun loadAvatar(context: Context, url: String): Bitmap? {
-        if (url.isBlank()) return null
-        return withTimeoutOrNull(3_000) {
-            val bitmap = runCatching {
-                val request = ImageRequest.Builder(context)
-                    .data(url)
-                    .size(480)
-                    .allowHardware(false)
-                    .build()
-                val result = context.imageLoader.execute(request)
-                if (result is SuccessResult) result.drawable.toBitmap() else null
-            }.getOrNull()
-            // runCatching 会连外层的 CancellationException 一起吞掉：
-            // 超时/外层取消时这里补抛，让 withTimeoutOrNull 按约定返回 null（而不是继续拿着半个结果）
-            currentCoroutineContext().ensureActive()
-            bitmap
-        }
-    }
-
-    private fun android.graphics.drawable.Drawable.toBitmap(): Bitmap {
-        if (this is android.graphics.drawable.BitmapDrawable && bitmap != null) return bitmap
-        val width = intrinsicWidth.coerceAtLeast(1)
-        val height = intrinsicHeight.coerceAtLeast(1)
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        setBounds(0, 0, canvas.width, canvas.height)
-        draw(canvas)
-        return bitmap
-    }
-
     /** 只保留最近 3 张，避免反复分享把缓存撑大 */
-    private fun prune(dir: File) {
-        dir.listFiles()
-            ?.sortedByDescending { it.lastModified() }
-            ?.drop(3)
-            ?.forEach { it.delete() }
-    }
+    private fun prune(dir: File) = VoiceCardAssets.prune(dir, keep = 3)
 }

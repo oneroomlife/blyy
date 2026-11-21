@@ -45,7 +45,7 @@ fun versionCodeOf(versionName: String): Int {
     return major * 1_000_000 + minor * 10_000 + patch * 100
 }
 
-val appVersionName = "3.0.1"
+val appVersionName = "3.1.0"
 val appVersionCode = versionCodeOf(appVersionName)
 
 android {

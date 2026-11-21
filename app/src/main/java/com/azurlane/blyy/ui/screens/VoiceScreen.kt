@@ -63,6 +63,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.azurlane.blyy.data.local.PlayLaterItem
 import com.azurlane.blyy.data.model.VoiceLanguage
 import com.azurlane.blyy.data.model.VoiceLine
@@ -72,6 +73,7 @@ import com.azurlane.blyy.ui.components.BlyyPanel
 import com.azurlane.blyy.ui.components.BlyySkeletonList
 import com.azurlane.blyy.ui.components.BlyySpeechBubble
 import com.azurlane.blyy.ui.components.BlyyTopBar
+import com.azurlane.blyy.ui.components.VoiceCardPreviewOverlay
 import com.azurlane.blyy.ui.theme.LocalUiStyle
 import com.azurlane.blyy.ui.theme.isCommandCenter
 import com.azurlane.blyy.ui.theme.*
@@ -86,9 +88,13 @@ import com.azurlane.blyy.ui.components.BlyyHaptic
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.azurlane.blyy.util.MediaDownloader
+import com.azurlane.blyy.util.CustomAvatarManager
+import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.util.share.VoiceCardComposer
+import com.azurlane.blyy.util.share.VoiceCardHtmlComposer
 import com.azurlane.blyy.util.share.VoiceShareLauncher
 import org.intellij.lang.annotations.Language
+import java.io.File
 import java.util.Locale
 import kotlin.math.roundToInt
 private object VoiceScreenConfig {
@@ -97,6 +103,20 @@ private object VoiceScreenConfig {
     val CollapsedBarWidth = 56.dp
     val CollapsedVisibleWidth = 56.dp
 }
+
+/**
+ * 已生成、待分享的 HTML 台词语音卡。
+ *
+ * 单独抽一个不可变状态而不是三个分散的 `remember`：预览浮层里的 WebView 以 [file] 为准，
+ * 任一字段变化都必须整体替换，否则会读到上一句台词的正文/场景。
+ */
+private data class VoiceCardPreviewState(
+    val file: File,
+    val shipName: String,
+    val scene: String,
+    val dialogue: String,
+    val hasAudio: Boolean
+)
 
 @UnstableApi
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -148,8 +168,41 @@ fun VoiceScreenContent(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // 啾信功能仅使用网络加载获取的头像
-    val effectiveAvatarUrl = voiceState.avatarUrl
+    // 头像解析链与船坞列表完全一致：自定义头像 > 本地高清 assets（誓约优先 _h 婚皮）> 网络 URL。
+    // 以前这里直接用 voiceState.avatarUrl，导致从船坞点进来明明有本地图，语音页却一直拉网页图。
+    val archiveType = remember(voiceState.studentLink) {
+        if (voiceState.studentLink.isNotEmpty()) "STUDENT" else "DOCK"
+    }
+    val avatarRevision by CustomAvatarManager.revision.collectAsStateWithLifecycle()
+    val effectiveAvatarUrl = remember(
+        voiceState.shipName,
+        voiceState.avatarUrl,
+        archiveType,
+        voiceState.isOathed,
+        avatarRevision
+    ) {
+        val localFirst = LocalAvatarResolver.resolveOrDefault(
+            context = context,
+            shipName = voiceState.shipName,
+            archiveType = archiveType,
+            isOathed = voiceState.isOathed,
+            networkUrl = voiceState.avatarUrl
+        )
+        CustomAvatarManager.resolveOrDefault(context, voiceState.shipName, archiveType, localFirst)
+    }
+    // 自定义头像是"同路径覆盖写"，必须把 lastModified 组进内存缓存键，否则换头像后仍显示旧图
+    val customAvatarFile = remember(voiceState.shipName, archiveType, avatarRevision) {
+        CustomAvatarManager.resolveFile(context, voiceState.shipName, archiveType)
+    }
+    val avatarRequest = remember(effectiveAvatarUrl, customAvatarFile?.lastModified()) {
+        ImageRequest.Builder(context)
+            .data(effectiveAvatarUrl)
+            .apply {
+                customAvatarFile?.let { memoryCacheKey("${it.absolutePath}#rev${it.lastModified()}") }
+            }
+            .crossfade(true)
+            .build()
+    }
 
     LaunchedEffect(playbackError) {
         playbackError?.let {
@@ -273,6 +326,73 @@ fun VoiceScreenContent(
             }
         }
     }
+
+    /**
+     * 生成 HTML 台词语音卡 → 弹预览（可当场试听）→ 保存 / 分享。
+     *
+     * 与图片版共用 [shareCardInFlight] 守卫：两者都要下载同一条语音、写同一批缓存，
+     * 并发触发会互相删掉对方刚下好的临时文件。
+     */
+    var voiceCardPreview by remember { mutableStateOf<VoiceCardPreviewState?>(null) }
+
+    fun shareVoiceCardHtml(voice: VoiceLine) {
+        if (shareCardInFlight) return
+        shareCardInFlight = true
+        scope.launch {
+            try {
+                Toast.makeText(context, "正在生成台词语音卡…", Toast.LENGTH_SHORT).show()
+                // 预览里的播放器是独立 WebView，和 App 播放器不共享音频焦点：
+                // 不先停掉正在播的语音，试听时会两条音轨叠在一起
+                if (playerState.isPlaying) playerViewModel.playOrPause()
+                // 全局序号（收藏置顶后仍按当前列表顺序），做成卡片右上角的档案编号
+                val lineNo = (voiceIndexMap[voice] ?: -1) + 1
+                val serial = if (lineNo > 0) {
+                    "NO. " + lineNo.toString().padStart(2, '0') + " / " + voiceState.voices.size
+                } else ""
+                val output = VoiceCardHtmlComposer.compose(
+                    context = context,
+                    shipName = voiceState.shipName,
+                    sceneLabel = voice.scene,
+                    dialogue = voice.dialogue,
+                    serial = serial,
+                    avatarUrl = effectiveAvatarUrl,
+                    audioUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
+                )
+                if (output == null) {
+                    Toast.makeText(context, "语音卡生成失败，请重试", Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                voiceCardPreview = VoiceCardPreviewState(
+                    file = output.file,
+                    shipName = voiceState.shipName,
+                    scene = voice.scene,
+                    dialogue = voice.dialogue,
+                    hasAudio = output.hasAudio
+                )
+                if (!output.hasAudio) {
+                    // 卡片照出，只是没有声：如实说明，不让用户对着禁用的播放键猜
+                    Toast.makeText(context, "该台词没有语音地址，卡片仍可分享", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                shareCardInFlight = false
+            }
+        }
+    }
+
+    /** HTML 卡分享/保存结果 → 统一收口成 Toast + 关预览 */
+    fun finishHtmlCard(result: VoiceShareLauncher.ShareResult) {
+        when (result) {
+            is VoiceShareLauncher.ShareResult.Success -> voiceCardPreview = null
+            is VoiceShareLauncher.ShareResult.SavedLocally -> {
+                voiceCardPreview = null
+                Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+            }
+            is VoiceShareLauncher.ShareResult.AudioSkipped ->
+                Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+            is VoiceShareLauncher.ShareResult.Failed ->
+                Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+        }
+    }
     
     fun toggleFavorite(voice: VoiceLine) {
         val activeUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
@@ -299,7 +419,7 @@ fun VoiceScreenContent(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        AnimatedBackground(avatarUrl = effectiveAvatarUrl)
+        AnimatedBackground(avatarModel = avatarRequest.takeIf { effectiveAvatarUrl.isNotEmpty() })
 
         Scaffold(
             containerColor = Color.Transparent,
@@ -391,7 +511,7 @@ fun VoiceScreenContent(
                     item {
                         ShipHeader(
                             state = voiceState,
-                            effectiveAvatarUrl = effectiveAvatarUrl,
+                            avatarModel = avatarRequest,
                             sharedTransitionScope = sharedTransitionScope,
                             animatedContentScope = animatedContentScope
                         )
@@ -438,6 +558,7 @@ fun VoiceScreenContent(
                             val onShareClick = remember(voice) { { shareVoice(voice) } }
                             val onShareCardClick = remember(voice) { { shareVoiceCard(voice, withAudio = false) } }
                             val onShareCardAudioClick = remember(voice) { { shareVoiceCard(voice, withAudio = true) } }
+                            val onShareCardHtmlClick = remember(voice) { { shareVoiceCardHtml(voice) } }
                             val onRowClick = remember(voice, globalIndex, playerState.playMode) {
                                 { onVoiceIntent(VoiceIntent.PlayVoiceAtIndex(globalIndex, playerState.playMode)) }
                             }
@@ -454,7 +575,8 @@ fun VoiceScreenContent(
                                 onShareClick = onShareClick,
                                 // 这两个回调曾经漏传 → 菜单项走默认空实现，点了没反应
                                 onShareCardClick = onShareCardClick,
-                                onShareCardAudioClick = onShareCardAudioClick
+                                onShareCardAudioClick = onShareCardAudioClick,
+                                onShareCardHtmlClick = onShareCardHtmlClick
                             )
                         }
                     }
@@ -472,6 +594,40 @@ fun VoiceScreenContent(
                     onRandomPlay = { onVoiceIntent(VoiceIntent.PlayRandomVoice(voiceState.currentVoiceIndex)) }
                 )
             }
+        }
+
+        // 台词语音卡预览：浮层面板里当场试听（语音取自原站，需联网），再决定分享或落盘。
+        // 必须是根 Box 的最后一个子节点，才能盖住 Scaffold 的底栏与悬浮小人。
+        voiceCardPreview?.let { preview ->
+            VoiceCardPreviewOverlay(
+                htmlFile = preview.file,
+                hasAudio = preview.hasAudio,
+                onDismiss = { voiceCardPreview = null },
+                onSave = {
+                    scope.launch {
+                        finishHtmlCard(
+                            VoiceShareLauncher.saveHtmlCard(
+                                context = context,
+                                card = preview.file,
+                                shipName = preview.shipName,
+                                sceneName = preview.scene
+                            )
+                        )
+                    }
+                },
+                onShare = {
+                    scope.launch {
+                        finishHtmlCard(
+                            VoiceShareLauncher.shareHtmlCard(
+                                context = context,
+                                card = preview.file,
+                                shipName = preview.shipName,
+                                dialogue = preview.dialogue
+                            )
+                        )
+                    }
+                }
+            )
         }
     }
 }
@@ -604,7 +760,7 @@ private fun VoiceLanguageSwitch(
 
 
 @Composable
-private fun AnimatedBackground(avatarUrl: String) {
+private fun AnimatedBackground(avatarModel: Any?) {
     val isDark = LocalIsDark.current
     
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -631,9 +787,9 @@ private fun AnimatedBackground(avatarUrl: String) {
                     )
             )
             
-            if (avatarUrl.isNotEmpty()) {
+            if (avatarModel != null) {
                 AsyncImage(
-                    model = avatarUrl,
+                    model = avatarModel,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -692,7 +848,7 @@ private fun AnimatedBackground(avatarUrl: String) {
 @Composable
 private fun ShipHeader(
     state: VoiceViewState,
-    effectiveAvatarUrl: String,
+    avatarModel: Any,
     sharedTransitionScope: SharedTransitionScope,
     animatedContentScope: AnimatedContentScope
 ) {
@@ -727,7 +883,7 @@ private fun ShipHeader(
             shape = CircleShape
         ) {
             AsyncImage(
-                model = effectiveAvatarUrl,
+                model = avatarModel,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -811,7 +967,8 @@ private fun VoiceItemRow(
     onFavoriteClick: () -> Unit,
     onShareClick: () -> Unit,
     onShareCardClick: () -> Unit = {},
-    onShareCardAudioClick: () -> Unit = {}
+    onShareCardAudioClick: () -> Unit = {},
+    onShareCardHtmlClick: () -> Unit = {}
 ) {
     val haptic = rememberBlyyHaptics()
     var showMenu by remember { mutableStateOf(false) }
@@ -980,7 +1137,7 @@ private fun VoiceItemRow(
                             tint = MaterialTheme.colorScheme.outline
                         )
                         Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                        Text("分享链接", style = AppTypography.BodyMedium)
+                        Text("复制台词链接", style = AppTypography.BodyMedium)
                     }
                 },
                 onClick = {
@@ -988,7 +1145,33 @@ private fun VoiceItemRow(
                     onShareClick()
                 }
             )
-            // 台词卡：图片可直接发到聊天/动态；带语音的版本走 ACTION_SEND_MULTIPLE
+            // 主推形态：单文件 HTML 卡片（头像内嵌、语音走链接），转发出去点开就能听
+            DropdownMenuItem(
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(AppSpacing.Icon.Md),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(AppSpacing.Sm))
+                        Column {
+                            Text("台词语音卡", style = AppTypography.BodyMedium)
+                            Text(
+                                "自带播放按钮 · 轻量网页",
+                                style = AppTypography.LabelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                },
+                onClick = {
+                    showMenu = false
+                    onShareCardHtmlClick()
+                }
+            )
+            // 兼容形态：图片可直接发到聊天/动态；带语音的版本走 ACTION_SEND_MULTIPLE
             DropdownMenuItem(
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -999,7 +1182,7 @@ private fun VoiceItemRow(
                             tint = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                        Text("分享台词卡", style = AppTypography.BodyMedium)
+                        Text("台词卡图片", style = AppTypography.BodyMedium)
                     }
                 },
                 onClick = {
@@ -1017,7 +1200,7 @@ private fun VoiceItemRow(
                             tint = MaterialTheme.colorScheme.secondary
                         )
                         Spacer(modifier = Modifier.width(AppSpacing.Sm))
-                        Text("分享台词卡 + 语音", style = AppTypography.BodyMedium)
+                        Text("卡片 + 语音文件", style = AppTypography.BodyMedium)
                     }
                 },
                 onClick = {

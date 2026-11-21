@@ -37,15 +37,38 @@
     <!-- 分享目标可见性（Android 11+ package visibility）：
          台词卡分享前需 queryIntentActivities 探测有无应用可接 ACTION_SEND/SEND_MULTIPLE，
          无目标时降级为保存到本地（Download/BLYY），避免弹出系统的"没有应用可执行此操作"空面板。
-         mimeType 用 */*：filter 级匹配覆盖目标应用声明的任意 MIME（image/*、audio/* 等） -->
+
+         ⚠️ 查询里的 mimeType 必须逐个列全：`*/*` 只匹配「声明了 */* 的应用」，
+         声明 `image/*` 或 `text/html` 的应用**不会**被 `*/*` 查询命中。
+         台词语音卡走 `text/html`，漏掉这条会让"明明有应用能收"却误判成无目标。 -->
     <queries>
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="*/*" />
         </intent>
         <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="audio/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/html" />
+        </intent>
+        <intent>
             <action android:name="android.intent.action.SEND_MULTIPLE" />
             <data android:mimeType="*/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE" />
+            <data android:mimeType="audio/*" />
         </intent>
     </queries>
 

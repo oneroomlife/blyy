@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlinx.coroutines.Job
@@ -42,7 +43,9 @@ data class VoiceViewState(
     val isPlaying: Boolean = false,
     val voiceLanguage: VoiceLanguage = VoiceLanguage.CN,
     val studentLink: String = "",  // 非空时表示当前为学生档案，用于重试逻辑
-    val isCacheHit: Boolean = false  // 语音数据是否来自缓存
+    val isCacheHit: Boolean = false,  // 语音数据是否来自缓存
+    /** 船坞里是否已誓约（= Ship.isFavorite）：决定本地头像是否取 `_h` 婚皮变体 */
+    val isOathed: Boolean = false
 )
 
 sealed class VoiceIntent {
@@ -62,7 +65,8 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     private val getVoicesUseCase: GetVoicesUseCase,
     private val playbackServiceConnection: PlaybackServiceConnection,
     private val settingsDataStore: PlayerSettingsDataStore,
-    private val repository: ShipRepository
+    private val repository: ShipRepository,
+    private val shipDao: com.azurlane.blyy.data.local.ShipDao
 ) : ViewModel() {
 
     private val _isLoading = MutableStateFlow(false)
@@ -75,6 +79,14 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     fun clearPlaybackError() { _playbackError.value = null }
     private val _shipName = MutableStateFlow("")
     private val _avatarUrl = MutableStateFlow("")
+
+    /**
+     * 船坞里该舰娘的"誓约"标记（= `Ship.isFavorite`，与列表卡片同一套约定）。
+     *
+     * 语音页头像要走「和船坞列表完全一致」的解析链：本地 assets 里誓约舰娘有 `_h` 婚皮变体，
+     * 没有这个标记就只能拿到默认立绘——头像与船坞里看到的不是同一张。
+     */
+    private val _isOathed = MutableStateFlow(false)
     private val _figureUrl = MutableStateFlow("")
     private val _wikiUrl = MutableStateFlow("")
     private val _voices = MutableStateFlow<List<VoiceLine>>(emptyList())
@@ -163,7 +175,7 @@ class VoiceViewModel @OptIn(UnstableApi::class)
     }
 
     val state: StateFlow<VoiceViewState> = combine(
-        _isLoading, _voices, _error, _shipName, _avatarUrl, _figureUrl, _wikiUrl, _currentVoiceIndex, _isPlaying, settingsDataStore.favorites, _syncedFigureUrl, _voiceLanguage, _studentLink, _isRetrying, _retryCount, _isCacheHit
+        _isLoading, _voices, _error, _shipName, _avatarUrl, _figureUrl, _wikiUrl, _currentVoiceIndex, _isPlaying, settingsDataStore.favorites, _syncedFigureUrl, _voiceLanguage, _studentLink, _isRetrying, _retryCount, _isCacheHit, _isOathed
     ) { args: Array<Any?> ->
         val isLoading = args[0] as Boolean
         @Suppress("UNCHECKED_CAST")
@@ -183,6 +195,7 @@ class VoiceViewModel @OptIn(UnstableApi::class)
         val isRetrying = args[13] as Boolean
         val retryCount = args[14] as Int
         val isCacheHit = args[15] as Boolean
+        val isOathed = args[16] as Boolean
 
         val sortedVoices = originalVoices.sortedByDescending { voice ->
             voice.audioUrlCn in favorites || voice.audioUrlJp in favorites
@@ -203,7 +216,8 @@ class VoiceViewModel @OptIn(UnstableApi::class)
             studentLink = studentLink,
             isRetrying = isRetrying,
             retryCount = retryCount,
-            isCacheHit = isCacheHit
+            isCacheHit = isCacheHit,
+            isOathed = isOathed
         )
     }.stateIn(
         scope = viewModelScope,
@@ -337,6 +351,7 @@ class VoiceViewModel @OptIn(UnstableApi::class)
             _studentLink.value = ""
             // 重置缓存标记：否则切舰娘后会残留上一只的"从缓存加载"提示
             _isCacheHit.value = false
+            refreshOathState(shipName)
 
             // Cancel previous figure sync collector to prevent leak
             figureSyncJob?.cancel()
@@ -364,10 +379,26 @@ class VoiceViewModel @OptIn(UnstableApi::class)
         }
     }
 
+    /**
+     * 读取船坞记录里的誓约（收藏）标记，供头像解析使用。
+     *
+     * 纯本地 Room 查询（毫秒级）。失败按"未誓约"处理——头像只是决定取哪一张图，
+     * 不该因为它打断语音页的主流程。
+     */
+    private fun refreshOathState(shipName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isOathed.value = runCatching {
+                shipDao.getShipByName(shipName, "DOCK")?.isFavorite == true
+            }.getOrDefault(false)
+        }
+    }
+
     private fun loadStudentVoices(studentName: String, avatarUrl: String, studentLink: String) {
         viewModelScope.launch {
             _shipName.value = studentName
             _avatarUrl.value = avatarUrl
+            // 学生档案没有誓约/婚皮概念，头像永远走 STUDENT 分支
+            _isOathed.value = false
             _isLoading.value = true
             _error.value = null
             _studentLink.value = studentLink

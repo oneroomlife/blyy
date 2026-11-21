@@ -41,12 +41,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.azurlane.blyy.data.model.Ship
 import com.azurlane.blyy.data.model.ShipDetail
 import com.azurlane.blyy.data.model.SkillRow
@@ -56,6 +58,8 @@ import com.azurlane.blyy.ui.components.BlyyTabRow
 import com.azurlane.blyy.ui.components.BlyyTopBar
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
+import com.azurlane.blyy.util.CustomAvatarManager
+import com.azurlane.blyy.util.LocalAvatarResolver
 import com.azurlane.blyy.viewmodel.ShipDetailUiState
 import com.azurlane.blyy.viewmodel.ShipDetailViewModel
 
@@ -246,7 +250,33 @@ private fun HeroCard(
 
 @Composable
 private fun Avatar(ship: Ship?) {
-    val avatarUrl = ship?.avatarUrl.orEmpty()
+    val context = LocalContext.current
+    // 与船坞卡片同一条解析链：自定义头像 > 本地高清 assets（誓约优先 _h 婚皮）> 网络 URL。
+    // 详情页以前只吃 ship.avatarUrl，于是船坞里明明是本地图，点进来又变成网页图。
+    val avatarRevision by CustomAvatarManager.revision.collectAsStateWithLifecycle()
+    val customFile = remember(ship?.name, ship?.archiveType, avatarRevision) {
+        ship?.let { CustomAvatarManager.resolveFile(context, it.name, it.archiveType) }
+    }
+    val avatarModel = remember(ship?.name, ship?.avatarUrl, ship?.archiveType, ship?.isFavorite, avatarRevision) {
+        ship?.let {
+            val localFirst = LocalAvatarResolver.resolveOrDefault(
+                context, it.name, it.archiveType, it.isFavorite, it.avatarUrl
+            )
+            CustomAvatarManager.resolveOrDefault(context, it.name, it.archiveType, localFirst)
+        }?.takeIf { it.isNotBlank() }
+    }
+    // 自定义头像是同路径覆盖写：内存缓存键必须带上 lastModified，否则换图后仍显示旧图
+    val request = remember(avatarModel, customFile?.lastModified()) {
+        avatarModel?.let { model ->
+            ImageRequest.Builder(context)
+                .data(model)
+                .apply {
+                    customFile?.let { memoryCacheKey("${it.absolutePath}#rev${it.lastModified()}") }
+                }
+                .crossfade(true)
+                .build()
+        }
+    }
     Box(
         modifier = Modifier
             .size(72.dp)
@@ -254,10 +284,11 @@ private fun Avatar(ship: Ship?) {
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
-        if (avatarUrl.isNotBlank()) {
+        if (request != null) {
             AsyncImage(
-                model = avatarUrl,
+                model = request,
                 contentDescription = null,
+                contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
         } else {

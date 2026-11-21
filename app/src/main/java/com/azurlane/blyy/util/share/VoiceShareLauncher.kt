@@ -8,12 +8,9 @@ import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.azurlane.blyy.util.MediaDownloader
-import com.azurlane.blyy.util.RefererResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -21,29 +18,27 @@ import java.util.Locale
 /**
  * 台词卡 / 语音的分享出口。
  *
- * 与旧实现的差别：以前「分享」= 把台词和链接写进剪贴板（用户还得自己再粘一遍）。
- * 现在走系统分享面板：
- * - 只要卡片：[Intent.ACTION_SEND] + `image/png`
- * - 卡片 + 语音：[Intent.ACTION_SEND_MULTIPLE] + `image/png` + `audio/mpeg`
+ * 三条通道，按「信息量」从高到低：
+ * 1. **HTML 台词语音卡**（[shareHtmlCard]）：单文件、头像内嵌、语音走原站链接、自带播放按钮，
+ *    收到的人点开就能听——这是「语音档案」的主推分享形态；
+ * 2. 图片卡 + mp3 两个附件（[shareCardWithAudio]）：老通道，兼容只接 `SEND_MULTIPLE` 的应用；
+ * 3. 纯图片卡（[shareCard]）：最稳的一条，几乎任何聊天/相册都能接。
  *
  * 返回值是 [ShareResult] 而不是 Boolean：分享失败的原因（FileProvider 未配置 / 无宿主 App /
  * 文件丢失）对用户与排查都太关键，不能统一显示成"没有可用的分享应用"。
  *
  * 无目标的降级链（裸环境/模拟器/被裁剪的 ROM 都可能出现零分享目标，此时系统 Chooser
  * 只会弹"没有应用可执行此操作"空面板）：
+ * - HTML 卡无 `text/html` 目标 → 直接落盘到 `Downloads/BLYY` 并告知路径（[ShareResult.SavedLocally]）；
  * - SEND_MULTIPLE 无目标但有 SEND 目标 → 自动只分享台词卡并说明；
- * - 完全无目标 → 台词卡（+语音）落盘到 `Downloads/BLYY` 并告知位置（[ShareResult.SavedLocally]）。
+ * - 完全无目标 → 台词卡（+语音）落盘并告知位置。
  */
 object VoiceShareLauncher {
 
     private const val TAG = "VoiceShareLauncher"
-    private const val AUDIO_DIR = "share_audio"
 
-    /** 单条台词音频通常 < 2 MB，超过这个体积就不下载（防止异常 URL 拖死分享流程） */
-    private const val MAX_AUDIO_BYTES = 8L * 1024 * 1024
-
-    private const val USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    /** HTML 语音卡的 MIME：浏览器/文档类应用能接，聊天类应用多数接不了（有降级链兜底） */
+    private const val MIME_HTML = "text/html"
 
     sealed class ShareResult {
         data object Success : ShareResult()
@@ -53,6 +48,96 @@ object VoiceShareLauncher {
         data class SavedLocally(val message: String) : ShareResult()
         data class Failed(val message: String) : ShareResult()
     }
+
+    // ── HTML 台词语音卡 ──
+
+    /**
+     * 分享 HTML 台词语音卡。
+     *
+     * 注意 `startActivity` 必须在主线程发起，而卡片生成/读取在 IO 线程，
+     * 统一在这里 `withContext(Dispatchers.Main)` 收口。
+     */
+    suspend fun shareHtmlCard(
+        context: Context,
+        card: File,
+        shipName: String,
+        dialogue: String
+    ): ShareResult {
+        if (!card.isFile || card.length() <= 0L) {
+            return ShareResult.Failed("语音卡文件不存在，请重试")
+        }
+        // 聊天类应用普遍不声明 text/html，先探测，避免弹一个只有"复制到剪贴板"的空面板
+        if (!hasShareTargets(context, Intent.ACTION_SEND, MIME_HTML)) {
+            // 无接收方时直接落盘；提示语已经说明"存到哪 + 怎么听"，不再追加解释
+            // （Toast 在多数 ROM 上只显示两行，多一句就会被截断成"…"）
+            return saveHtmlCard(context, card, shipName, sceneName = "")
+        }
+        return withContext(Dispatchers.Main) {
+            try {
+                val uri = buildUri(context, card)
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = MIME_HTML
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "$shipName · 台词语音卡")
+                    putExtra(Intent.EXTRA_TEXT, buildShareText(shipName, dialogue))
+                    clipData = ClipData.newRawUri("voice_card_html", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "分享台词语音卡"))
+                ShareResult.Success
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                // 离开页面导致的取消不是"分享失败"，向上传播而不是弹"分享失败"
+                throw c
+            } catch (e: Exception) {
+                Log.w(TAG, "shareHtmlCard failed: ${e.message}", e)
+                ShareResult.Failed(describe(e))
+            }
+        }
+    }
+
+    /** 把 HTML 语音卡落到 `Downloads/BLYY`（无分享目标 / 用户主动保存） */
+    suspend fun saveHtmlCard(
+        context: Context,
+        card: File,
+        shipName: String,
+        sceneName: String
+    ): ShareResult = withContext(Dispatchers.IO) {
+        if (!card.isFile || card.length() <= 0L) {
+            return@withContext ShareResult.Failed("语音卡文件不存在，请重试")
+        }
+        val bytes = runCatching { card.readBytes() }.getOrNull()
+            ?: return@withContext ShareResult.Failed("语音卡读取失败，请重试")
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val baseName = buildString {
+            append(sanitize(shipName))
+            append("_台词语音卡_")
+            if (sceneName.isNotBlank()) {
+                append(sanitize(sceneName))
+                append('_')
+            }
+            append(stamp)
+        }
+        when (val result = MediaDownloader.saveBytes(context, bytes, "$baseName.html", MediaDownloader.ROOT_DIR)) {
+            is MediaDownloader.Result.Success -> ShareResult.SavedLocally(
+                "语音卡已保存到 Download/${result.relativePath}/${result.displayName}，用浏览器打开可播放语音"
+            )
+            is MediaDownloader.Result.Failure -> ShareResult.Failed("保存语音卡失败：${result.message}")
+        }
+    }
+
+    /** 分享文案：正文 + 来源，附带一句"点开能听"的提示（部分应用会把 EXTRA_TEXT 直接展示） */
+    private fun buildShareText(shipName: String, dialogue: String): String {
+        val body = dialogue.trim().take(200)
+        return buildString {
+            if (body.isNotEmpty()) {
+                append(body)
+                append("\n\n")
+            }
+            append("—— $shipName · BLYY 台词语音卡（打开即可播放语音）")
+        }
+    }
+
+    // ── 图片卡 ──
 
     /**
      * 分享台词卡（纯图片）。
@@ -158,86 +243,22 @@ object VoiceShareLauncher {
         }
     }
 
+    // ── 语音素材 ──
+
     /**
-     * 下载音频到缓存目录。使用与播放器一致的 UA/Referer（源自 [RefererResolver]），
-     * 否则 wiki 侧会 403。失败返回 null（调用方降级为纯图片分享）。
+     * 下载音频到缓存目录（带 Referer/UA，wiki 侧缺 Referer 会 403）。
+     * 失败返回 null（调用方降级）。
      */
     suspend fun downloadAudio(
         context: Context,
         audioUrl: String,
         shipName: String,
         sceneName: String
-    ): File? = withContext(Dispatchers.IO) {
-        if (audioUrl.isBlank()) return@withContext null
-
-        // 目标文件引用提升出来：runCatching 内的失败路径（异常/超限/空文件）返回 null 后
-        // 在这里统一清掉残缺文件，避免半截 mp3 占着缓存
-        var written: File? = null
-        runCatching {
-            val dir = File(context.cacheDir, AUDIO_DIR).apply { mkdirs() }
-            val safeName = buildString {
-                append(sanitize(shipName))
-                if (sceneName.isNotBlank()) {
-                    append('_')
-                    append(sanitize(sceneName))
-                }
-                append(".mp3")
-            }
-            val target = File(dir, safeName)
-            written = target
-
-            val url = URL(audioUrl)
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 15_000
-                readTimeout = 20_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", USER_AGENT)
-                setRequestProperty("Referer", RefererResolver.getRefererByHost(url.host ?: ""))
-            }
-            connection.connect()
-            try {
-                if (connection.responseCode !in 200..299) {
-                    Log.w(TAG, "downloadAudio HTTP ${connection.responseCode}")
-                    return@runCatching null
-                }
-                val declared = connection.contentLengthLong
-                if (declared > MAX_AUDIO_BYTES) {
-                    Log.w(TAG, "downloadAudio too large: $declared")
-                    return@runCatching null
-                }
-                connection.inputStream.use { input ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var total = 0L
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            total += read
-                            if (total > MAX_AUDIO_BYTES) {
-                                Log.w(TAG, "downloadAudio exceeded cap, abort")
-                                return@runCatching null
-                            }
-                            output.write(buffer, 0, read)
-                        }
-                    }
-                }
-                if (target.length() <= 0L) null else target
-            } finally {
-                connection.disconnect()
-            }
-        }.onFailure { Log.w(TAG, "downloadAudio failed: ${it.message}", it) }.getOrNull()
-            ?: run { written?.let { runCatching { it.delete() } }; null }
-    }
+    ): File? = VoiceCardAssets.downloadAudio(context, audioUrl, shipName, sceneName)
 
     /** 只保留最近的分享音频，避免长期占用缓存 */
     fun pruneAudioCache(context: Context, keep: Int = 5) {
-        runCatching {
-            File(context.cacheDir, AUDIO_DIR)
-                .listFiles()
-                ?.sortedByDescending { it.lastModified() }
-                ?.drop(keep)
-                ?.forEach { it.delete() }
-        }
+        VoiceCardAssets.prune(File(context.cacheDir, VoiceCardAssets.AUDIO_DIR), keep)
     }
 
     /**

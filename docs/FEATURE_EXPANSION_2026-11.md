@@ -42,6 +42,35 @@
 
 测试增量：`WikiShipDetailParserTest`（7 例，合成 HTML）、`WikiUrlsTest`（4 例）、`PersonalScoreBoardTest`/`BackupValidatorTest` 沿用。
 
+**2026-11-21 追加：C5 从「静态图 + mp3 双附件」升级为「HTML 台词语音卡」**
+
+| 维度 | 图片版（保留） | HTML 语音卡（新增，主推） |
+|---|---|---|
+| 分享形态 | `ACTION_SEND` 发 PNG；或 `SEND_MULTIPLE` 发 PNG+mp3 两个附件 | 单个 `.html`，`ACTION_SEND` + `text/html` |
+| 语音 | 靠接收方自己点 mp3 | **原站链接**（`<audio src="https://...">`），卡片自带播放按钮、波形、进度条（可拖动定位） |
+| 头像 | Canvas 裁圆画出 | 本地 assets 头像压 512px JPEG 内嵌（与船坞同一张图）；取不到图就用舰名首字纹章 |
+| 体积 | 1080×1440 ARGB 位图（约 6 MB 峰值） | 纯文本 + 一张头像 ≈ **80~150 KB**，无 OOM 风险 |
+| 预览 | 无（直接弹分享面板） | 生成后先弹页内浮层预览，当场试听再保存/分享 |
+| 降级 | 无分享目标 → 存 `Download/BLYY` | 同左（`.html`），并提示"用浏览器打开可播放" |
+
+- 版式：`assets/share/voice_card.html`（单文件模板，可独立预览改版），`VoiceCardHtmlComposer` 只做占位符替换 → 渲染是纯函数，有 JVM 单测（`VoiceCardHtmlRenderTest`，10 例）。
+- 取数：头像下沉到 `VoiceCardAssets`（Coil 共享位图不 recycle、`file://` 自定义头像把 mtime 组进缓存键），图片版与 HTML 版共用。
+- **语音不内嵌的理由**：一条台词 300 KB~1.5 MB，base64 后膨胀 4/3，聊天里转发太重；改为链接后卡片只有几十 KB，
+  接收方每次播放都取最新音频。代价是需联网：页面里做了 `error` → "语音加载失败 · 点播放重试"（不禁用按钮）的降级，
+  `data:` 源才走 base64→Blob 兜底（部分 X5/WebView 内核不认 data: 音频）。真机（Android 15 WebView）实测原站 mp3 可直接播放。
+- **卡面字段**：只保留「场景」标签，中配/日配不再出现在卡片上（语言是播放器的状态，不是这张卡的身份信息）。
+- 顺带修掉一个真问题：`<queries>` 里只声明 `*/*` 时，**声明 `text/html` 的应用不会被 `*/*` 查询命中**（filter 匹配不是集合包含），已按 mime 逐个列全，否则「明明有应用能收」会被误判成无目标。
+
+**同批修复：头像「一直用网页图」**
+
+语音页 `effectiveAvatarUrl` 之前直接取 `voiceState.avatarUrl`（wiki 图），而船坞卡片走的是
+`CustomAvatarManager > LocalAvatarResolver（誓约优先 `_h` 婚皮）> 网络 URL` 三重链 —— 于是同一个舰娘，列表里有本地高清图，点进语音页/档案页却变成网页图（弱网时就是灰占位）。
+
+- `VoiceViewState` 新增 `isOathed`（= 船坞 `Ship.isFavorite`，由 `shipDao.getShipByName` 在 `loadVoices` 里读一次），头像解析链与列表完全一致；
+- 语音页头部/背景模糊图、`ShipDetailScreen` 头像都改用同一条链，并加 `crossfade` + 自定义头像 mtime 缓存键；
+- 台词卡复用同一个已解析的头像地址（本地 assets 会被内嵌进 HTML），所以卡片、语音页、船坞三者是同一张脸。
+
+
 **第四轮：全量审查与加固（2026-11-15）**
 
 对本轮新增代码逐文件复审后，发现并修掉以下问题（按严重度）：

@@ -56,7 +56,13 @@ class VoiceViewModelTest {
         whenever(settingsDataStore.voiceLanguage).thenReturn(flowOf(VoiceLanguage.CN))
         whenever(settingsDataStore.favorites).thenReturn(flowOf(emptySet()))
 
-        viewModel = VoiceViewModel(getVoicesUseCase, playbackServiceConnection, settingsDataStore, mock())
+        viewModel = VoiceViewModel(
+            getVoicesUseCase,
+            playbackServiceConnection,
+            settingsDataStore,
+            mock(),
+            mock() // shipDao：仅用于查询誓约标记（见 refreshOathState），单测里不需要真实数据
+        )
 
         // init 已向 future 注册装配回调；手动执行它模拟连接可用
         attachRunnableCaptor = ArgumentCaptor.forClass(Runnable::class.java)
