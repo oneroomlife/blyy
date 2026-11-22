@@ -43,6 +43,12 @@ object VoiceCardComposer {
     const val HEIGHT = 1440
     private const val DIR = "voice_cards"
 
+    /** 台词区最小字号：再小在 1080 宽下已经不好读，此时改为省略号截断 */
+    private const val MIN_DIALOGUE_TEXT = 34f
+
+    /** 台词字号递减步长 */
+    private const val TEXT_STEP = 6f
+
     /**
      * 生成台词卡。
      *
@@ -70,10 +76,11 @@ object VoiceCardComposer {
             drawFooter(canvas, shipName)
 
             val dir = File(context.cacheDir, DIR).apply { mkdirs() }
-            prune(dir)
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
             val file = File(dir, "voice-card-$stamp.png")
             file.outputStream().use { card.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            // 落盘后再 prune：先删旧文件会在"刚写完就轮到自己被删"的边界上发出空文件
+            prune(dir)
             file
         } catch (c: kotlinx.coroutines.CancellationException) {
             // 结构化并发：取消必须向上传播，不能被当成"合成失败"吞掉
@@ -174,7 +181,8 @@ object VoiceCardComposer {
         } else {
             val fallbackBg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#1F2B44") }
             canvas.drawCircle(left + avatarSize / 2f, top + avatarSize / 2f, avatarSize / 2f, fallbackBg)
-            val initial = shipName.trim().take(1).ifBlank { "舰" }
+            // 按码点取首字：take(1) 会把 emoji 舰名切成孤立代理项，画出来是个方框
+            val initial = VoiceCardPolicy.takeCodePoints(shipName.trim(), 1).ifBlank { "舰" }
             val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.parseColor("#7FD8FF")
                 textSize = 110f
@@ -185,21 +193,37 @@ object VoiceCardComposer {
             canvas.drawText(initial, left + avatarSize / 2f, centerY, text)
         }
 
-        // 舰名
+        // 舰名：76px + 自适应缩字号 + 省略号。
+        // 原来直接 drawText，遇到"提康德罗加·META"这类长名（或学生名带后缀）会一路画到画布
+        // 右边界之外被裁掉，卡片上只剩半截名字——比缩字号难看得多。
+        val nameLeft = left + avatarSize + 48f
+        val nameMaxWidth = WIDTH - left - nameLeft
         val namePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             textSize = 76f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        canvas.drawText(shipName, left + avatarSize + 48f, top + 96f, namePaint)
+        val safeName = shipName.trim().ifBlank { "未知舰船" }
+        fitTextSize(namePaint, safeName, nameMaxWidth, minSize = 40f)
+        canvas.drawText(
+            ellipsize(namePaint, safeName, nameMaxWidth),
+            nameLeft,
+            top + 96f,
+            namePaint
+        )
 
-        // 场景/皮肤标签
+        // 场景/皮肤标签：同样限宽，论文档里最长有「好感度-爱·誓约」这种
         if (sceneLabel.isNotBlank()) {
             val tagPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.parseColor("#9FD4E8")
                 textSize = 38f
             }
-            canvas.drawText(sceneLabel, left + avatarSize + 48f, top + 156f, tagPaint)
+            canvas.drawText(
+                ellipsize(tagPaint, sceneLabel, nameMaxWidth),
+                nameLeft,
+                top + 156f,
+                tagPaint
+            )
         }
 
         // 分隔线
@@ -216,19 +240,28 @@ object VoiceCardComposer {
         val areaTop = 520
         val areaBottom = HEIGHT - 220
         val maxWidth = right - left
+        val maxHeight = areaBottom - areaTop
 
-        val text = dialogue.ifBlank { "……" }.trim()
+        val text = dialogue.ifBlank { "……" }.trim().replace("\r\n", "\n").replace('\r', '\n')
         var textSize = 54f
-        var layout: StaticLayout
-        while (true) {
-            val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#F2F6FF")
-                this.textSize = textSize
-                typeface = Typeface.DEFAULT
-            }
+        val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#F2F6FF")
+            typeface = Typeface.DEFAULT
+            this.textSize = textSize
+        }
+        var layout = buildLayout(text, paint, maxWidth)
+        // 条件写成 textSize - STEP >= MIN：旧写法 textSize > MIN 会一路减到 30（低于下限），
+        // 长台词被缩成蚂蚁字反而不如截断
+        while (layout.height > maxHeight && textSize - TEXT_STEP >= MIN_DIALOGUE_TEXT) {
+            textSize -= TEXT_STEP
+            paint.textSize = textSize
             layout = buildLayout(text, paint, maxWidth)
-            if (layout.height <= (areaBottom - areaTop) || textSize <= 34f) break
-            textSize -= 6f
+        }
+        // 缩到最小字号仍放不下：截断并补省略号。
+        // 旧实现只靠 clipRect 硬裁，最后一行会被切掉半截字（读者看到的是断句），
+        // 而"…"能明确告诉他这句还没说完。
+        if (layout.height > maxHeight) {
+            layout = ellipsizeLayout(text, paint, maxWidth, maxHeight)
         }
 
         // 左侧引号装饰
@@ -241,11 +274,40 @@ object VoiceCardComposer {
         canvas.drawText("“", left - 12f, areaTop + 40f, quote)
 
         canvas.save()
-        // 裁剪到台词区：超长台词缩到最小字号仍放不下时，宁可截断也不能画进 footer 覆盖落款
+        // 裁剪到台词区：兜底防止任何残留溢出画进 footer 覆盖落款
         canvas.clipRect(left.toFloat(), areaTop.toFloat(), right.toFloat(), areaBottom.toFloat())
         canvas.translate(left.toFloat(), areaTop.toFloat())
         layout.draw(canvas)
         canvas.restore()
+    }
+
+    /** 二分找到能塞进 [maxHeight] 的最长前缀，再拼一个省略号 */
+    private fun ellipsizeLayout(
+        text: String,
+        paint: TextPaint,
+        width: Int,
+        maxHeight: Int
+    ): StaticLayout {
+        val ellipsis = "…"
+        var low = 0
+        var high = text.length
+        var best = ellipsis
+        while (low <= high) {
+            val mid = (low + high) / 2
+            // 对齐到码点边界，避免切出孤立代理项
+            val end = if (mid in 1 until text.length &&
+                Character.isLowSurrogate(text[mid]) &&
+                Character.isHighSurrogate(text[mid - 1])
+            ) mid - 1 else mid
+            val candidate = text.substring(0, end).trimEnd() + ellipsis
+            if (buildLayout(candidate, paint, width).height <= maxHeight) {
+                best = candidate
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return buildLayout(best, paint, width)
     }
 
     private fun buildLayout(text: String, paint: TextPaint, width: Int): StaticLayout {
@@ -284,7 +346,44 @@ object VoiceCardComposer {
             textSize = 32f
             textAlign = Paint.Align.RIGHT
         }
-        canvas.drawText(dateStamp, WIDTH - left, baseline, meta)
+        // 舰名 + 日期：卡片被转发出去后会脱离 App 上下文，
+        // 旧版只有品牌与日期，收图的人无从知道这是哪艘船（舰名只在上半部分，
+        // 而聊天软件常把方图裁成正方形把上半截截掉）
+        val nameTag = shipName.trim()
+        val metaText = if (nameTag.isEmpty()) dateStamp else "${VoiceCardPolicy.takeCodePoints(nameTag, 16)} · $dateStamp"
+        canvas.drawText(ellipsize(meta, metaText, WIDTH - left - left), WIDTH - left, baseline, meta)
+    }
+
+    // ── 文本排版工具 ──
+
+    /**
+     * 逐级缩字号直到文本塞进 [maxWidth]；到 [minSize] 仍塞不下就交给 [ellipsize]。
+     *
+     * 直接用 `drawText` 是台词卡最常见的翻车点：文案长度不可控（舰名/场景来自 wiki），
+     * 而画布宽度固定 1080。
+     */
+    private fun fitTextSize(paint: Paint, text: String, maxWidth: Float, minSize: Float) {
+        if (text.isEmpty()) return
+        while (paint.textSize > minSize && paint.measureText(text) > maxWidth) {
+            paint.textSize -= 4f
+        }
+    }
+
+    /** 用省略号收尾（按码点回退，绝不切出孤立代理项） */
+    private fun ellipsize(paint: Paint, text: String, maxWidth: Float): String {
+        if (text.isEmpty() || paint.measureText(text) <= maxWidth) return text
+        val ellipsis = "…"
+        val ellipsisWidth = paint.measureText(ellipsis)
+        var end = text.length
+        while (end > 0) {
+            val candidate = text.substring(0, end)
+            if (paint.measureText(candidate) + ellipsisWidth <= maxWidth) return candidate + ellipsis
+            // 回退一个码点，而不是一个 char：否则可能留下半个 emoji（渲染成方框）
+            end -= if (end >= 2 && Character.isLowSurrogate(text[end - 1]) &&
+                Character.isHighSurrogate(text[end - 2])
+            ) 2 else 1
+        }
+        return ellipsis
     }
 
     // ── 资源 ──

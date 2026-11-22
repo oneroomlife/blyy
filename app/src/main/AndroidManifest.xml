@@ -40,7 +40,10 @@
 
          ⚠️ 查询里的 mimeType 必须逐个列全：`*/*` 只匹配「声明了 */* 的应用」，
          声明 `image/*` 或 `text/html` 的应用**不会**被 `*/*` 查询命中。
-         台词语音卡走 `text/html`，漏掉这条会让"明明有应用能收"却误判成无目标。 -->
+         ⚠️ 通配符（`text/*`、`image/*`）也必须在 queries 里单独声明：
+         package visibility 是**按查询条件**过滤的，未声明的通配符查出来同样是空列表——
+         台词语音卡用 `text/*` 探测接收方（微信/QQ 只声明 text/plain），
+         漏掉这条会让"明明能发出去"被判成无目标。 -->
     <queries>
         <intent>
             <action android:name="android.intent.action.SEND" />
@@ -53,6 +56,14 @@
         <intent>
             <action android:name="android.intent.action.SEND" />
             <data android:mimeType="audio/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/plain" />
         </intent>
         <intent>
             <action android:name="android.intent.action.SEND" />
@@ -69,6 +80,10 @@
         <intent>
             <action android:name="android.intent.action.SEND_MULTIPLE" />
             <data android:mimeType="audio/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND_MULTIPLE" />
+            <data android:mimeType="text/*" />
         </intent>
     </queries>
 

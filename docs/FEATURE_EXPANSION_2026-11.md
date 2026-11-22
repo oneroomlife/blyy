@@ -53,13 +53,41 @@
 | 预览 | 无（直接弹分享面板） | 生成后先弹页内浮层预览，当场试听再保存/分享 |
 | 降级 | 无分享目标 → 存 `Download/BLYY` | 同左（`.html`），并提示"用浏览器打开可播放" |
 
-- 版式：`assets/share/voice_card.html`（单文件模板，可独立预览改版），`VoiceCardHtmlComposer` 只做占位符替换 → 渲染是纯函数，有 JVM 单测（`VoiceCardHtmlRenderTest`，10 例）。
+- 版式：`assets/share/voice_card.html`（单文件模板，可独立预览改版），`VoiceCardHtmlComposer` 只做占位符替换 → 渲染是纯函数，有 JVM 单测（`VoiceCardHtmlRenderTest` + `VoiceCardTemplateContractTest`，共 23 例）。
 - 取数：头像下沉到 `VoiceCardAssets`（Coil 共享位图不 recycle、`file://` 自定义头像把 mtime 组进缓存键），图片版与 HTML 版共用。
 - **语音不内嵌的理由**：一条台词 300 KB~1.5 MB，base64 后膨胀 4/3，聊天里转发太重；改为链接后卡片只有几十 KB，
   接收方每次播放都取最新音频。代价是需联网：页面里做了 `error` → "语音加载失败 · 点播放重试"（不禁用按钮）的降级，
   `data:` 源才走 base64→Blob 兜底（部分 X5/WebView 内核不认 data: 音频）。真机（Android 15 WebView）实测原站 mp3 可直接播放。
+- **语音可用性判定**：只认 `http`/`https` 绝对地址（`VoiceCardPolicy.isHttpUrl`）。wiki 解析出的字段偶尔是相对路径，
+  嵌进卡片就是个点了永远没反应的死按钮，这类一律按"无语音"降级，由卡面明确告知而不是留一个假播放键。
 - **卡面字段**：只保留「场景」标签，中配/日配不再出现在卡片上（语言是播放器的状态，不是这张卡的身份信息）。
 - 顺带修掉一个真问题：`<queries>` 里只声明 `*/*` 时，**声明 `text/html` 的应用不会被 `*/*` 查询命中**（filter 匹配不是集合包含），已按 mime 逐个列全，否则「明明有应用能收」会被误判成无目标。
+
+**2026-11-22 追加：台词卡的深层审计与修复（第三轮）**
+
+逐文件复审卡片链路后修掉 12 个问题，其中 5 个是**功能性失效**（用户可感知），7 个是稳定性/资源问题。
+
+| # | 问题 | 性质 | 修复 |
+|---|---|---|---|
+| 1 | 模板替换是链式 `String.replace`：先填入的**台词**会被后续 `replace("{{BARS}}")` 再扫一遍，一句写着 `{{BARS}}` 的台词能把 40 根波形柱塞进正文 | 二次注入 | 改为单趟扫描 `fillTemplate()`，填入值不再参与扫描 |
+| 2 | 音频缓存文件名只有「舰名_场景.mp3」：同一句台词的中配/日配是两个 URL，先发中配再发日配会**原地覆盖**（失败路径还会连带删掉已下好的那份），发出去的语言随机 | 功能错乱 | 新增 `VoiceCardPolicy.audioFileName()`，文件名带 URL 的 FNV-1a 摘要 |
+| 3 | 下载直接写目标文件：中途失败/取消留下**半截 mp3**，下次分享会把它当完整音频发出去 | 数据损坏 | 先写 `.part` 再 rename（rename 失败退化 copy），失败只清 `.part` |
+| 4 | 预览浮层 `AndroidView` 的 factory 只跑一次：连续预览第二句台词时 WebView **仍显示上一张卡** | 功能失效 | `key(htmlFile.absolutePath)` 强制重建 |
+| 5 | 「复制台词链接」写死 `voice.audioUrl`（= 中配）：日配模式下复制到的是中配链接 | 功能失效 | 取 `getActiveAudioUrl(voiceState.voiceLanguage)`，空地址时明确提示 |
+| 6 | `saveLocally` 里 `card.readBytes()` 未包 try：卡片被 prune/被系统清掉时 `FileNotFoundException` 直接穿出 suspend 函数 → 崩溃（调用侧只 finally 复位 flag） | 崩溃 | 读取包 `runCatching` 并返回可读的失败原因 |
+| 7 | HTML 卡目标探测用 `text/html`：微信/QQ/Telegram 只声明 `text/plain`，被误判成"没有可分享的应用"→ 用户只拿到"已保存到 Downloads" | 功能失效 | 探测改 `text/*`（选择器仍发 `text/html`），并在 manifest `<queries>` 补 `text/*`、`SEND_MULTIPLE` 的 `text/*`（package visibility 按查询条件过滤，未声明的通配符查出来同样是空） |
+| 8 | 预览浮层的保存/分享没有在途守卫：连点两次 → 两个分享面板 + Downloads 里两份副本 | 资源浪费 | `busy` 上提到 `VoiceScreen` 的 `voiceCardBusy`，浮层只消费；`launchCardAction()` 统一兜异常，保证 busy 一定复位 |
+| 9 | `prune` 不分青红皂白删旧文件：会删掉正在写的 `.part`，也会删掉**刚分享出去、接收方还没读**的 Uri（对方收到 0 字节附件） | 功能失效 | 跳过 `.part` 与 60 秒内写过的文件 |
+| 10 | 图片版 `drawText` 舰名/场景无宽度约束：「提康德罗加·META」这类长名直接画出画布右边界被裁成半截；超长台词缩到 30sp（低于 34sp 下限）仍溢出，只靠 `clipRect` 硬裁 → 最后一行被切成半个字 | 观感/可读性 | `fitTextSize` 自适应缩字号 + 按码点 `ellipsize` 补省略号；台词做二分前缀 + `…` 截断；footer 补舰名（卡片转发后脱离 App 上下文，旧版只有品牌与日期） |
+| 11 | 模板脚本对 DOM 元素无空值守卫（`player.classList`、`curEl.textContent`、`seek.addEventListener` 全是裸引用），任一元素缺失 → TypeError，表现为"播放按钮完全没反应且无提示"；`ended` 后进度停在 100%，再点播放要先跳回开头 | 健壮性 | 全部加判空；`ended` 归零并重绘；进度条补 touch 事件兜底（老 X5 无 PointerEvent 时拖动定位彻底失效，而这是卡片主打交互）；`visibilitychange` 时暂停 |
+| 12 | 无音频分支：JS 里 `markDead()` 与渲染期已写好的 `.is-dead` 重复设置；`preload="metadata"` 在无 src 时无意义 | 冗余 | 合成器用 `VoiceCardPolicy.isHttpUrl()` 统一判可用性（相对路径/`content:`/`javascript:` 一律降级），JS 直接 return；`audio` 补 `playsinline` |
+
+结构性改动：新增 `util/share/VoiceCardPolicy.kt` 纯策略层（URL 可用性、缓存文件名、码点安全截断、分享文案摘录）——
+此前三个文件各自实现一套 `sanitize`，规则漂移就会产生"同一句台词两个文件名"的缓存串味。纯函数，直接 JVM 单测。
+
+测试增量：`VoiceCardPolicyTest`（12 例）、`VoiceCardTemplateContractTest`（9 例，用**真实模板**跑端到端渲染：
+无残留占位符、无音频真禁用、脚本空值守卫、emoji 不产生孤立代理、产物体积上限）、`VoiceCardHtmlRenderTest` 12 → 14 例
+（新增"台词/舰名里的占位符不被二次替换""CRLF 归一""非 http 地址降级"）。`assembleDebug` + 全量 `testDebugUnitTest` 通过。
 
 **同批修复：头像「一直用网页图」**
 

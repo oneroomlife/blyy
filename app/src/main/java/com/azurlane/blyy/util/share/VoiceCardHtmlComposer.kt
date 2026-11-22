@@ -35,6 +35,10 @@ import kotlin.math.sin
  *
  * 模板放在 `assets/share/voice_card.html`（可单独预览/改版式），这里只做占位符替换，
  * 因此 [render] 是纯函数，能直接跑 JVM 单测（见 `VoiceCardHtmlRenderTest`）。
+ *
+ * ⚠️ 占位符替换是**单趟扫描**（[fillTemplate]），不是链式 `String.replace`：
+ * 链式替换时先填入的用户数据（台词/舰名）会被后续的 `replace("{{BARS}}", …)` 再扫一遍，
+ * 一句写着 `{{BARS}}` 的台词就能把 40 根波形柱塞进正文里——这是二次注入，不是理论风险。
  */
 object VoiceCardHtmlComposer {
 
@@ -51,6 +55,18 @@ object VoiceCardHtmlComposer {
 
     /** 播放器波形柱数量，与模板 CSS 的 flex 布局一致 */
     private const val BAR_COUNT = 40
+
+    /** 生成后缓存里保留的卡片数（含刚生成的那张，留给预览浮层读文件） */
+    private const val KEEP_CARDS = 3
+
+    /**
+     * 模板只读一次。
+     *
+     * 模板是编译进 APK 的 assets（几十 KB），但 `assets.open()` 每次都要过 AssetManager
+     * 与解压；连点几次分享就白读几次，没有必要。字符串不可变，缓存是安全的。
+     */
+    @Volatile
+    private var cachedTemplate: String? = null
 
     /** 合成结果：没有可用语音地址时 [hasAudio] = false，播放器渲染为禁用态 */
     data class Output(val file: File, val hasAudio: Boolean)
@@ -70,7 +86,7 @@ object VoiceCardHtmlComposer {
      * 生成一张 HTML 台词语音卡。
      *
      * @param avatarUrl 头像地址（本地 assets / 自定义头像 / 网络兜底）；拿不到就用舰名首字纹章
-     * @param audioUrl  当前语言分支的音频原站地址；空 → 卡片仍生成，播放器降级
+     * @param audioUrl  当前语言分支的音频原站地址；空/非法 → 卡片仍生成，播放器降级
      * @return 生成的文件（位于 cacheDir/voice_cards_html），失败返回 null
      */
     suspend fun compose(
@@ -85,6 +101,9 @@ object VoiceCardHtmlComposer {
         try {
             val template = loadTemplate(context)
             val avatarDataUri = embedAvatar(context, avatarUrl)
+            // 非法 scheme（相对路径 / content: / javascript:）一律按"无语音"处理：
+            // 否则卡片里会出现一个点了永远没反应的播放按钮
+            val playableUrl = audioUrl.trim().takeIf { VoiceCardPolicy.isHttpUrl(it) }.orEmpty()
 
             val html = render(
                 template = template,
@@ -95,20 +114,24 @@ object VoiceCardHtmlComposer {
                     serial = serial,
                     dateLabel = SimpleDateFormat("yyyy.MM.dd", Locale.US).format(Date()),
                     avatarDataUri = avatarDataUri,
-                    audioUrl = audioUrl
+                    audioUrl = playableUrl
                 )
             )
 
             val dir = File(context.cacheDir, DIR).apply { mkdirs() }
-            VoiceCardAssets.prune(dir, keep = 3)
             // 带毫秒：同一秒内连点两次不会互相覆盖（图片版沿用秒级命名，够用）
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date())
             val file = File(dir, "voice-card-$stamp.html")
             file.writeText(html, Charsets.UTF_8)
-            Output(file, hasAudio = audioUrl.isNotBlank())
+            // 写完再 prune：先 prune 会让"刚生成的这张"在第 N 次分享时被自己挤掉的旧文件顶上
+            VoiceCardAssets.prune(dir, keep = KEEP_CARDS)
+            Output(file, hasAudio = playableUrl.isNotEmpty())
         } catch (c: kotlinx.coroutines.CancellationException) {
             // 结构化并发：取消必须向上传播，不能被当成「合成失败」
             throw c
+        } catch (oom: OutOfMemoryError) {
+            Log.w(TAG, "compose OOM, abort", oom)
+            null
         } catch (t: Throwable) {
             Log.w(TAG, "compose failed: ${t.message}", t)
             null
@@ -118,7 +141,7 @@ object VoiceCardHtmlComposer {
     // ── 模板渲染（纯函数） ──
 
     internal fun render(template: String, content: Content): String {
-        val hasAudio = content.audioUrl.isNotBlank()
+        val hasAudio = VoiceCardPolicy.isHttpUrl(content.audioUrl)
         val avatarBlock = content.avatarDataUri?.takeIf { it.isNotBlank() }
             ?.let { """<img src="$it" alt="" />""" }
             ?: """<span class="mono">${escapeHtml(monogram(content.shipName))}</span>"""
@@ -130,35 +153,75 @@ object VoiceCardHtmlComposer {
             ""
         }
 
-        // 台词里的换行是作者分句，转成 <br> 才不会被折行规则吃掉
-        val dialogueHtml = escapeHtml(content.dialogue.ifBlank { "……" })
+        // 台词里的换行是作者分句，转成 <br> 才不会被折行规则吃掉。
+        // \r 先归一：从网页抓来的台词偶尔带 CRLF，留着会在卡片上多出一个空行。
+        val dialogueHtml = escapeHtml(content.dialogue.replace("\r\n", "\n").replace('\r', '\n').ifBlank { "……" })
             .replace("\n", "<br />")
 
-        return template
-            .replace("{{TITLE}}", escapeHtml("${content.shipName} · 台词语音卡"))
-            .replace("{{SHIP}}", escapeHtml(content.shipName.ifBlank { "未知舰船" }))
-            .replace("{{SERIAL}}", escapeHtml(content.serial.ifBlank { "VOICE ARCHIVE" }))
-            .replace("{{TAGS}}", tags)
-            .replace("{{AVATAR}}", avatarBlock)
-            .replace("{{QUOTE_CLASS}}", quoteClassFor(content.dialogue))
-            .replace("{{DIALOGUE}}", dialogueHtml)
-            .replace("{{BARS}}", waveBars(BAR_COUNT, seedOf(content.dialogue)))
-            .replace(
-                "{{HINT}}",
-                if (hasAudio) "轻触播放 · 语音取自原站，需联网" else "该台词暂无语音 · 可截图保存卡片"
+        return fillTemplate(
+            template,
+            mapOf(
+                "TITLE" to escapeHtml("${content.shipName} · 台词语音卡"),
+                "SHIP" to escapeHtml(content.shipName.ifBlank { "未知舰船" }),
+                "SERIAL" to escapeHtml(content.serial.ifBlank { "VOICE ARCHIVE" }),
+                "TAGS" to tags,
+                "AVATAR" to avatarBlock,
+                "QUOTE_CLASS" to quoteClassFor(content.dialogue),
+                "DIALOGUE" to dialogueHtml,
+                "BARS" to waveBars(BAR_COUNT, seedOf(content.dialogue)),
+                "HINT" to if (hasAudio) "轻触播放 · 语音取自原站，需联网" else "该台词暂无语音 · 可截图保存卡片",
+                "PLAYER_CLASS" to if (hasAudio) "" else " is-dead",
+                "PLAY_BTN_DISABLED" to if (hasAudio) "" else " disabled",
+                "AUDIO_ATTR" to if (hasAudio) " src=\"" + escapeHtml(content.audioUrl) + "\"" else "",
+                "DATE" to escapeHtml(content.dateLabel)
             )
-            .replace("{{PLAYER_CLASS}}", if (hasAudio) "" else " is-dead")
-            .replace("{{PLAY_BTN_DISABLED}}", if (hasAudio) "" else " disabled")
-            .replace("{{AUDIO_ATTR}}", if (hasAudio) " src=\"" + escapeHtml(content.audioUrl.trim()) + "\"" else "")
-            .replace("{{DATE}}", escapeHtml(content.dateLabel))
+        )
     }
 
-    /** 台词越长字号越小；阈值按「中文一行 ~14 字」的实测版式定的 */
-    internal fun quoteClassFor(dialogue: String): String = when {
-        dialogue.length <= 34 -> "q-xl"
-        dialogue.length <= 70 -> "q-l"
-        dialogue.length <= 120 -> "q-m"
-        else -> "q-s"
+    /**
+     * 单趟占位符替换。
+     *
+     * 关键性质：**填入的值不再参与扫描**。链式 `replace` 做不到这一点——
+     * 台词里只要出现 `{{BARS}}`，就会被后面的替换展开成一堆 `<span>`。
+     * 未知占位符原样保留（而非替换成空串），这样模板写错字时单测能立刻抓到。
+     */
+    private fun fillTemplate(template: String, values: Map<String, String>): String {
+        val out = StringBuilder(template.length + 4096)
+        var cursor = 0
+        while (cursor < template.length) {
+            val start = template.indexOf("{{", cursor)
+            if (start < 0) {
+                out.append(template, cursor, template.length)
+                break
+            }
+            val end = template.indexOf("}}", start + 2)
+            if (end < 0) {
+                out.append(template, cursor, template.length)
+                break
+            }
+            val key = template.substring(start + 2, end)
+            val value = values[key]
+            if (value == null) {
+                // 原样保留：{{UNKNOWN}} 留给单测/肉眼发现
+                out.append(template, cursor, end + 2)
+            } else {
+                out.append(template, cursor, start)
+                out.append(value)
+            }
+            cursor = end + 2
+        }
+        return out.toString()
+    }
+
+    /** 台词越长字号越小；阈值按「中文一行 ~14 字」的实测版式定的（按码点，emoji 不占两格） */
+    internal fun quoteClassFor(dialogue: String): String {
+        val length = if (dialogue.isEmpty()) 0 else dialogue.codePointCount(0, dialogue.length)
+        return when {
+            length <= 34 -> "q-xl"
+            length <= 70 -> "q-l"
+            length <= 120 -> "q-m"
+            else -> "q-s"
+        }
     }
 
     /**
@@ -201,14 +264,23 @@ object VoiceCardHtmlComposer {
     }
 
     private fun monogram(shipName: String): String =
-        shipName.trim().take(1).ifBlank { "舰" }
+        shipName.trim().let { name ->
+            // 按码点取首字：直接 take(1) 会把 emoji 舰名切成孤立代理项
+            if (name.isEmpty()) "舰" else VoiceCardPolicy.takeCodePoints(name, 1)
+        }
 
     private fun seedOf(dialogue: String): Long = dialogue.hashCode().toLong()
 
     // ── 素材 ──
 
-    private fun loadTemplate(context: Context): String =
-        context.assets.open(TEMPLATE_PATH).bufferedReader(Charsets.UTF_8).use { it.readText() }
+    private fun loadTemplate(context: Context): String {
+        cachedTemplate?.let { return it }
+        val loaded = context.assets.open(TEMPLATE_PATH)
+            .bufferedReader(Charsets.UTF_8)
+            .use { it.readText() }
+        cachedTemplate = loaded
+        return loaded
+    }
 
     /** 头像压成 512px JPEG（透明底填深蓝），base64 后约 40~120 KB */
     private suspend fun embedAvatar(context: Context, avatarUrl: String): String? {
@@ -221,13 +293,20 @@ object VoiceCardHtmlComposer {
         }.getOrNull()
     }
 
-    /** 不 recycle 源位图（Coil 共享缓存）；只在自建的副本上回收 */
+    /**
+     * 不 recycle 源位图（Coil 共享缓存）；只在自建的副本上回收。
+     *
+     * 缩略仍走 createScaledBitmap 之外的路径（Canvas 绘制）：需要先把透明底压成实色，
+     * 顺手在这一步完成缩放，省一次全尺寸中间位图。
+     */
     private fun flattenToJpeg(source: Bitmap, maxPx: Int, quality: Int): ByteArray {
+        if (source.width <= 0 || source.height <= 0) return ByteArray(0)
         val scale = min(1f, maxPx.toFloat() / maxOf(source.width, source.height))
         val targetWidth = (source.width * scale).roundToInt().coerceAtLeast(1)
         val targetHeight = (source.height * scale).roundToInt().coerceAtLeast(1)
-        val target = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+        var target: Bitmap? = null
         try {
+            target = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(target)
             // 透明头像直接压 JPEG 会变黑块，先铺一层与卡片同色系的底
             canvas.drawColor(Color.parseColor("#0E1E33"))
@@ -241,7 +320,7 @@ object VoiceCardHtmlComposer {
             if (!target.compress(Bitmap.CompressFormat.JPEG, quality, out)) return ByteArray(0)
             return out.toByteArray()
         } finally {
-            target.recycle()
+            runCatching { target?.recycle() }
         }
     }
 }

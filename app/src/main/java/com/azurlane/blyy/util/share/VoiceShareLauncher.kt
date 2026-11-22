@@ -29,7 +29,7 @@ import java.util.Locale
  *
  * 无目标的降级链（裸环境/模拟器/被裁剪的 ROM 都可能出现零分享目标，此时系统 Chooser
  * 只会弹"没有应用可执行此操作"空面板）：
- * - HTML 卡无 `text/html` 目标 → 直接落盘到 `Downloads/BLYY` 并告知路径（[ShareResult.SavedLocally]）；
+ * - HTML 卡无 `text/html|text/plain` 目标 → 直接落盘到 `Downloads/BLYY` 并告知路径（[ShareResult.SavedLocally]）；
  * - SEND_MULTIPLE 无目标但有 SEND 目标 → 自动只分享台词卡并说明；
  * - 完全无目标 → 台词卡（+语音）落盘并告知位置。
  */
@@ -37,8 +37,19 @@ object VoiceShareLauncher {
 
     private const val TAG = "VoiceShareLauncher"
 
-    /** HTML 语音卡的 MIME：浏览器/文档类应用能接，聊天类应用多数接不了（有降级链兜底） */
+    /**
+     * HTML 语音卡的 MIME。
+     *
+     * ⚠️ 探测阶段必须用 text 通配（[MIME_HTML_PROBE]）而不是死磕 [MIME_HTML]：
+     * 微信/QQ/Telegram 这类聊天应用只声明 text/plain，拿 text/html 去 `queryIntentActivities`
+     * 会得到空列表 → 误判"没有可分享的应用" → 明明能发出去却只给了个"已保存到 Downloads"。
+     * 选择器阶段再用 text/html 发（能接 html 的应用才会正确按网页打开）。
+     *
+     * （注意别在 KDoc 里写 text 加斜杠加星号——Kotlin 块注释是**可嵌套**的，
+     * 那个组合会开一个新注释层，把后面整个文件吃掉。）
+     */
     private const val MIME_HTML = "text/html"
+    private const val MIME_HTML_PROBE = "text/*"
 
     sealed class ShareResult {
         data object Success : ShareResult()
@@ -61,16 +72,17 @@ object VoiceShareLauncher {
         context: Context,
         card: File,
         shipName: String,
-        dialogue: String
+        dialogue: String,
+        sceneName: String = ""
     ): ShareResult {
         if (!card.isFile || card.length() <= 0L) {
             return ShareResult.Failed("语音卡文件不存在，请重试")
         }
-        // 聊天类应用普遍不声明 text/html，先探测，避免弹一个只有"复制到剪贴板"的空面板
-        if (!hasShareTargets(context, Intent.ACTION_SEND, MIME_HTML)) {
+        // 聊天类应用普遍不声明 text/html，先按 text/* 探测，避免弹一个只有"复制到剪贴板"的空面板
+        if (!hasShareTargets(context, Intent.ACTION_SEND, MIME_HTML_PROBE)) {
             // 无接收方时直接落盘；提示语已经说明"存到哪 + 怎么听"，不再追加解释
             // （Toast 在多数 ROM 上只显示两行，多一句就会被截断成"…"）
-            return saveHtmlCard(context, card, shipName, sceneName = "")
+            return saveHtmlCard(context, card, shipName, sceneName)
         }
         return withContext(Dispatchers.Main) {
             try {
@@ -109,15 +121,24 @@ object VoiceShareLauncher {
             ?: return@withContext ShareResult.Failed("语音卡读取失败，请重试")
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val baseName = buildString {
-            append(sanitize(shipName))
+            append(safeLabel(shipName))
             append("_台词语音卡_")
             if (sceneName.isNotBlank()) {
-                append(sanitize(sceneName))
+                append(safeLabel(sceneName))
                 append('_')
             }
             append(stamp)
         }
-        when (val result = MediaDownloader.saveBytes(context, bytes, "$baseName.html", MediaDownloader.ROOT_DIR)) {
+        when (
+            val result = MediaDownloader.saveBytes(
+                context,
+                bytes,
+                "$baseName.html",
+                // HTML 落到独立子目录：和 mp3/png 混在一起时，用户按"音频"筛选找不到它，
+                // 且同名去重行为会随相册索引变化
+                "${MediaDownloader.ROOT_DIR}/VoiceCard"
+            )
+        ) {
             is MediaDownloader.Result.Success -> ShareResult.SavedLocally(
                 "语音卡已保存到 Download/${result.relativePath}/${result.displayName}，用浏览器打开可播放语音"
             )
@@ -127,7 +148,7 @@ object VoiceShareLauncher {
 
     /** 分享文案：正文 + 来源，附带一句"点开能听"的提示（部分应用会把 EXTRA_TEXT 直接展示） */
     private fun buildShareText(shipName: String, dialogue: String): String {
-        val body = dialogue.trim().take(200)
+        val body = VoiceCardPolicy.excerpt(dialogue)
         return buildString {
             if (body.isNotEmpty()) {
                 append(body)
@@ -151,7 +172,7 @@ object VoiceShareLauncher {
         }
         // 先探测分享目标：裸环境（无任何可接分享的应用）弹 Chooser 只会得到系统的
         // "没有应用可执行此操作"空面板；改为把卡片存到 Download/BLYY 并告知位置
-        if (!hasShareTargets(context, Intent.ACTION_SEND, "image/png")) {
+        if (!hasShareTargets(context, Intent.ACTION_SEND, "image/*")) {
             return saveLocally(context, card, null, shipName, "")
         }
         return withContext(Dispatchers.Main) {
@@ -193,9 +214,11 @@ object VoiceShareLauncher {
             return@withContext ShareResult.Failed("台词卡文件不存在，请重试")
         }
 
-        // 目标探测放在下载音频**之前**：没有 SEND_MULTIPLE 目标时不该白等几十秒下载完再弹空面板
+        // 目标探测放在下载音频**之前**：没有 SEND_MULTIPLE 目标时不该白等几十秒下载完再弹空面板。
+        // 探测 MIME 用 `*/*` 是刻意的：SEND_MULTIPLE 的接收方几乎都声明 `*/*` 或 `image/*`，
+        // 用具体类型探测会漏掉只声明 `*/*` 的相册/文件管理器。
         if (!hasShareTargets(context, Intent.ACTION_SEND_MULTIPLE, "*/*")) {
-            if (hasShareTargets(context, Intent.ACTION_SEND, "image/png")) {
+            if (hasShareTargets(context, Intent.ACTION_SEND, "image/*")) {
                 // 退化到纯图片分享（shareCard 内部自带无目标兜底）
                 val fallback = shareCard(context, card, shipName)
                 if (fallback !is ShareResult.Success) return@withContext fallback
@@ -269,10 +292,14 @@ object VoiceShareLauncher {
      */
     private suspend fun hasShareTargets(context: Context, action: String, mimeType: String): Boolean =
         withContext(Dispatchers.IO) {
-            context.packageManager.queryIntentActivities(
-                Intent(action).apply { type = mimeType },
-                PackageManager.MATCH_DEFAULT_ONLY
-            ).isNotEmpty()
+            // 查询本身抛异常（个别 ROM 的 PackageManager 会）时按"有目标"处理：
+            // 宁可直接弹 Chooser（有降级兜底），也不要无端把用户踹到"已保存到 Downloads"
+            runCatching {
+                context.packageManager.queryIntentActivities(
+                    Intent(action).apply { type = mimeType },
+                    PackageManager.MATCH_DEFAULT_ONLY
+                ).isNotEmpty()
+            }.getOrDefault(true)
         }
 
     /**
@@ -289,10 +316,15 @@ object VoiceShareLauncher {
         sceneName: String
     ): ShareResult = withContext(Dispatchers.IO) {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        // 读文件放在 try 里：卡片可能已被 prune/被系统清掉，readBytes 抛 FileNotFoundException
+        // 会在旧实现里直接穿出 suspend 函数变成崩溃（调用侧只 finally 复位 flag，不接异常）
+        val cardBytes = runCatching { card.readBytes() }.getOrNull()
+            ?: return@withContext ShareResult.Failed("没有可分享的应用，且台词卡已失效，请重新生成")
+
         val cardResult = MediaDownloader.saveBytes(
             context,
-            card.readBytes(),
-            sanitize("${shipName}_台词卡_$stamp") + ".png",
+            cardBytes,
+            safeLabel("${shipName}_台词卡_$stamp") + ".png",
             MediaDownloader.ROOT_DIR
         )
         if (cardResult !is MediaDownloader.Result.Success) {
@@ -301,16 +333,21 @@ object VoiceShareLauncher {
         }
 
         val audioNote = audio?.let {
-            val audioResult = MediaDownloader.saveBytes(
-                context,
-                it.readBytes(),
-                sanitize("${shipName}_${sceneName}_$stamp") + ".mp3",
-                MediaDownloader.ROOT_DIR
-            )
-            if (audioResult is MediaDownloader.Result.Success) {
-                "；语音已保存到 Download/${audioResult.relativePath}/${audioResult.displayName}"
+            val bytes = runCatching { it.readBytes() }.getOrNull()
+            if (bytes == null || bytes.isEmpty()) {
+                "（语音读取失败，未保存）"
             } else {
-                "（语音保存失败）"
+                val audioResult = MediaDownloader.saveBytes(
+                    context,
+                    bytes,
+                    safeLabel("${shipName}_${sceneName}_$stamp", fallback = "voice") + ".mp3",
+                    MediaDownloader.ROOT_DIR
+                )
+                if (audioResult is MediaDownloader.Result.Success) {
+                    "；语音已保存到 Download/${audioResult.relativePath}/${audioResult.displayName}"
+                } else {
+                    "（语音保存失败）"
+                }
             }
         } ?: ""
 
@@ -327,9 +364,10 @@ object VoiceShareLauncher {
         error is IllegalArgumentException ->
             "分享配置异常：${error.message ?: "文件不在 FileProvider 允许的目录"}"
         error is android.content.ActivityNotFoundException -> "没有可用的分享应用"
+        error is SecurityException -> "分享被系统拦截：请检查是否停用了相关应用"
         else -> "分享失败：${error.message ?: error.javaClass.simpleName}"
     }
 
-    private fun sanitize(raw: String): String =
-        raw.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "_").take(40).ifBlank { "voice" }
+    private fun safeLabel(raw: String, fallback: String = "voice"): String =
+        VoiceCardPolicy.safeName(raw, max = 40, fallback = fallback)
 }

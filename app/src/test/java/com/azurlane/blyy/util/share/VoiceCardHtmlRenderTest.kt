@@ -64,6 +64,50 @@ class VoiceCardHtmlRenderTest {
     }
 
     @Test
+    fun `CRLF 与裸 CR 都归一成单个 br`() {
+        val html = VoiceCardHtmlComposer.render(
+            template,
+            content(dialogue = "第一句\r\n第二句\r第三句")
+        )
+        assertTrue(html.contains("第一句<br />第二句<br />第三句"))
+        assertFalse("不能残留 \\r", html.contains("\r"))
+    }
+
+    @Test
+    fun `台词里的占位符不会被二次替换`() {
+        // 链式 String.replace 的经典坑：先填入的台词会被后续 replace 再扫一遍。
+        // 一句写着 {{BARS}} 的台词若被展开成 40 根波形柱，卡面就被撑爆了。
+        val html = VoiceCardHtmlComposer.render(
+            template,
+            content(dialogue = "我把 {{BARS}} 和 {{DATE}} 写进了台词")
+        )
+        assertTrue("占位符文本要原样保留在正文里", html.contains("我把 {{BARS}} 和 {{DATE}} 写进了台词"))
+        // 台词里的 {{BARS}} 若被二次替换，波形柱会变成 80 根
+        assertEquals(40, Regex("<span class=\"bar\"").findAll(html).count())
+    }
+
+    @Test
+    fun `舰名里的占位符同样不会被二次替换`() {
+        val html = VoiceCardHtmlComposer.render(
+            template,
+            content().copy(shipName = "{{AVATAR}}")
+        )
+        // 若被替换，头像块会被插进 <h1> 里
+        assertTrue(html.contains("{{AVATAR}}"))
+        assertTrue(html.contains("{{AVATAR}} · 台词语音卡"))
+    }
+
+    @Test
+    fun `非 http 语音地址按无语音降级`() {
+        listOf("/audio/x.mp3", "file:///sdcard/x.mp3", "javascript:alert(1)").forEach { url ->
+            val html = VoiceCardHtmlComposer.render(template, content(audioUrl = url))
+            assertTrue("$url 应降级为死播放器", html.contains("player is-dead"))
+            assertTrue(html.contains("disabled"))
+            assertFalse("$url 不能进 src", html.contains("src=\"$url"))
+        }
+    }
+
+    @Test
     fun `有语音时用原站链接而不是内嵌数据`() {
         val html = VoiceCardHtmlComposer.render(template, content())
         assertTrue("必须是 src=链接", html.contains("""src="https://example.com/voice/a.mp3""""))

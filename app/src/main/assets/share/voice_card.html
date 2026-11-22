@@ -390,6 +390,8 @@
   .time em{font-style:normal;opacity:.32}
 
   /* 无音频降级 */
+  /* 无语音时 .player 由合成器渲染时已是 .is-dead（按钮带 disabled），
+     JS 直接 return，不做第二次状态修正。 */
   .is-dead .disc{background:#22314A;color:#8CA3BD;box-shadow:none;cursor:default}
   .is-dead .disc-glow{display:none}
   .is-dead .wave{opacity:.34}
@@ -521,7 +523,11 @@
     <noscript><p class="noscript">此卡片由 BLYY 生成；开启 JavaScript 后可加载并播放语音。</p></noscript>
   </main>
 
-  <audio id="audio" preload="metadata"{{AUDIO_ATTR}}></audio>
+  <!-- preload="metadata" 只取时长（进度条要显示总长），不预下整条语音；
+       playsinline 让 iOS Safari / WKWebView 内联播放，而不是抢成全屏播放器。
+       合成器在没有语音时会把 src 属性整体省掉，此时 preload 无副作用（没有 src 就不发请求）。
+       ⚠️ 这段注释里不要写占位符：单趟替换不会跳过注释，写进去会被替换成实际值。 -->
+  <audio id="audio" preload="metadata" playsinline webkit-playsinline{{AUDIO_ATTR}}></audio>
 
 <script>
 (function () {
@@ -537,7 +543,7 @@
   var hintEl = document.getElementById("hint-text");
   var bars = wave ? Array.prototype.slice.call(wave.children) : [];
 
-  var src = (audio && audio.getAttribute("src")) || "";
+  var src = (audio && (audio.getAttribute("src") || "")) || "";
   var hasAudio = !!src;
   var isDataSrc = src.indexOf("data:") === 0;
   var baseHint = hintEl ? hintEl.textContent : "";
@@ -553,7 +559,10 @@
     setHint(text || "该台词暂无语音 · 可截图保存卡片");
   }
 
-  if (!audio || !hasAudio) { markDead(); return; }
+  // 无音频的降级状态由服务端（VoiceCardHtmlComposer）渲染时已经写好：
+  // .player.is-dead + button disabled + hint 文案。这里直接 return，
+  // 既不需要再补一遍 class（避免与模板状态打架），也不会因为元素缺失而抛异常。
+  if (!audio || !hasAudio) { return; }
 
   function pad(n) { return n < 10 ? "0" + n : "" + n; }
   function fmt(sec) {
@@ -570,13 +579,13 @@
 
   function paint() {
     var p = progress();
-    player.style.setProperty("--p", p.toFixed(2) + "%");
+    if (player) player.style.setProperty("--p", p.toFixed(2) + "%");
     var lit = Math.round((bars.length * p) / 100);
     for (var i = 0; i < bars.length; i++) {
       var on = i < lit;
       if (bars[i].classList.contains("on") !== on) bars[i].classList.toggle("on", on);
     }
-    curEl.textContent = fmt(audio.currentTime);
+    if (curEl) curEl.textContent = fmt(audio.currentTime);
     if (seek) {
       seek.setAttribute("aria-valuenow", Math.round(p));
       seek.setAttribute("aria-valuetext", fmt(audio.currentTime) + " / " + fmt(audio.duration));
@@ -584,6 +593,7 @@
   }
 
   function toggle() {
+    if (!audio) return;
     if (audio.paused) {
       // 上一次因网络失败：先 load() 重置错误态再播，等同于"点一下重试"
       if (playFailed) {
@@ -593,38 +603,37 @@
       }
       var p = audio.play();
       if (p && typeof p.catch === "function") {
-        p.catch(function () { player.classList.remove("is-loading"); });
+        p.catch(function () { if (player) player.classList.remove("is-loading"); });
       }
     } else {
       audio.pause();
     }
   }
 
-  btn.addEventListener("click", toggle);
+  if (btn) btn.addEventListener("click", toggle);
 
   audio.addEventListener("play", function () {
-    player.classList.remove("is-dead");
-    player.classList.add("is-playing");
-    btn.setAttribute("aria-pressed", "true");
-    btn.setAttribute("aria-label", "暂停语音");
+    if (player) { player.classList.remove("is-dead"); player.classList.add("is-playing"); }
+    if (btn) { btn.setAttribute("aria-pressed", "true"); btn.setAttribute("aria-label", "暂停语音"); }
   });
   audio.addEventListener("pause", function () {
-    player.classList.remove("is-playing");
-    btn.setAttribute("aria-pressed", "false");
-    btn.setAttribute("aria-label", "播放语音");
+    if (player) player.classList.remove("is-playing");
+    if (btn) { btn.setAttribute("aria-pressed", "false"); btn.setAttribute("aria-label", "播放语音"); }
   });
-  audio.addEventListener("waiting", function () { player.classList.add("is-loading"); });
-  audio.addEventListener("playing", function () { player.classList.remove("is-loading"); });
-  audio.addEventListener("canplay", function () { player.classList.remove("is-loading"); });
+  audio.addEventListener("waiting", function () { if (player) player.classList.add("is-loading"); });
+  audio.addEventListener("playing", function () { if (player) player.classList.remove("is-loading"); });
+  audio.addEventListener("canplay", function () { if (player) player.classList.remove("is-loading"); });
   audio.addEventListener("timeupdate", paint);
   audio.addEventListener("loadedmetadata", function () {
-    durEl.textContent = fmt(audio.duration);
+    if (durEl) durEl.textContent = fmt(audio.duration);
     paint();
   });
   audio.addEventListener("ended", function () {
-    player.classList.remove("is-playing");
-    btn.setAttribute("aria-pressed", "false");
-    btn.setAttribute("aria-label", "重新播放语音");
+    if (player) player.classList.remove("is-playing");
+    if (btn) { btn.setAttribute("aria-pressed", "false"); btn.setAttribute("aria-label", "重新播放语音"); }
+    // 播完把进度归零：旧实现保留 100% 波形，再点播放时先"跳回开头"才出声，
+    // 观感像第一下没反应
+    try { audio.currentTime = 0; } catch (e) {}
     paint();
   });
   // 语音走「原站链接」：部分内嵌浏览器（含聊天 App 的 X5/WebView 内核）对 data: 音频支持不佳，
@@ -654,13 +663,14 @@
     if (isDataSrc) { retryAsBlob(); return; }
     // 远程音频失败最常见的是网络不通或站点防盗链：不禁用按钮，留一次"点按重试"
     playFailed = true;
-    player.classList.remove("is-playing", "is-loading");
+    if (player) player.classList.remove("is-playing", "is-loading");
     setHint("语音加载失败 · 点播放重试");
   }
 
   audio.addEventListener("error", onAudioError);
 
   function seekTo(clientX) {
+    if (!seek) return;
     var box = seek.getBoundingClientRect();
     if (!box.width) return;
     var ratio = (clientX - box.left) / box.width;
@@ -673,27 +683,64 @@
   }
 
   var dragging = false;
-  seek.addEventListener("pointerdown", function (e) {
+  function beginSeek(e) {
     dragging = true;
-    if (seek.setPointerCapture) { try { seek.setPointerCapture(e.pointerId); } catch (err) {} }
+    if (seek.setPointerCapture && e.pointerId != null) {
+      try { seek.setPointerCapture(e.pointerId); } catch (err) {}
+    }
+    // 点进度条顺手给焦点，桌面端才能继续用左右方向键微调
+    try { seek.focus({ preventScroll: true }); } catch (err) {}
     seekTo(e.clientX);
-    e.preventDefault();
-  });
-  seek.addEventListener("pointermove", function (e) { if (dragging) seekTo(e.clientX); });
-  seek.addEventListener("pointerup", function () { dragging = false; });
-  seek.addEventListener("pointercancel", function () { dragging = false; });
-  window.addEventListener("pointerup", function () { dragging = false; });
+    if (e.cancelable) e.preventDefault();
+  }
+  function endSeek() { dragging = false; }
 
-  seek.addEventListener("keydown", function (e) {
-    var d = audio.duration;
-    if (e.key === " " || e.key === "Enter") { toggle(); e.preventDefault(); return; }
-    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
-      if (isFinite(d) && d > 0) {
-        var step = e.key === "ArrowRight" ? 5 : -5;
-        audio.currentTime = Math.max(0, Math.min(d, audio.currentTime + step));
-        paint();
+  // Pointer Events 优先；老 X5/WebView（聊天 App 内置浏览器）没有 pointerdown，
+  // 只绑 pointer* 会让"拖动定位"彻底失效——这是卡片的主打交互，必须有 touch 兜底。
+  if (window.PointerEvent) {
+    seek.addEventListener("pointerdown", beginSeek);
+    seek.addEventListener("pointermove", function (e) { if (dragging) seekTo(e.clientX); });
+    seek.addEventListener("pointerup", endSeek);
+    seek.addEventListener("pointercancel", endSeek);
+    window.addEventListener("pointerup", endSeek);
+  } else {
+    seek.addEventListener("touchstart", function (e) {
+      if (e.touches && e.touches.length) beginSeek({ clientX: e.touches[0].clientX, cancelable: e.cancelable, preventDefault: function () {} });
+    }, { passive: false });
+    seek.addEventListener("touchmove", function (e) {
+      if (dragging && e.touches && e.touches.length) {
+        seekTo(e.touches[0].clientX);
+        if (e.cancelable) e.preventDefault();
       }
-      e.preventDefault();
+    }, { passive: false });
+    seek.addEventListener("touchend", endSeek);
+    seek.addEventListener("touchcancel", endSeek);
+    // 桌面端/无触摸环境退回鼠标事件
+    seek.addEventListener("mousedown", beginSeek);
+    window.addEventListener("mousemove", function (e) { if (dragging) seekTo(e.clientX); });
+    window.addEventListener("mouseup", endSeek);
+  }
+
+  if (seek) {
+    seek.addEventListener("keydown", function (e) {
+      var d = audio.duration;
+      if (e.key === " " || e.key === "Enter") { toggle(); e.preventDefault(); return; }
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        if (isFinite(d) && d > 0) {
+          var step = e.key === "ArrowRight" ? 5 : -5;
+          audio.currentTime = Math.max(0, Math.min(d, audio.currentTime + step));
+          paint();
+        }
+        e.preventDefault();
+      }
+    });
+  }
+
+  // 切后台/页面隐藏时暂停：卡片常被聊天 App 的浮窗打开，
+  // 用户切走后音频继续播会盖住别的 App 的声音
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && audio && !audio.paused) {
+      try { audio.pause(); } catch (e) {}
     }
   });
 

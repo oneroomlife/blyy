@@ -255,7 +255,14 @@ fun VoiceScreenContent(
     }
     
     fun shareVoice(voice: VoiceLine) {
-        val shareText = "${voice.dialogue}\n\n音频链接: ${voice.audioUrl}"
+        // 必须取**当前语言分支**的地址：旧实现写死 voice.audioUrl（= audioUrlCn），
+        // 用户在日配模式下复制到的是中配链接，贴出去听到的是另一条语音
+        val activeUrl = voice.getActiveAudioUrl(voiceState.voiceLanguage)
+        if (activeUrl.isBlank()) {
+            Toast.makeText(context, "该台词没有可用的语音链接", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val shareText = "${voice.dialogue}\n\n音频链接: $activeUrl"
         clipboardManager.setText(AnnotatedString(shareText))
         Toast.makeText(context, "链接已复制", Toast.LENGTH_SHORT).show()
     }
@@ -321,6 +328,13 @@ fun VoiceScreenContent(
                     is VoiceShareLauncher.ShareResult.Failed ->
                         Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
                 }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                // 离开页面导致的取消不是"分享失败"：原样抛出，不弹 Toast
+                throw c
+            } catch (t: Throwable) {
+                // 合成/落盘里任何未预期异常都不该把整屏带走（此前 finally 只复位 flag，
+                // 异常会一路冒到 Compose 的协程，宿主 Scope 直接崩）
+                Toast.makeText(context, "分享失败：${t.message ?: t.javaClass.simpleName}", Toast.LENGTH_LONG).show()
             } finally {
                 shareCardInFlight = false
             }
@@ -334,6 +348,10 @@ fun VoiceScreenContent(
      * 并发触发会互相删掉对方刚下好的临时文件。
      */
     var voiceCardPreview by remember { mutableStateOf<VoiceCardPreviewState?>(null) }
+
+    // 保存/分享的在途标记：两者都可能落盘上百 KB 或拉起 Chooser，
+    // 连点会在 Downloads 里留下多份同名卡片（MediaStore 还会追加 " (1)"）
+    var voiceCardBusy by remember { mutableStateOf(false) }
 
     fun shareVoiceCardHtml(voice: VoiceLine) {
         if (shareCardInFlight) return
@@ -362,6 +380,7 @@ fun VoiceScreenContent(
                     Toast.makeText(context, "语音卡生成失败，请重试", Toast.LENGTH_LONG).show()
                     return@launch
                 }
+                voiceCardBusy = false
                 voiceCardPreview = VoiceCardPreviewState(
                     file = output.file,
                     shipName = voiceState.shipName,
@@ -373,6 +392,10 @@ fun VoiceScreenContent(
                     // 卡片照出，只是没有声：如实说明，不让用户对着禁用的播放键猜
                     Toast.makeText(context, "该台词没有语音地址，卡片仍可分享", Toast.LENGTH_LONG).show()
                 }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                Toast.makeText(context, "语音卡生成失败：${t.message ?: t.javaClass.simpleName}", Toast.LENGTH_LONG).show()
             } finally {
                 shareCardInFlight = false
             }
@@ -381,6 +404,9 @@ fun VoiceScreenContent(
 
     /** HTML 卡分享/保存结果 → 统一收口成 Toast + 关预览 */
     fun finishHtmlCard(result: VoiceShareLauncher.ShareResult) {
+        // 无论结果如何都要解除在途态，否则降级提示（AudioSkipped/Failed）之后
+        // 两个按钮会永久停在"处理中"
+        voiceCardBusy = false
         when (result) {
             is VoiceShareLauncher.ShareResult.Success -> voiceCardPreview = null
             is VoiceShareLauncher.ShareResult.SavedLocally -> {
@@ -391,6 +417,30 @@ fun VoiceScreenContent(
                 Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
             is VoiceShareLauncher.ShareResult.Failed ->
                 Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /**
+     * 保存/分享的公共入口：在途守卫 + 异常兜底。
+     *
+     * 任何异常都必须落到 [finishHtmlCard]，否则 [voiceCardBusy] 停在 true，
+     * 两个按钮永久禁用（浮层只能关掉重开）。
+     */
+    fun launchCardAction(action: suspend () -> VoiceShareLauncher.ShareResult) {
+        if (voiceCardBusy) return
+        voiceCardBusy = true
+        scope.launch {
+            val result = try {
+                action()
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                voiceCardBusy = false
+                throw c
+            } catch (t: Throwable) {
+                VoiceShareLauncher.ShareResult.Failed(
+                    "操作失败：${t.message ?: t.javaClass.simpleName}"
+                )
+            }
+            finishHtmlCard(result)
         }
     }
     
@@ -602,28 +652,26 @@ fun VoiceScreenContent(
             VoiceCardPreviewOverlay(
                 htmlFile = preview.file,
                 hasAudio = preview.hasAudio,
-                onDismiss = { voiceCardPreview = null },
+                busy = voiceCardBusy,
+                onDismiss = { if (!voiceCardBusy) voiceCardPreview = null },
                 onSave = {
-                    scope.launch {
-                        finishHtmlCard(
-                            VoiceShareLauncher.saveHtmlCard(
-                                context = context,
-                                card = preview.file,
-                                shipName = preview.shipName,
-                                sceneName = preview.scene
-                            )
+                    launchCardAction {
+                        VoiceShareLauncher.saveHtmlCard(
+                            context = context,
+                            card = preview.file,
+                            shipName = preview.shipName,
+                            sceneName = preview.scene
                         )
                     }
                 },
                 onShare = {
-                    scope.launch {
-                        finishHtmlCard(
-                            VoiceShareLauncher.shareHtmlCard(
-                                context = context,
-                                card = preview.file,
-                                shipName = preview.shipName,
-                                dialogue = preview.dialogue
-                            )
+                    launchCardAction {
+                        VoiceShareLauncher.shareHtmlCard(
+                            context = context,
+                            card = preview.file,
+                            shipName = preview.shipName,
+                            dialogue = preview.dialogue,
+                            sceneName = preview.scene
                         )
                     }
                 }

@@ -32,6 +32,7 @@ import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,16 +40,24 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.azurlane.blyy.ui.theme.AppSpacing
 import com.azurlane.blyy.ui.theme.AppTypography
 import java.io.File
@@ -59,7 +68,7 @@ import java.io.File
  * 为什么用浮层而不是 `Dialog`：
  * - 卡片本体是 WebView。放在独立窗口里，这个 ROM 上出现过「弹窗出现 1 秒就被系统关掉、
  *   且 `onDismissRequest` 被反复回调」的现象（窗口生命周期和宿主重组打架）；
- * - 页内浮层没有第二个 Window，WebView 直接从属于 Activity，页面内音频正常播放，
+ * - 页内浮层没有第二个 Window，WebView 直接从属 Activity，页面内音频正常播放，
  *   `BackHandler` 又能精确接管返回键，行为比 Dialog 可预测得多。
  *
  * 同时这也更符合产品预期：卡片是「当前这句台词的一张实物」，在页面之上"拿起来看"，
@@ -69,11 +78,12 @@ import java.io.File
 fun VoiceCardPreviewOverlay(
     htmlFile: File,
     hasAudio: Boolean,
+    busy: Boolean = false,
     onDismiss: () -> Unit,
     onSave: () -> Unit,
     onShare: () -> Unit
 ) {
-    BackHandler(enabled = true, onBack = onDismiss)
+    BackHandler(enabled = true, onBack = { if (!busy) onDismiss() })
 
     Box(
         modifier = Modifier
@@ -83,7 +93,7 @@ fun VoiceCardPreviewOverlay(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onDismiss
+                onClick = { if (!busy) onDismiss() }
             )
             .systemBarsPadding(),
         contentAlignment = Alignment.Center
@@ -104,7 +114,7 @@ fun VoiceCardPreviewOverlay(
             shadowElevation = AppSpacing.Elevation.Xl
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                PreviewHeader(hasAudio = hasAudio, onDismiss = onDismiss)
+                PreviewHeader(hasAudio = hasAudio, onDismiss = { if (!busy) onDismiss() })
 
                 Box(
                     modifier = Modifier
@@ -115,7 +125,11 @@ fun VoiceCardPreviewOverlay(
                         .background(Color(0xFF050B16))
                 ) {
                     if (remember { isWebViewAvailable() }) {
-                        HtmlCardWebView(htmlFile = htmlFile)
+                        // key：换了另一句台词的卡片时整体重建 WebView。
+                        // AndroidView 的 factory 只跑一次，不换 key 会一直显示上一张卡（旧实现的 bug）
+                        key(htmlFile.absolutePath) {
+                            HtmlCardWebView(htmlFile = htmlFile)
+                        }
                     } else {
                         // 裁剪过的 ROM / 手动停用 WebView 时不能直接崩：卡片文件本身是好的，
                         // 保存和分享两条按钮仍然可用
@@ -131,7 +145,7 @@ fun VoiceCardPreviewOverlay(
                     }
                 }
 
-                PreviewActions(onSave = onSave, onShare = onShare)
+                PreviewActions(busy = busy, onSave = onSave, onShare = onShare)
             }
         }
     }
@@ -178,7 +192,7 @@ private fun PreviewHeader(hasAudio: Boolean, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun PreviewActions(onSave: () -> Unit, onShare: () -> Unit) {
+private fun PreviewActions(busy: Boolean, onSave: () -> Unit, onShare: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -188,21 +202,32 @@ private fun PreviewActions(onSave: () -> Unit, onShare: () -> Unit) {
     ) {
         OutlinedButton(
             onClick = onSave,
+            enabled = !busy,
             shape = RoundedCornerShape(AppSpacing.Corner.Md),
             modifier = Modifier
                 .weight(1f)
                 .height(46.dp)
         ) {
-            Icon(
-                imageVector = Icons.Rounded.SaveAlt,
-                contentDescription = null,
-                modifier = Modifier.size(AppSpacing.Icon.Sm)
-            )
+            if (busy) {
+                // 在途态给一个 16dp 的转圈，避免用户以为"点了没反应"再点一次
+                CircularProgressIndicator(
+                    modifier = Modifier.size(AppSpacing.Icon.Sm),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Rounded.SaveAlt,
+                    contentDescription = null,
+                    modifier = Modifier.size(AppSpacing.Icon.Sm)
+                )
+            }
             Spacer(modifier = Modifier.width(AppSpacing.Xs))
-            Text(text = "保存", style = AppTypography.LabelLarge)
+            Text(text = if (busy) "处理中…" else "保存", style = AppTypography.LabelLarge)
         }
         Button(
             onClick = onShare,
+            enabled = !busy,
             shape = RoundedCornerShape(AppSpacing.Corner.Md),
             modifier = Modifier
                 .weight(1f)
@@ -218,7 +243,11 @@ private fun PreviewActions(onSave: () -> Unit, onShare: () -> Unit) {
                 modifier = Modifier.size(AppSpacing.Icon.Sm)
             )
             Spacer(modifier = Modifier.width(AppSpacing.Xs))
-            Text(text = "分享卡片", style = AppTypography.LabelLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                text = "分享卡片",
+                style = AppTypography.LabelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
@@ -241,9 +270,35 @@ private fun isWebViewAvailable(): Boolean {
  * - `javaScriptEnabled`：播放按钮/进度条逻辑全靠页面内联脚本；
  * - `allowFileAccess`：targetSdk 30+ 默认关闭，不显式打开就加载不了 `file://` 卡片；
  * - `mediaPlaybackRequiresUserGesture = false`：让"点一下按钮"的播放不受自动播放策略二次拦截。
+ *
+ * `file://` 页面 + 远程 `https` 音频属于跨源，浏览器会拦 XHR 但不拦 `<audio src>` 直接播放，
+ * 所以"语音走原站链接"这条路在 WebView 里是通的（真机已验证）。
  */
 @Composable
 private fun HtmlCardWebView(htmlFile: File) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var webRef by remember { mutableStateOf<WebView?>(null) }
+
+    // 页面切后台时必须停掉卡片里的音频：预览浮层没有自己的 Window，
+    // WebView 的 media 元素不会跟着 Activity 暂停，用户切到微信还能听到半句台词
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> webRef?.let { web ->
+                    runCatching { web.evaluateJavascript("(function(){try{document.getElementById('audio').pause();}catch(e){}})()", null) }
+                    web.onPause()
+                }
+                Lifecycle.Event.ON_START -> webRef?.onResume()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            webRef = null
+        }
+    }
+
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { context ->
@@ -255,18 +310,23 @@ private fun HtmlCardWebView(htmlFile: File) {
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     allowFileAccess = true
-                    allowContentAccess = true
+                    allowContentAccess = false
                     loadsImagesAutomatically = true
                     mediaPlaybackRequiresUserGesture = false
                     setSupportZoom(false)
                     builtInZoomControls = false
                     displayZoomControls = false
+                    // file:// 页面不许反过来读别的 file:// 资源（卡片用不到，收紧攻击面）
+                    allowFileAccessFromFileURLs = false
+                    allowUniversalAccessFromFileURLs = false
                 }
                 webChromeClient = WebChromeClient()
                 loadUrl("file://" + htmlFile.absolutePath)
+                webRef = this
             }
         },
         onRelease = { web ->
+            if (webRef === web) webRef = null
             // 先摘出视图树再 destroy：部分 ROM 上"边挂着边 destroy"会留下一个黑帧甚至崩 native
             runCatching {
                 (web.parent as? ViewGroup)?.removeView(web)
