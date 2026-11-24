@@ -82,6 +82,11 @@ class GuessShipViewModelExitFlowTest {
 
     @After
     fun tearDown() {
+        // viewModelScope 不随测试结束自动取消：init 的 collect 协程与 launch 的保存协程
+        // 可能仍排队在 Main scheduler 上。若带着挂起任务 resetMain，这些任务会在
+        // TestMainDispatcher 复用/清理时炸出 CompletionHandlerException（CI Linux
+        // 方法执行序不同才触发，本地 Windows 复现不了）。先推空 scheduler 再重置。
+        testDispatcher.scheduler.advanceUntilIdle()
         Dispatchers.resetMain()
     }
 
