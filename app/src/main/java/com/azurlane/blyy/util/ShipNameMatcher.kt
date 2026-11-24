@@ -297,6 +297,12 @@ object ShipNameMatcher {
 
         val parsed = parse(query)
 
+        // 0-. 强制网络名单：这些舰娘的名字经模糊策略必然撞上别人的资源
+        // （历史两例：凪咲 "xiao" 撞「晓」；美莉艾拉 meiliaila 的音节对齐
+        //   子串 "aila" 撞艾菈·冯·杜勒的别名文件）——宁可无头像走网络兜底，
+        //   也不能显示别人的立绘。资源补充后从这里移除。
+        if (parsed.raw in BLOCK_NAMES) return null
+
         // 0. 整名别名优先（`赤城·META` → midchicheng_alter 这类拼写差异大的先例）
         options.aliases[parsed.raw]?.forEach { alias ->
             index[alias.lowercase()]?.let { return Match(it, "ALIAS", 100) }
@@ -653,6 +659,10 @@ object ShipNameMatcher {
     private val ALIASES: Map<String, List<String>> = mapOf(
         "滨风" to listOf("bangfeng"),
         "库珀" to listOf("kubo"),
+        // 莉莉艾露/美莉艾拉（2026-11-24 实装）：资产按真名拼音命名（lilisha/jumeihuali）
+        // 而非舰名拼音，整名别名把二者接回精确匹配；美莉艾拉若靠模糊子串会撞 aila（艾菈别名）
+        "莉莉艾露" to listOf("lilisha"),
+        "美莉艾拉" to listOf("jumeihuali"),
         // 两套旧表不一致：按顺序尝试，以索引中实际存在者为准
         "贝露" to listOf("HDN401", "peineiluopo"),
         "第二代" to listOf("erdaimu"),
@@ -727,4 +737,11 @@ object ShipNameMatcher {
         "哈里森" to listOf("molisen"),
         "博格" to listOf("boge")
     )
+
+    // BLOCK_NAMES（无自有资源时禁一切本地匹配的名单）当前为空，历史两例：
+    // - 凪咲 "xiao" 撞「晓」→ 找到 zhixiao_DOA 资源后移出；
+    // - 美莉艾拉 meiliaila 音节对齐子串撞 aila.webp（艾菈·冯·杜勒别名）→
+    //   2026-11-24 资产按舰名拼音改名 meiliaila.webp 走全拼精确，移出。
+    // 机制保留：新增舰娘若撞车审计失败且确认无自有资源，登记于此。
+    val BLOCK_NAMES: Set<String> = emptySet()
 }

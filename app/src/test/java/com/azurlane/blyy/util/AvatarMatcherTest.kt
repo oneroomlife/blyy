@@ -26,6 +26,9 @@ class AvatarMatcherTest {
             // 水星号（NO.759 风帆V，2026-10-22 实装）曾登记于此：assets 无 shuixinghao 资源，
             // 修复前经模糊子串跨字拼接误配"彗星"(s[huixing]hao)，音节边界闸门上线后正确失配。
             // 2026-10-23 shuixinghao.webp 已补充并同步快照，恢复全量命中，条目移除。
+            // 莉莉艾露/美莉艾拉（2026-11-24 实装）曾登记于此：assets 无按舰名拼音命名的资源，
+            // 后确认 lilisha.webp/jumeihuali.webp 即二者的头像（按真名拼音命名），
+            // 经 ShipNameMatcher 整名别名接入精确匹配，条目移除。
         )
 
         private fun loadShipNames(): List<String> {
